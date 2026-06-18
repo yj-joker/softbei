@@ -1,0 +1,860 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>维修手册智能搜索</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: #f5f7fa;
+            color: #333;
+            min-height: 100vh;
+        }
+
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 24px 16px;
+        }
+
+        /* Header */
+        .header {
+            text-align: center;
+            margin-bottom: 32px;
+        }
+
+        .header h1 {
+            font-size: 24px;
+            font-weight: 600;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+        }
+
+        .header p {
+            font-size: 14px;
+            color: #666;
+        }
+
+        /* Search Box */
+        .search-box {
+            background: #fff;
+            border-radius: 12px;
+            padding: 20px 24px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+            margin-bottom: 20px;
+        }
+
+        .search-input-row {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .search-input-row input {
+            flex: 1;
+            height: 44px;
+            border: 1.5px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 0 16px;
+            font-size: 15px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .search-input-row input:focus {
+            border-color: #4f6ef7;
+        }
+
+        .search-input-row button {
+            height: 44px;
+            padding: 0 24px;
+            border: none;
+            border-radius: 8px;
+            background: #4f6ef7;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+            white-space: nowrap;
+        }
+
+        .search-input-row button:hover {
+            background: #3d5bd9;
+        }
+
+        .search-input-row button:disabled {
+            background: #b0b0b0;
+            cursor: not-allowed;
+        }
+
+        /* Filters */
+        .filters {
+            display: flex;
+            gap: 12px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filters select, .filters input[type="number"] {
+            height: 36px;
+            border: 1.5px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 0 12px;
+            font-size: 13px;
+            background: #fff;
+            outline: none;
+        }
+
+        .filters label {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .filters input[type="number"] {
+            width: 70px;
+        }
+
+        /* Stats */
+        .stats {
+            padding: 12px 0;
+            font-size: 13px;
+            color: #888;
+            display: none;
+        }
+
+        .stats.visible {
+            display: block;
+        }
+
+        /* View Mode Toggle */
+        .view-toggle {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+        }
+
+        .view-toggle button {
+            padding: 6px 14px;
+            border: 1.5px solid #e0e0e0;
+            border-radius: 6px;
+            background: #fff;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .view-toggle button.active {
+            border-color: #4f6ef7;
+            background: #eef1ff;
+            color: #4f6ef7;
+            font-weight: 500;
+        }
+
+        /* Results - Flat View */
+        .result-card {
+            background: #fff;
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 12px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+            transition: box-shadow 0.2s;
+            border-left: 4px solid transparent;
+        }
+
+        .result-card:hover {
+            box-shadow: 0 3px 12px rgba(0,0,0,0.1);
+        }
+
+        .result-card.type-text { border-left-color: #4f6ef7; }
+        .result-card.type-image { border-left-color: #f59e0b; }
+        .result-card.type-table { border-left-color: #10b981; }
+        .result-card.type-image_summary { border-left-color: #8b5cf6; }
+
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-start;
+            margin-bottom: 8px;
+        }
+
+        .result-manual {
+            font-size: 13px;
+            color: #4f6ef7;
+            font-weight: 500;
+        }
+
+        .result-score {
+            font-size: 12px;
+            color: #fff;
+            background: #4f6ef7;
+            padding: 2px 8px;
+            border-radius: 10px;
+            white-space: nowrap;
+        }
+
+        .result-score.high { background: #10b981; }
+        .result-score.medium { background: #f59e0b; }
+        .result-score.low { background: #ef4444; }
+
+        .result-section {
+            font-size: 14px;
+            font-weight: 500;
+            color: #1a1a2e;
+            margin-bottom: 8px;
+        }
+
+        .result-content {
+            font-size: 14px;
+            line-height: 1.6;
+            color: #444;
+            margin-bottom: 8px;
+            max-height: 80px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .result-content mark {
+            background: #fef08a;
+            padding: 0 2px;
+            border-radius: 2px;
+        }
+
+        .result-image-preview {
+            max-width: 200px;
+            max-height: 120px;
+            border-radius: 6px;
+            margin-bottom: 8px;
+            border: 1px solid #eee;
+        }
+
+        .result-meta {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .result-meta span {
+            font-size: 12px;
+            color: #888;
+        }
+
+        .result-meta .chip {
+            background: #f0f0f0;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            color: #555;
+        }
+
+        .result-meta a {
+            font-size: 12px;
+            color: #4f6ef7;
+            text-decoration: none;
+            font-weight: 500;
+        }
+
+        .result-meta a:hover {
+            text-decoration: underline;
+        }
+
+        /* Grouped View */
+        .chapter-group {
+            margin-bottom: 20px;
+        }
+
+        .chapter-group-header {
+            background: #fff;
+            border-radius: 10px 10px 0 0;
+            padding: 14px 20px;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .chapter-group-header h3 {
+            font-size: 15px;
+            font-weight: 600;
+            color: #1a1a2e;
+        }
+
+        .chapter-group-header h3 .manual-badge {
+            font-size: 12px;
+            color: #4f6ef7;
+            font-weight: 500;
+            margin-right: 6px;
+        }
+
+        .chapter-group-header .hit-count {
+            font-size: 12px;
+            color: #888;
+            background: #f0f0f0;
+            padding: 3px 10px;
+            border-radius: 12px;
+        }
+
+        .chapter-group .result-card {
+            border-radius: 0;
+            margin-bottom: 0;
+            border-bottom: 1px solid #f5f5f5;
+        }
+
+        .chapter-group .result-card:last-child {
+            border-radius: 0 0 10px 10px;
+            border-bottom: none;
+        }
+
+        /* Loading */
+        .loading {
+            text-align: center;
+            padding: 40px;
+            display: none;
+        }
+
+        .loading.visible {
+            display: block;
+        }
+
+        .spinner {
+            display: inline-block;
+            width: 32px;
+            height: 32px;
+            border: 3px solid #e0e0e0;
+            border-top-color: #4f6ef7;
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        /* Empty state */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: #999;
+        }
+
+        .empty-state .icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+        }
+
+        /* Config Panel */
+        .config-panel {
+            background: #fff;
+            border-radius: 10px;
+            padding: 16px 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.06);
+        }
+
+        .config-panel summary {
+            cursor: pointer;
+            font-size: 13px;
+            color: #666;
+            font-weight: 500;
+        }
+
+        .config-panel .config-body {
+            margin-top: 12px;
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+
+        .config-panel input[type="text"] {
+            height: 34px;
+            border: 1.5px solid #e0e0e0;
+            border-radius: 6px;
+            padding: 0 10px;
+            font-size: 13px;
+            width: 300px;
+        }
+
+        /* Login Overlay */
+        .login-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0,0,0,0.4);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 1000;
+        }
+
+        .login-overlay.hidden {
+            display: none;
+        }
+
+        .login-card {
+            background: #fff;
+            border-radius: 16px;
+            padding: 40px 36px;
+            width: 360px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+            text-align: center;
+        }
+
+        .login-card h2 {
+            font-size: 22px;
+            margin-bottom: 8px;
+            color: #1a1a2e;
+        }
+
+        .login-desc {
+            font-size: 13px;
+            color: #888;
+            margin-bottom: 24px;
+        }
+
+        .login-form {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+
+        .login-form input {
+            height: 44px;
+            border: 1.5px solid #e0e0e0;
+            border-radius: 8px;
+            padding: 0 16px;
+            font-size: 14px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .login-form input:focus {
+            border-color: #4f6ef7;
+        }
+
+        .login-form button {
+            height: 44px;
+            border: none;
+            border-radius: 8px;
+            background: #4f6ef7;
+            color: #fff;
+            font-size: 15px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+
+        .login-form button:hover {
+            background: #3d5bd9;
+        }
+
+        .login-form button:disabled {
+            background: #b0b0b0;
+            cursor: not-allowed;
+        }
+
+        .login-error {
+            font-size: 13px;
+            color: #ef4444;
+            min-height: 20px;
+        }
+
+        .user-info {
+            margin-top: 8px;
+            font-size: 13px;
+            color: #666;
+        }
+
+        .user-info span {
+            margin-right: 8px;
+        }
+
+        .logout-btn {
+            font-size: 12px;
+            padding: 3px 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: #fff;
+            cursor: pointer;
+            color: #888;
+        }
+
+        .logout-btn:hover {
+            border-color: #ef4444;
+            color: #ef4444;
+        }
+
+        /* Context preview */
+        .context-preview {
+            font-size: 12px;
+            color: #999;
+            font-style: italic;
+            margin-top: 4px;
+        }
+
+        .context-preview .before { color: #aaa; }
+        .context-preview .after { color: #aaa; }
+    </style>
+</head>
+<body>
+    <!-- Login Overlay -->
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-card">
+            <h2>登录</h2>
+            <p class="login-desc">请先登录后使用搜索功能</p>
+            <div class="login-form">
+                <input type="text" id="loginUsername" placeholder="用户名" onkeydown="if(event.key==='Enter') doLogin()">
+                <input type="password" id="loginPassword" placeholder="密码" onkeydown="if(event.key==='Enter') doLogin()">
+                <button id="loginBtn" onclick="doLogin()">登录</button>
+                <div class="login-error" id="loginError"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>维修手册智能搜索</h1>
+            <p>基于向量语义检索，精确定位手册章节与页码</p>
+            <div class="user-info" id="userInfo" style="display:none;">
+                <span id="userNameDisplay"></span>
+                <button class="logout-btn" onclick="doLogout()">退出</button>
+            </div>
+        </div>
+
+        <!-- Config -->
+        <div class="config-panel">
+            <details>
+                <summary>接口配置</summary>
+                <div class="config-body">
+                    <label>后端地址：</label>
+                    <input type="text" id="baseUrl" value="http://localhost:8080" placeholder="http://localhost:8080">
+                    <label style="font-size:12px;color:#999;">( /weixiu/maintenance-manual/search )</label>
+                </div>
+            </details>
+        </div>
+
+        <!-- Search Box -->
+        <div class="search-box">
+            <div class="search-input-row">
+                <input type="text" id="searchInput" placeholder="输入关键词搜索维修手册，如：轴承更换、电机过热、液压系统..."
+                       onkeydown="if(event.key==='Enter') doSearch()">
+                <button id="searchBtn" onclick="doSearch()">搜索</button>
+            </div>
+            <div class="filters">
+                <label>手册：</label>
+                <select id="manualFilter">
+                    <option value="">全部手册</option>
+                </select>
+                <label>类型：</label>
+                <select id="chunkTypeFilter">
+                    <option value="">全部类型</option>
+                    <option value="text">文本</option>
+                    <option value="image">图片</option>
+                    <option value="table">表格</option>
+                </select>
+                <label>数量：</label>
+                <input type="number" id="topKInput" value="10" min="1" max="50">
+            </div>
+        </div>
+
+        <!-- View Toggle -->
+        <div class="view-toggle">
+            <button class="active" onclick="switchView('flat')">列表视图</button>
+            <button onclick="switchView('grouped')">章节聚合</button>
+        </div>
+
+        <!-- Stats -->
+        <div class="stats" id="statsBar"></div>
+
+        <!-- Loading -->
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p style="margin-top:12px;color:#888;">检索中...</p>
+        </div>
+
+        <!-- Results -->
+        <div id="results"></div>
+
+        <!-- Empty State -->
+        <div class="empty-state" id="emptyState">
+            <div class="icon">&#128270;</div>
+            <p>输入关键词开始搜索维修手册</p>
+            <p style="font-size:12px;margin-top:8px;color:#bbb;">支持自然语言查询，如"更换电机轴承的步骤"</p>
+        </div>
+    </div>
+
+    <script>
+        let currentView = 'flat';
+        let lastResponse = null;
+        let loggedInUser = null;
+
+        // ===== Login / Logout =====
+
+        async function doLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value.trim();
+            const errorEl = document.getElementById('loginError');
+            errorEl.textContent = '';
+
+            if (!username || !password) {
+                errorEl.textContent = '请输入用户名和密码';
+                return;
+            }
+
+            const baseUrl = document.getElementById('baseUrl').value.trim();
+            document.getElementById('loginBtn').disabled = true;
+
+            try {
+                const resp = await fetch(`${baseUrl}/weixiu/user/login`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ username, password })
+                });
+
+                const json = await resp.json();
+                if (json.code === '200' && json.data) {
+                    loggedInUser = json.data;
+                    document.getElementById('loginOverlay').classList.add('hidden');
+                    document.getElementById('userInfo').style.display = '';
+                    document.getElementById('userNameDisplay').textContent = '已登录: ' + (loggedInUser.nickname || loggedInUser.username || username);
+                    loadManualList();
+                } else {
+                    errorEl.textContent = json.message || '登录失败';
+                }
+            } catch (e) {
+                errorEl.textContent = '网络错误: ' + e.message;
+            } finally {
+                document.getElementById('loginBtn').disabled = false;
+            }
+        }
+
+        async function loadManualList() {
+            const baseUrl = document.getElementById('baseUrl').value.trim();
+            const select = document.getElementById('manualFilter');
+            try {
+                const resp = await fetch(`${baseUrl}/weixiu/maintenance-manual/list`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify({ page: 1, size: 100, status: 1 })
+                });
+                const json = await resp.json();
+                if (json.code === '200' && json.data && json.data.records) {
+                    json.data.records.forEach(m => {
+                        const opt = document.createElement('option');
+                        opt.value = m.id;
+                        opt.textContent = m.manualName || ('手册 #' + m.id);
+                        select.appendChild(opt);
+                    });
+                }
+            } catch (e) {
+                console.warn('加载手册列表失败:', e);
+            }
+        }
+
+        function doLogout() {
+            loggedInUser = null;
+            document.getElementById('loginOverlay').classList.remove('hidden');
+            document.getElementById('userInfo').style.display = 'none';
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('statsBar').classList.remove('visible');
+            document.getElementById('emptyState').style.display = '';
+            // 重置手册下拉框
+            const select = document.getElementById('manualFilter');
+            select.innerHTML = '<option value="">全部手册</option>';
+        }
+
+        function switchView(view) {
+            currentView = view;
+            document.querySelectorAll('.view-toggle button').forEach(btn => btn.classList.remove('active'));
+            event.target.classList.add('active');
+            if (lastResponse) renderResults(lastResponse);
+        }
+
+        async function doSearch() {
+            const query = document.getElementById('searchInput').value.trim();
+            if (!query) return;
+
+            const baseUrl = document.getElementById('baseUrl').value.trim();
+            const chunkType = document.getElementById('chunkTypeFilter').value;
+            const manualId = document.getElementById('manualFilter').value;
+            const topK = parseInt(document.getElementById('topKInput').value) || 10;
+
+            // Show loading
+            document.getElementById('loading').classList.add('visible');
+            document.getElementById('results').innerHTML = '';
+            document.getElementById('emptyState').style.display = 'none';
+            document.getElementById('statsBar').classList.remove('visible');
+            document.getElementById('searchBtn').disabled = true;
+
+            try {
+                const body = { query, topK };
+                if (chunkType) body.chunkType = chunkType;
+                if (manualId) body.manualId = parseInt(manualId);
+
+                const resp = await fetch(`${baseUrl}/weixiu/maintenance-manual/search`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    credentials: 'include',
+                    body: JSON.stringify(body)
+                });
+
+                const json = await resp.json();
+
+                if (json.code === '200' && json.data) {
+                    lastResponse = json.data;
+                    renderResults(json.data);
+                } else {
+                    showError(json.message || '搜索失败');
+                }
+            } catch (e) {
+                showError('网络错误: ' + e.message);
+            } finally {
+                document.getElementById('loading').classList.remove('visible');
+                document.getElementById('searchBtn').disabled = false;
+            }
+        }
+
+        function renderResults(data) {
+            const statsBar = document.getElementById('statsBar');
+            statsBar.textContent = `找到 ${data.total} 条结果，耗时 ${data.queryTimeMs}ms`;
+            statsBar.classList.add('visible');
+
+            const container = document.getElementById('results');
+
+            if (!data.results || data.results.length === 0) {
+                container.innerHTML = '<div class="empty-state"><div class="icon">&#128533;</div><p>未找到相关结果</p></div>';
+                return;
+            }
+
+            if (currentView === 'flat') {
+                container.innerHTML = data.results.map(r => renderCard(r)).join('');
+            } else {
+                container.innerHTML = (data.chapterGroups || []).map(g => renderGroup(g)).join('');
+            }
+        }
+
+        function renderCard(r) {
+            const query = document.getElementById('searchInput').value.trim();
+            const scoreClass = r.score >= 0.8 ? 'high' : r.score >= 0.6 ? 'medium' : 'low';
+            const scorePercent = Math.round(r.score * 100);
+
+            let contentHtml = '';
+            if (r.chunkType === 'image' || r.chunkType === 'image_summary') {
+                if (r.imageUrl) {
+                    contentHtml = `<img class="result-image-preview" src="${escapeHtml(r.imageUrl)}" alt="${escapeHtml(r.caption || '')}">`;
+                }
+                if (r.caption) {
+                    contentHtml += `<div class="result-content">${highlightText(r.caption, query)}</div>`;
+                }
+                if (r.matchedText && r.chunkType === 'image_summary') {
+                    contentHtml += `<div class="result-content">${highlightText(r.matchedText, query)}</div>`;
+                }
+            } else {
+                contentHtml = `<div class="result-content">${highlightText(r.matchedText || '', query)}</div>`;
+            }
+
+            // Context preview
+            let contextHtml = '';
+            if (r.contextBefore || r.contextAfter) {
+                contextHtml = `<div class="context-preview">`;
+                if (r.contextBefore) contextHtml += `<span class="before">...${truncate(r.contextBefore, 60)}</span> `;
+                contextHtml += `<strong>[当前片段]</strong> `;
+                if (r.contextAfter) contextHtml += `<span class="after">${truncate(r.contextAfter, 60)}...</span>`;
+                contextHtml += `</div>`;
+            }
+
+            let pdfLinks = '';
+            if (r.previewUrl) {
+                const pageAnchor = r.page ? `#page=${r.page}` : '';
+                pdfLinks += `<a href="${r.previewUrl}${pageAnchor}" target="_blank">在线预览 &rarr;</a>`;
+            }
+            if (r.downloadUrl) {
+                pdfLinks += `<a href="${r.downloadUrl}" target="_blank" style="color:#888;">下载PDF</a>`;
+            }
+
+            return `
+            <div class="result-card type-${r.chunkType || 'text'}">
+                <div class="result-header">
+                    <span class="result-manual">${escapeHtml(r.manualName || '未知手��')}</span>
+                    <span class="result-score ${scoreClass}">${scorePercent}%</span>
+                </div>
+                <div class="result-section">${escapeHtml(r.sectionTitle || '未知章节')}</div>
+                ${contentHtml}
+                ${contextHtml}
+                <div class="result-meta">
+                    <span class="chip">${chunkTypeLabel(r.chunkType)}</span>
+                    ${r.page ? `<span>第 ${r.page} 页</span>` : ''}
+                    ${r.pageRange ? `<span>章节范围: ${escapeHtml(r.pageRange)}</span>` : ''}
+                    ${pdfLinks}
+                </div>
+            </div>`;
+        }
+
+        function renderGroup(group) {
+            const hitsHtml = group.hits.map(r => renderCard(r)).join('');
+            return `
+            <div class="chapter-group">
+                <div class="chapter-group-header">
+                    <h3>
+                        <span class="manual-badge">${escapeHtml(group.manualName || '未知手册')}</span>
+                        ${escapeHtml(group.sectionTitle || '未知章节')}
+                    </h3>
+                    <span class="hit-count">${group.hitCount} 条命中</span>
+                </div>
+                ${hitsHtml}
+            </div>`;
+        }
+
+        function highlightText(text, query) {
+            if (!text || !query) return escapeHtml(text || '');
+            const escaped = escapeHtml(text);
+            const keywords = query.split(/\s+/).filter(k => k.length > 0);
+            let result = escaped;
+            keywords.forEach(kw => {
+                const regex = new RegExp(escapeRegex(escapeHtml(kw)), 'gi');
+                result = result.replace(regex, '<mark>$&</mark>');
+            });
+            return result;
+        }
+
+        function chunkTypeLabel(type) {
+            const map = { text: '文本', image: '图片', table: '表格', image_summary: '图片摘要' };
+            return map[type] || type || '文本';
+        }
+
+        function truncate(str, len) {
+            if (!str) return '';
+            return str.length > len ? str.substring(0, len) + '...' : str;
+        }
+
+        function escapeHtml(str) {
+            if (!str) return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
+
+        function escapeRegex(str) {
+            return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        }
+
+        function showError(msg) {
+            document.getElementById('results').innerHTML = `
+                <div class="empty-state">
+                    <div class="icon">&#9888;&#65039;</div>
+                    <p style="color:#ef4444;">${escapeHtml(msg)}</p>
+                </div>`;
+        }
+    </script>
+</body>
+</html>

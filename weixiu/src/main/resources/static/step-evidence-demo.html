@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>检修步骤证据预览</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f5f7fa; color: #333; min-height: 100vh;
+        }
+        .container { max-width: 960px; margin: 0 auto; padding: 24px 16px; }
+        .header { text-align: center; margin-bottom: 24px; }
+        .header h1 { font-size: 22px; color: #1a1a2e; margin-bottom: 6px; }
+        .header p { font-size: 13px; color: #888; }
+
+        /* Login overlay (same as manual-search-demo) */
+        .login-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+        .login-overlay.hidden { display: none; }
+        .login-card { background: #fff; border-radius: 16px; padding: 36px 32px; width: 340px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.15); text-align: center; }
+        .login-card h2 { font-size: 20px; margin-bottom: 6px; }
+        .login-desc { font-size: 13px; color: #888; margin-bottom: 20px; }
+        .login-form { display: flex; flex-direction: column; gap: 10px; }
+        .login-form input, .login-form button { height: 42px; border-radius: 8px; font-size: 14px; }
+        .login-form input { border: 1.5px solid #e0e0e0; padding: 0 14px; outline: none; }
+        .login-form input:focus { border-color: #4f6ef7; }
+        .login-form button { border: none; background: #4f6ef7; color: #fff; cursor: pointer; font-weight: 500; }
+        .login-form button:hover { background: #3d5bd9; }
+        .login-form button:disabled { background: #b0b0b0; }
+        .login-error { font-size: 13px; color: #ef4444; min-height: 18px; }
+
+        .user-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;
+            font-size: 13px; color: #666; }
+        .logout-btn { font-size: 12px; padding: 3px 10px; border: 1px solid #ddd; border-radius: 4px;
+            background: #fff; cursor: pointer; color: #888; }
+
+        /* Config */
+        .config-panel { background: #fff; border-radius: 10px; padding: 14px 18px; margin-bottom: 16px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+        .config-panel summary { cursor: pointer; font-size: 13px; color: #666; }
+        .config-body { margin-top: 10px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+        .config-body input { height: 32px; border: 1.5px solid #e0e0e0; border-radius: 6px; padding: 0 10px;
+            font-size: 13px; width: 280px; }
+
+        /* Task selector */
+        .task-selector { background: #fff; border-radius: 10px; padding: 16px 20px; margin-bottom: 16px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.06); display: flex; gap: 10px; align-items: center; }
+        .task-selector input { flex: 1; height: 40px; border: 1.5px solid #e0e0e0; border-radius: 8px;
+            padding: 0 14px; font-size: 14px; outline: none; }
+        .task-selector input:focus { border-color: #4f6ef7; }
+        .task-selector button { height: 40px; padding: 0 20px; border: none; border-radius: 8px;
+            background: #4f6ef7; color: #fff; font-size: 14px; cursor: pointer; white-space: nowrap; }
+
+        /* Task info card */
+        .task-info { background: #fff; border-radius: 10px; padding: 16px 20px; margin-bottom: 16px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.06); }
+        .task-info h3 { font-size: 15px; margin-bottom: 8px; }
+        .task-meta { display: flex; gap: 16px; flex-wrap: wrap; font-size: 13px; color: #666; }
+        .task-meta .badge { padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 500; }
+        .badge-copy { background: #dbeafe; color: #2563eb; }
+        .badge-adapt { background: #fef3c7; color: #d97706; }
+        .badge-generate { background: #ede9fe; color: #7c3aed; }
+
+        /* Step card */
+        .step-card { background: #fff; border-radius: 10px; margin-bottom: 12px;
+            box-shadow: 0 1px 6px rgba(0,0,0,0.06); overflow: hidden; }
+        .step-header { padding: 14px 20px; display: flex; justify-content: space-between; align-items: center;
+            cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+        .step-header:hover { background: #fafafa; }
+        .step-number { font-size: 13px; color: #4f6ef7; font-weight: 600; margin-right: 10px; }
+        .step-title { font-size: 14px; font-weight: 500; flex: 1; }
+        .step-status { font-size: 11px; padding: 2px 8px; border-radius: 10px; }
+        .status-PENDING { background: #f0f0f0; color: #888; }
+        .status-COMPLETED { background: #d1fae5; color: #059669; }
+
+        .step-body { padding: 14px 20px; display: none; }
+        .step-body.open { display: block; }
+        .step-content { font-size: 13px; line-height: 1.6; color: #444; margin-bottom: 10px; }
+        .step-safety { font-size: 12px; color: #dc2626; background: #fef2f2; padding: 8px 12px;
+            border-radius: 6px; margin-bottom: 10px; }
+
+        /* Evidence panel */
+        .evidence-panel { border: 1.5px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+        .evidence-title { padding: 10px 14px; background: #f9fafb; font-size: 13px; font-weight: 500;
+            color: #374151; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+        .evidence-title .count { font-size: 11px; color: #9ca3af; }
+        .evidence-list { padding: 0; }
+        .evidence-list.hidden { display: none; }
+
+        .evidence-item { padding: 10px 14px; border-top: 1px solid #f0f0f0; font-size: 13px; }
+        .evidence-item:first-child { border-top: none; }
+
+        .evi-type { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px;
+            font-weight: 500; margin-right: 6px; }
+        .evi-template { background: #dbeafe; color: #2563eb; }
+        .evi-template_adjusted { background: #fef3c7; color: #d97706; }
+        .evi-manual { background: #d1fae5; color: #059669; }
+        .evi-graph { background: #ede9fe; color: #7c3aed; }
+        .evi-ai_generated { background: #f0f0f0; color: #666; }
+
+        .evi-detail { margin-top: 4px; font-size: 12px; color: #666; line-height: 1.5; }
+        .evi-detail a { color: #4f6ef7; text-decoration: none; }
+        .evi-detail a:hover { text-decoration: underline; }
+        .evi-snippet { font-style: italic; color: #888; background: #fafafa; padding: 4px 8px;
+            border-radius: 4px; margin-top: 4px; display: block; }
+        .evi-adjustment { color: #d97706; font-style: italic; margin-top: 4px; }
+
+        .empty-state { text-align: center; padding: 48px 20px; color: #999; }
+        .loading { text-align: center; padding: 32px; display: none; }
+        .loading.visible { display: block; }
+        .spinner { display: inline-block; width: 28px; height: 28px; border: 3px solid #e0e0e0;
+            border-top-color: #4f6ef7; border-radius: 50%; animation: spin 0.8s linear infinite; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+    <!-- Login -->
+    <div class="login-overlay" id="loginOverlay">
+        <div class="login-card">
+            <h2>登录</h2>
+            <p class="login-desc">请先登录后查看检修步骤证据</p>
+            <div class="login-form">
+                <input type="text" id="loginUsername" placeholder="用户名" onkeydown="if(event.key==='Enter') doLogin()">
+                <input type="password" id="loginPassword" placeholder="密码" onkeydown="if(event.key==='Enter') doLogin()">
+                <button id="loginBtn" onclick="doLogin()">登录</button>
+                <div class="login-error" id="loginError"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="header">
+            <h1>检修步骤证据预览</h1>
+            <p>查看每一步的参考依据：手册引用 / 图谱路径 / 模板追溯</p>
+        </div>
+
+        <div class="user-bar" id="userBar" style="display:none;">
+            <span id="userNameDisplay"></span>
+            <button class="logout-btn" onclick="doLogout()">退出</button>
+        </div>
+
+        <div class="config-panel">
+            <details>
+                <summary>接口配置</summary>
+                <div class="config-body">
+                    <label>后端地址：</label>
+                    <input type="text" id="baseUrl" value="http://localhost:8080">
+                </div>
+            </details>
+        </div>
+
+        <div class="task-selector">
+            <input type="text" id="taskIdInput" placeholder="输入检修任务 ID" onkeydown="if(event.key==='Enter') loadTask()">
+            <button onclick="loadTask()">查看步骤</button>
+        </div>
+
+        <div class="loading" id="loading"><div class="spinner"></div><p style="margin-top:10px;color:#888;">加载中...</p></div>
+
+        <div id="taskDetail"></div>
+
+        <div class="empty-state" id="emptyState">
+            <p style="font-size: 36px;">&#128203;</p>
+            <p>输入检修任务 ID 查看步骤的证据来源</p>
+        </div>
+    </div>
+
+    <script>
+        let loggedInUser = null;
+
+        // ===== Login =====
+        async function doLogin() {
+            const username = document.getElementById('loginUsername').value.trim();
+            const password = document.getElementById('loginPassword').value.trim();
+            const errorEl = document.getElementById('loginError');
+            errorEl.textContent = '';
+            if (!username || !password) { errorEl.textContent = '请输入用户名和密码'; return; }
+            const baseUrl = document.getElementById('baseUrl').value.trim();
+            document.getElementById('loginBtn').disabled = true;
+            try {
+                const resp = await fetch(`${baseUrl}/weixiu/user/login`, {
+                    method: 'POST', headers: {'Content-Type': 'application/json'}, credentials: 'include',
+                    body: JSON.stringify({ username, password })
+                });
+                const json = await resp.json();
+                if (json.code === '200' && json.data) {
+                    loggedInUser = json.data;
+                    document.getElementById('loginOverlay').classList.add('hidden');
+                    document.getElementById('userBar').style.display = '';
+                    document.getElementById('userNameDisplay').textContent = '已登录: ' + (loggedInUser.nickname || loggedInUser.name || username);
+                } else { errorEl.textContent = json.message || '登录失败'; }
+            } catch (e) { errorEl.textContent = '网络错误: ' + e.message; }
+            finally { document.getElementById('loginBtn').disabled = false; }
+        }
+        function doLogout() {
+            loggedInUser = null;
+            document.getElementById('loginOverlay').classList.remove('hidden');
+            document.getElementById('userBar').style.display = 'none';
+            document.getElementById('taskDetail').innerHTML = '';
+            document.getElementById('emptyState').style.display = '';
+        }
+
+        // ===== Load Task =====
+        async function loadTask() {
+            const taskId = document.getElementById('taskIdInput').value.trim();
+            if (!taskId) return;
+            const baseUrl = document.getElementById('baseUrl').value.trim();
+
+            document.getElementById('loading').classList.add('visible');
+            document.getElementById('taskDetail').innerHTML = '';
+            document.getElementById('emptyState').style.display = 'none';
+
+            try {
+                const resp = await fetch(`${baseUrl}/weixiu/task/${taskId}`, {
+                    credentials: 'include'
+                });
+                const json = await resp.json();
+                if (json.code === '200' && json.data) {
+                    renderTask(json.data);
+                } else {
+                    document.getElementById('taskDetail').innerHTML =
+                        `<div class="empty-state"><p style="color:#ef4444;">${esc(json.message || '任务不存在')}</p></div>`;
+                }
+            } catch (e) {
+                document.getElementById('taskDetail').innerHTML =
+                    `<div class="empty-state"><p style="color:#ef4444;">网络错误: ${esc(e.message)}</p></div>`;
+            } finally {
+                document.getElementById('loading').classList.remove('visible');
+            }
+        }
+
+        function renderTask(task) {
+            const modeMap = { PROCEDURE_COPY: ['模板拷贝', 'badge-copy'], AI_ADAPT: ['AI 微调', 'badge-adapt'], AI_GENERATE: ['AI 生成', 'badge-generate'] };
+            const [modeLabel, modeBadge] = modeMap[task.generateMode] || [task.generateMode, ''];
+
+            let html = `<div class="task-info">
+                <h3>${esc(task.taskNumber || '')} — ${esc(task.deviceName || '未知设备')}</h3>
+                <div class="task-meta">
+                    <span class="badge ${modeBadge}">${modeLabel}</span>
+                    <span>状态: ${task.status}</span>
+                    <span>步骤数: ${task.stepCount || 0}</span>
+                    ${task.procedureName ? `<span>规程: ${esc(task.procedureName)}</span>` : ''}
+                </div>
+                <p style="margin-top:8px;font-size:13px;color:#666;">${esc(task.faultDescription || '')}</p>
+            </div>`;
+
+            if (task.steps && task.steps.length > 0) {
+                html += task.steps.map((step, idx) => renderStep(step, idx)).join('');
+            } else {
+                html += '<div class="empty-state"><p>该任务暂无步骤</p></div>';
+            }
+
+            document.getElementById('taskDetail').innerHTML = html;
+        }
+
+        function renderStep(step, idx) {
+            const sources = step.sources || [];
+            const statusClass = 'status-' + (step.status || 'PENDING');
+            const evidenceCount = sources.length;
+
+            return `<div class="step-card">
+                <div class="step-header" onclick="toggleStep(this)">
+                    <div><span class="step-number">#${step.sortOrder || idx + 1}</span><span class="step-title">${esc(step.title || '')}</span></div>
+                    <span class="step-status ${statusClass}">${step.status || 'PENDING'}</span>
+                </div>
+                <div class="step-body">
+                    <div class="step-content">${esc(step.content || '')}</div>
+                    ${step.safetyNote ? `<div class="step-safety">&#9888;&#65039; ${esc(step.safetyNote)}</div>` : ''}
+                    ${evidenceCount > 0 ? renderEvidence(sources) : '<div style="font-size:12px;color:#bbb;padding:8px 0;">无证据来源</div>'}
+                </div>
+            </div>`;
+        }
+
+        function renderEvidence(sources) {
+            const items = sources.map(src => {
+                const typeLabel = { template: '模板', template_adjusted: '模板微调', manual: '手册', graph: '图谱', ai_generated: 'AI生成' };
+                const label = typeLabel[src.type] || src.type;
+                let detail = '';
+
+                if (src.type === 'template') {
+                    detail = `来自标准规程《${esc(src.procedureName || '?')}》第 ${src.templateStepOrder || '?'} 步`;
+                } else if (src.type === 'template_adjusted') {
+                    detail = `基于标准规程《${esc(src.procedureName || '?')}》第 ${src.templateStepOrder || '?'} 步调整`;
+                    if (src.adjustmentNote) detail += `<div class="evi-adjustment">${esc(src.adjustmentNote)}</div>`;
+                } else if (src.type === 'manual') {
+                    detail = `${esc(src.manualName || src.documentId || '?')}`;
+                    if (src.sectionTitle) detail += ` · ${esc(src.sectionTitle)}`;
+                    if (src.page) detail += ` · 第 ${src.page} 页`;
+                    if (src.pdfUrl && src.page) {
+                        detail += ` <a href="${src.pdfUrl}#page=${src.page}" target="_blank">查看原文 &rarr;</a>`;
+                    } else if (src.pdfUrl) {
+                        detail += ` <a href="${src.pdfUrl}" target="_blank">查看原文 &rarr;</a>`;
+                    }
+                    if (src.snippet) detail += `<span class="evi-snippet">"${esc(src.snippet)}"</span>`;
+                } else if (src.type === 'graph') {
+                    detail = esc(src.pathText || '');
+                    if (src.faultName) detail += `<br>故障: ${esc(src.faultName)}`;
+                    if (src.solutionTitle) detail += ` → 方案: ${esc(src.solutionTitle)}`;
+                }
+
+                return `<div class="evidence-item">
+                    <span class="evi-type evi-${src.type || ''}">${label}</span>
+                    <div class="evi-detail">${detail}</div>
+                </div>`;
+            }).join('');
+
+            return `<div class="evidence-panel">
+                <div class="evidence-title" onclick="toggleEvidence(this)">
+                    &#128270; 参考依据 <span class="count">(${sources.length} 条)</span>
+                </div>
+                <div class="evidence-list">${items}</div>
+            </div>`;
+        }
+
+        function toggleStep(el) { el.nextElementSibling.classList.toggle('open'); }
+        function toggleEvidence(el) { el.nextElementSibling.classList.toggle('hidden'); }
+        function esc(s) { if (!s) return ''; return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+    </script>
+</body>
+</html>

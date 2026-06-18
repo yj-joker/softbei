@@ -1,0 +1,15 @@
+{
+  "case_count": 50,
+  "answerable_case_count": 46,
+  "top_k": 5,
+  "recall_at_1": 0.5,
+  "recall_at_3": 0.586957,
+  "recall_at_5": 0.630435,
+  "mrr": 0.548033,
+    "diagnosis": 2.2,
+    "inspection":10.11,
+    "procedure":9.11,
+    "safety":6.9,
+    "spec":1.8,
+    "torque":1.5
+}

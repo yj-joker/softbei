@@ -1,0 +1,70 @@
+{
+  "case_count": 150,
+  "answerable_case_count": 144,
+  "no_answer_case_count": 6,
+  "answer_accuracy": 0.933333,
+  "answerable_accuracy": 0.930556,
+  "avg_score": 0.946667,
+  "answerable_avg_score": 0.944444,
+  "grounded_rate": 0.92,
+  "hallucination_rate": 0.046667,
+  "no_answer_correct_rate": 1.0,
+  "by_question_type": {
+    "diagnosis": {
+      "case_count": 6,
+      "answer_accuracy": 1.0,
+      "avg_score": 1.0,
+      "grounded_rate": 1.0,
+      "hallucination_rate": 0.0
+    },
+    "image": {
+      "case_count": 23,
+      "answer_accuracy": 0.869565,
+      "avg_score": 0.913043,
+      "grounded_rate": 0.826087,
+      "hallucination_rate": 0.043478
+    },
+    "inspection": {
+      "case_count": 27,
+      "answer_accuracy": 0.925926,
+      "avg_score": 0.925926,
+      "grounded_rate": 0.925926,
+      "hallucination_rate": 0.074074
+    },
+    "no_answer": {
+      "case_count": 6,
+      "answer_accuracy": 1.0,
+      "avg_score": 1.0,
+      "grounded_rate": 1.0,
+      "hallucination_rate": 0.0
+    },
+    "procedure": {
+      "case_count": 33,
+      "answer_accuracy": 0.909091,
+      "avg_score": 0.924242,
+      "grounded_rate": 0.909091,
+      "hallucination_rate": 0.090909
+    },
+    "safety": {
+      "case_count": 21,
+      "answer_accuracy": 0.952381,
+      "avg_score": 0.952381,
+      "grounded_rate": 0.904762,
+      "hallucination_rate": 0.0
+    },
+    "spec": {
+      "case_count": 19,
+      "answer_accuracy": 0.947368,
+      "avg_score": 0.973684,
+      "grounded_rate": 0.947368,
+      "hallucination_rate": 0.052632
+    },
+    "torque": {
+      "case_count": 15,
+      "answer_accuracy": 1.0,
+      "avg_score": 1.0,
+      "grounded_rate": 1.0,
+      "hallucination_rate": 0.0
+    }
+  }
+}

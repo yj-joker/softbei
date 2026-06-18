@@ -1,0 +1,643 @@
+﻿id,question,question_type,difficulty,answerable,golden_answer,required_facts,optional_facts,golden_chunk_ids,retrieved_chunk_ids,retrieval_hit_top5,retrieval_rank,generated_answer,matched_required_facts,missing_required_facts,matched_optional_facts,missing_optional_facts,answer_score,answer_pass,grounded_pass,hallucination,failure_type,judge_reason,score_source,latency_ms,retrieval_ms,llm_ms,tools_used,error,top_k
+case_001,火花塞间隙标准是多少？,spec,easy,True,火花塞间隙标准值是 0.7 到 0.9 mm。,火花塞间隙标准值是 0.7 到 0.9 mm。,,eee9bf78:02:txt:0001,eee9bf78:02:txt:0001;eee9bf78:12:txt:0016;eee9bf78:12:txt:0002;eee9bf78:12:txt:0014;eee9bf78:12:txt:0020;eee9bf78:12:txt:0015;eee9bf78:12:txt:0017;eee9bf78:12:txt:0001;eee9bf78:12:txt:0003;eee9bf78:02:txt:0003;eee9bf78:02:txt:0008,True,1,0.7 ～ 0.9 mm,火花塞间隙标准值是 0.7 到 0.9 mm。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1971,82,1887,knowledge_retrieval,,5
+case_002,火花塞安装时拧紧力矩是多少？,torque,easy,True,火花塞可使用定扭扳手拧紧至 20±2 N·m。,火花塞可使用定扭扳手拧紧至 20±2 N·m。,,eee9bf78:02:txt:0002,eee9bf78:02:txt:0002;eee9bf78:02:txt:0009;eee9bf78:06:txt:0001;eee9bf78:02:txt:0006;eee9bf78:02:txt:0003;eee9bf78:02:img:0000;eee9bf78:02:txt:0008;eee9bf78:02:txt:0007;eee9bf78:02:srw:0003;eee9bf78:02:srw:0006;eee9bf78:02:srw:0008,True,1,"拧紧对象：火花塞  
+扭矩值：20 ± 2 N·m  
+是否分次：是（先顺时针预紧3圈，再转动1/4圈；或直接用定扭扳手拧紧至规定扭矩）  
+顺序或注意事项：安装前确保火花塞孔及周围无灰尘；使用火花塞专用套筒（16 mm）操作。",火花塞可使用定扭扳手拧紧至 20±2 N·m。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1814,60,1753,knowledge_retrieval,,5
+case_003,安装火花塞前需要先预紧几圈？,procedure,easy,True,将火花塞放入气缸头后顺时针转动 3 圈预紧，然后再转动 1/4 圈。,顺时针转动 3 圈;1/4 圈,火花塞放入气缸头,eee9bf78:02:txt:0002,eee9bf78:02:txt:0009;eee9bf78:02:txt:0002;eee9bf78:02:txt:0001;eee9bf78:02:txt:0003;eee9bf78:02:txt:0000;eee9bf78:02:img:0000;eee9bf78:02:txt:0008;eee9bf78:02:txt:0007;eee9bf78:02:srw:0003;eee9bf78:02:srw:0006;eee9bf78:02:srw:0008,True,2,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+将火花塞放入气缸头，套上火花塞专用套筒，顺时针转动3圈预紧，然后再转动1/4圈，或使用定扭扳手将其拧紧至20 ± 2 N·m。  
+
+安全注意：  
+在拆卸火花塞之前要确保火花塞孔及其周围没有灰尘。",顺时针转动 3 圈;1/4 圈,,火花塞放入气缸头,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1749,28,1720,knowledge_retrieval,,5
+case_004,拆卸火花塞前要注意什么？,safety,easy,True,拆卸火花塞前要确保火花塞孔及其周围没有灰尘。,拆卸火花塞前要确保火花塞孔及其周围没有灰尘。,,eee9bf78:02:txt:0006,eee9bf78:02:txt:0007;eee9bf78:02:txt:0006;eee9bf78:01:txt:0012;eee9bf78:01:txt:0026;eee9bf78:01:txt:0027;eee9bf78:01:txt:0011;eee9bf78:01:txt:0025;eee9bf78:02:txt:0003;eee9bf78:02:txt:0008;eee9bf78:02:srw:0003;eee9bf78:02:srw:0006,True,2,"注意事项：  
+拆卸火花塞前要确保火花塞孔及其周围没有灰尘。  
+
+原因或风险：  
+灰尘可能在拆卸过程中落入气缸，导致气缸划伤、活塞损坏或燃烧异常等严重故障。  
+
+正确做法：  
+清洁火花塞孔及周边区域，确保无灰尘、油污和杂物后再进行拆卸。",拆卸火花塞前要确保火花塞孔及其周围没有灰尘。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1586,27,1558,knowledge_retrieval,,5
+case_005,压缩压力的标准范围是多少？,spec,medium,True,压缩压力标准范围为 1300 到 1900 kPa（1500 r/min）或 500 到 900 kPa（540 r/min）。,压缩压力标准范围为 1300 到 1900 kPa（1500 r/min）或 500 到 900 kPa（540 r/min）。,,eee9bf78:02:txt:0008,eee9bf78:02:txt:0008;eee9bf78:02:txt:0004;eee9bf78:02:img:0000;eee9bf78:02:txt:0001;eee9bf78:12:tbl:0002;eee9bf78:02:txt:0003;eee9bf78:02:txt:0009;eee9bf78:02:txt:0007;eee9bf78:02:srw:0003;eee9bf78:02:srw:0006;eee9bf78:02:srw:0008,True,1,1300～1900 kPa（转速：1500 r/min）；500～900 kPa（转速：540 r/min）,压缩压力标准范围为 1300 到 1900 kPa（1500 r/min）或 500 到 900 kPa（540 r/min）。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1104,62,1041,knowledge_retrieval,,5
+case_006,压缩压力高于最大值时应检查哪里？,diagnosis,medium,True,应检查气缸头、气门表面和活塞顶部是否有积碳，如有则清除积碳。,应检查气缸头、气门表面和活塞顶部是否有积碳;如有则清除积碳。,,eee9bf78:02:txt:0008,eee9bf78:02:txt:0008;eee9bf78:02:img:0000;eee9bf78:02:txt:0004;eee9bf78:10:txt:0000;eee9bf78:24:txt:0004;eee9bf78:02:txt:0009;eee9bf78:02:txt:0000;eee9bf78:02:txt:0003;eee9bf78:02:txt:0007;eee9bf78:02:srw:0003;eee9bf78:02:srw:0006,True,1,检查气缸头、气门表面和活塞顶部是否有积碳。如有，清除积碳。,应检查气缸头、气门表面和活塞顶部是否有积碳;如有则清除积碳。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,838,44,793,knowledge_retrieval,,5
+case_007,压缩压力低于最小值时怎么判断是不是活塞环问题？,diagnosis,hard,True,往火花塞孔倒一勺机油并再次测量；如果压力比加机油前高，说明活塞环磨损或损坏。,倒机油;再次测量;压力升高;活塞环磨损或损坏,,eee9bf78:02:txt:0008,eee9bf78:02:txt:0008;eee9bf78:02:img:0000;eee9bf78:15:txt:0012;eee9bf78:15:txt:0010;eee9bf78:17:txt:0007;eee9bf78:02:txt:0009;eee9bf78:02:txt:0000;eee9bf78:02:txt:0003;eee9bf78:02:txt:0007;eee9bf78:02:srw:0003;eee9bf78:02:srw:0006,True,1,往火花塞孔倒一勺机油，再次测量压缩压力；若压力比加机油前高，则是活塞环磨损或损坏。,倒机油;再次测量;压力升高;活塞环磨损或损坏,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,926,65,860,knowledge_retrieval,,5
+case_008,起动电机较难取下时怎么办？,procedure,easy,True,如果起动电机较难取下，可用橡胶锤轻轻敲击起动电机辅助拆卸。,橡胶锤轻轻敲击起动电机辅助拆卸,,eee9bf78:03:txt:0011,eee9bf78:03:txt:0011;eee9bf78:04:txt:0001;eee9bf78:03:txt:0008;eee9bf78:03:txt:0005;eee9bf78:03:txt:0002;eee9bf78:03:txt:0010;eee9bf78:03:tbl:0000;eee9bf78:04:txt:0000;eee9bf78:04:txt:0002;eee9bf78:03:txt:0007;eee9bf78:03:txt:0009,True,1,"前置条件：  
+已拆下固定起动电机的2个M6×30六角法兰面螺栓，且已断开正极线路。  
+
+操作步骤：  
+若较难取下，可用橡胶锤轻轻敲击起动电机辅助拆卸。  
+
+安全注意：  
+资料中未找到明确依据。",橡胶锤轻轻敲击起动电机辅助拆卸,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1486,56,1429,knowledge_retrieval,,5
+case_009,起动电机轴转动不灵活时怎么处理？,inspection,easy,True,检查起动电机轴是否转动灵活；若不灵活，应更换起动电机。,更换起动电机,检查起动电机轴是否转动灵活,eee9bf78:04:txt:0001,eee9bf78:04:txt:0001;eee9bf78:03:txt:0008;eee9bf78:03:txt:0011;eee9bf78:04:txt:0003;eee9bf78:03:txt:0005;eee9bf78:04:txt:0000;eee9bf78:04:txt:0002;eee9bf78:03:txt:0007;eee9bf78:03:txt:0010;eee9bf78:03:tbl:0000;eee9bf78:04:txt:0007,True,1,"检查对象：起动电机轴  
+正常标准：转动灵活  
+异常表现：转动不灵活  
+处理方式：更换起动电机",更换起动电机,,检查起动电机轴是否转动灵活,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1026,59,967,knowledge_retrieval,,5
+case_010,安装起动电机本体时要对齐什么？,procedure,easy,True,起动电机头部要对准左盖孔，推入后两个螺栓孔需与箱体螺纹孔对齐。,头部对准左盖孔;两个螺栓孔与箱体螺纹孔对齐,,eee9bf78:04:txt:0003,eee9bf78:04:txt:0003;eee9bf78:04:txt:0001;eee9bf78:04:txt:0007;eee9bf78:04:txt:0010;eee9bf78:04:txt:0000;eee9bf78:04:txt:0002;eee9bf78:04:txt:0004;eee9bf78:04:txt:0006;eee9bf78:04:txt:0008;eee9bf78:04:img:0000;eee9bf78:04:srw:0001,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+将起动电机头部对准左盖孔，适当摇晃并缓慢推入，直至起动电机的两个螺栓孔与箱体上的螺纹孔对齐。  
+
+安全注意：  
+资料中未找到明确依据。",头部对准左盖孔;两个螺栓孔与箱体螺纹孔对齐,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1405,27,1377,knowledge_retrieval,,5
+case_011,拆卸发动机时机油从哪些位置排放？,procedure,easy,True,需要拆下发动机左曲轴箱上的放油螺栓和车架上的放油螺栓，将机油排出。,左曲轴箱上的放油螺栓;车架上的放油螺栓,,eee9bf78:05:txt:0000,eee9bf78:05:txt:0000;eee9bf78:05:txt:0001;eee9bf78:05:txt:0002;eee9bf78:06:txt:0002;eee9bf78:06:txt:0001;eee9bf78:05:txt:0003;eee9bf78:05:srw:0000;eee9bf78:05:srw:0001;eee9bf78:05:srw:0003;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+拆下发动机左曲轴箱上的放油螺栓，将发动机内部机油全部放出。  
+拆下车架上的放油螺栓，将车架内部机油全部放出。  
+
+安全注意：  
+资料中未找到明确依据。",左曲轴箱上的放油螺栓;车架上的放油螺栓,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1555,28,1526,knowledge_retrieval,,5
+case_012,拆卸发动机时如何排放冷却液？,procedure,easy,True,拆下水泵盖上的放水螺栓让冷却液流出，水流变小时打开右水箱盖排出剩余冷却液。,拆下水泵盖上的放水螺栓让冷却液流出;水流变小时打开右水箱盖排出剩余冷却液。,,eee9bf78:05:txt:0001,eee9bf78:05:txt:0001;eee9bf78:05:txt:0000;eee9bf78:05:txt:0002;eee9bf78:05:txt:0003;eee9bf78:05:img:0002;eee9bf78:05:tbl:0000;eee9bf78:05:img:0001;eee9bf78:05:img:0003;eee9bf78:05:srw:0000;eee9bf78:05:srw:0001;eee9bf78:05:srw:0003,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+1. 拆下水泵盖上的放水螺栓，让冷却液自动流出。  
+2. 当水流变小时，打开右水箱盖，使发动机内剩余冷却液完全排出。  
+
+安全注意：  
+资料中未找到明确依据。",拆下水泵盖上的放水螺栓让冷却液流出;水流变小时打开右水箱盖排出剩余冷却液。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1776,29,1747,knowledge_retrieval,,5
+case_013,安装发动机时放油螺栓和放水螺栓的扭矩是多少？,torque,easy,True,放油螺栓拧紧力矩为 25±4 N·m，放水螺栓拧紧力矩为 12±1.5 N·m。,放油螺栓拧紧力矩为 25±4 N·m;放水螺栓拧紧力矩为 12±1.5 N·m。,,eee9bf78:06:txt:0001,eee9bf78:06:txt:0001;eee9bf78:06:txt:0000;eee9bf78:06:tbl:0012;eee9bf78:06:txt:0002;eee9bf78:06:img:0000;eee9bf78:06:tbl:0000;eee9bf78:06:tbl:0011;eee9bf78:06:tbl:0013;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007,True,1,"拧紧对象：放油螺栓、放水螺栓  
+扭矩值：放油螺栓：25 ± 4 N·m；放水螺栓：12 ± 1.5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：资料中未找到明确依据",放油螺栓拧紧力矩为 25±4 N·m;放水螺栓拧紧力矩为 12±1.5 N·m。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1475,35,1439,knowledge_retrieval,,5
+case_014,发动机加注机油量是多少？,spec,easy,True,未更换机油精滤芯时加入 1600 mL，已更换机油精滤芯时加入 1700 mL。,未更换机油精滤芯时加入 1600 mL;已更换机油精滤芯时加入 1700 mL。,,eee9bf78:06:txt:0002,eee9bf78:06:txt:0002;eee9bf78:06:txt:0003;eee9bf78:05:txt:0000;eee9bf78:06:txt:0001;eee9bf78:21:txt:0003;eee9bf78:05:txt:0001;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000;eee9bf78:06:srw:0004,True,1,1600 mL（未更换机油精滤芯）或 1700 mL（已更换机油精滤芯）,未更换机油精滤芯时加入 1600 mL;已更换机油精滤芯时加入 1700 mL。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,880,60,819,knowledge_retrieval,,5
+case_015,发动机机油规格要求是什么？,spec,easy,True,机油粘度要求为 SAE 10W-40 或 SAE 10W-50，质量等级为 API SM 级或以上。,机油粘度要求为 SAE 10W-40 或 SAE 10W-50;质量等级为 API SM 级或以上。,,eee9bf78:06:txt:0002,eee9bf78:06:txt:0002;eee9bf78:06:txt:0001;eee9bf78:21:txt:0009;eee9bf78:21:txt:0011;eee9bf78:21:txt:0012;eee9bf78:21:txt:0008;eee9bf78:21:txt:0010;eee9bf78:21:txt:0013;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007,True,1,粘度：SAE 10W-40 或 SAE 10W-50；质量等级：API SM 级或以上。,机油粘度要求为 SAE 10W-40 或 SAE 10W-50;质量等级为 API SM 级或以上。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1090,66,1023,knowledge_retrieval,,5
+case_016,加注冷却液后发动机需要运行多久？,procedure,easy,True,右水箱加满冷却液后，启动发动机运行 8 到 10 秒后关机，再补液至满。,8 到 10 秒,补液至满,eee9bf78:06:txt:0003,eee9bf78:06:txt:0003;eee9bf78:06:txt:0002;eee9bf78:05:txt:0001;eee9bf78:06:txt:0000;eee9bf78:06:txt:0001;eee9bf78:05:txt:0000;eee9bf78:05:txt:0002;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+启动发动机运行 8 ～ 10 秒后关机。  
+再次向右水箱补液至满。  
+向副水箱加注冷却液，使液面位于 F 线与 L 线之间。  
+
+安全注意：  
+资料中未找到明确依据。",8 到 10 秒,,补液至满,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1658,56,1602,knowledge_retrieval,,5
+case_017,拆卸凸轮轴时如何对齐正时标记？,procedure,medium,True,逆时针转动曲轴，使磁电机转子上 T 标记前的刻线与 M14×1.5 螺塞孔缺口中线对齐，凸轮轴正时链轮刻线应与气缸头装配面平齐。,逆时针转动曲轴;使磁电机转子上 T 标记前的刻线与 M14×1.5 螺塞孔缺口中线对齐;凸轮轴正时链轮刻线应与气缸头装配面平齐。,,eee9bf78:08:txt:0006,eee9bf78:08:txt:0006;eee9bf78:08:img:0000;eee9bf78:08:img:0001;eee9bf78:08:txt:0012;eee9bf78:08:txt:0000;eee9bf78:08:txt:0005;eee9bf78:08:txt:0007;eee9bf78:08:txt:0013;eee9bf78:08:txt:0001;eee9bf78:08:txt:0002;eee9bf78:08:txt:0003,True,1,"前置条件：  
+无明确前置条件说明（证据中未提及必须满足的前置状态，如发动机温度、位置等）。  
+
+操作步骤：  
+逆时针转动曲轴，使磁电机转子上 “T” 标记前的刻线与 M14×1.5 螺塞孔缺口的中线对齐。  
+此时，进、排气凸轮轴正时链轮上的刻线应与气缸头装配面平齐。  
+
+安全注意：  
+资料中未找到明确依据。",逆时针转动曲轴;使磁电机转子上 T 标记前的刻线与 M14×1.5 螺塞孔缺口中线对齐;凸轮轴正时链轮刻线应与气缸头装配面平齐。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2153,35,2117,knowledge_retrieval,,5
+case_018,凸轮轴座盖螺栓为什么要对角均匀拧松？,safety,easy,True,气缸头盖螺栓必须对角均匀拧松，以防止变形。,防止变形,对角均匀拧松,eee9bf78:08:txt:0004,eee9bf78:08:txt:0012;eee9bf78:08:txt:0004;eee9bf78:08:img:0000;eee9bf78:08:txt:0002;eee9bf78:08:txt:0001;eee9bf78:08:txt:0011;eee9bf78:08:txt:0013;eee9bf78:08:txt:0003;eee9bf78:08:txt:0005;eee9bf78:08:img:0001;eee9bf78:08:txt:0000,True,2,"注意事项：  
+凸轮轴座盖螺栓必须对角均匀拧松。  
+
+原因或风险：  
+资料中未找到明确依据说明凸轮轴座盖螺栓对角拧松的具体原因或风险（手册仅在步骤中要求操作，未解释原理；同类表述“气缸头盖螺栓对角拧松”明确注明“防止变形”，但该说明未直接关联至凸轮轴座盖螺栓）。  
+
+正确做法：  
+对角均匀拧松凸轮轴座盖螺栓。",防止变形,,对角均匀拧松,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2826,21,2804,knowledge_retrieval,,5
+case_019,检查凸轮轴时哪些部位异常需要更换？,inspection,medium,True,检查进气与排气凸轮轴的轴颈和凸轮基圆表面，若存在磨损、腐蚀或划伤，应更换相应凸轮轴。,轴颈;凸轮基圆表面;磨损、腐蚀或划伤;更换相应凸轮轴,,eee9bf78:09:txt:0000,eee9bf78:09:txt:0000;eee9bf78:09:txt:0004;eee9bf78:09:txt:0002;eee9bf78:09:txt:0006;eee9bf78:08:txt:0000;eee9bf78:09:txt:0001;eee9bf78:09:txt:0003;eee9bf78:09:txt:0005;eee9bf78:09:txt:0007;eee9bf78:08:txt:0001;eee9bf78:09:txt:0008,True,1,"检查对象：轴颈、凸轮基圆表面  
+正常标准：资料中未找到明确依据  
+异常表现：磨损、腐蚀或划伤  
+处理方式：更换相应凸轮轴",轴颈;凸轮基圆表面;磨损、腐蚀或划伤;更换相应凸轮轴,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1334,28,1305,knowledge_retrieval,,5
+case_020,安装凸轮轴时先装进气还是排气？,procedure,easy,True,安装顺序为先安装排气凸轮轴，再安装进气凸轮轴。,安装顺序为先安装排气凸轮轴;再安装进气凸轮轴。,,eee9bf78:09:txt:0002,eee9bf78:09:txt:0002;eee9bf78:09:txt:0004;eee9bf78:09:txt:0000;eee9bf78:09:txt:0006;eee9bf78:08:txt:0006;eee9bf78:09:txt:0001;eee9bf78:09:txt:0003;eee9bf78:09:txt:0005;eee9bf78:09:txt:0007;eee9bf78:08:txt:0005;eee9bf78:08:txt:0007,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+先安装排气凸轮轴，再安装进气凸轮轴。  
+
+安全注意：  
+座盖定位销必须放回气缸头对应孔位，不得错放。",安装顺序为先安装排气凸轮轴;再安装进气凸轮轴。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1247,28,1218,knowledge_retrieval,,5
+case_021,涨紧器顶销螺栓应拧紧到多少扭矩？,torque,easy,True,M6×10 顶销螺栓带铜垫片，拧紧至 12 N·m。,12 N·m,M6×10 顶销螺栓;铜垫片,eee9bf78:10:txt:0002;eee9bf78:07:tbl:0000;eee9bf78:07:tbl:0004,eee9bf78:03:tbl:0001;eee9bf78:07:tbl:0002;eee9bf78:07:tbl:0000;eee9bf78:10:txt:0000;eee9bf78:10:txt:0002;eee9bf78:03:tbl:0000;eee9bf78:03:tbl:0002;eee9bf78:07:tbl:0001;eee9bf78:07:tbl:0003;eee9bf78:07:txt:0000;eee9bf78:10:txt:0001,True,3,"拧紧对象：M6×10 顶销螺栓（环保彩锌）  
+扭矩值：12 ± 1.5 N·m  
+是否分次：资料中未明确说明需分次拧紧  
+顺序或注意事项：需带铜垫片；拧紧前应先释放涨紧器自锁、使顶杆自动弹出并顶住涨紧条",12 N·m,,M6×10 顶销螺栓;铜垫片,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2352,76,2275,knowledge_retrieval,,5
+case_022,测量气门间隙时塞尺插在哪里？,procedure,easy,True,将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。,将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。,,eee9bf78:11:txt:0001,eee9bf78:11:txt:0001;eee9bf78:11:img:0000;eee9bf78:11:img:0001;eee9bf78:11:txt:0000;eee9bf78:12:txt:0002;eee9bf78:12:txt:0001;eee9bf78:12:txt:0003;eee9bf78:11:srw:0000;eee9bf78:11:srw:0001;eee9bf78:12:txt:0000;eee9bf78:12:txt:0004,True,1,"前置条件：  
+拆下气缸头盖。  
+
+操作步骤：  
+将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。  
+
+安全注意：  
+必须测量基圆位置，非凸轮升程段。",将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1376,66,1310,knowledge_retrieval,,5
+case_023,测量气门间隙时为什么要测基圆位置？,safety,easy,True,必须测量基圆位置，不能测凸轮升程段。,基圆位置;非凸轮升程段,,eee9bf78:12:txt:0001;eee9bf78:12:txt:0021,eee9bf78:11:txt:0001;eee9bf78:12:txt:0020;eee9bf78:12:txt:0010;eee9bf78:12:txt:0016;eee9bf78:12:txt:0008;eee9bf78:11:txt:0000;eee9bf78:11:img:0000;eee9bf78:12:txt:0019;eee9bf78:12:txt:0021;eee9bf78:12:txt:0009;eee9bf78:12:txt:0011,False,9,"注意事项：  
+必须在凸轮轴基圆位置测量气门间隙，严禁在凸轮升程段测量。  
+
+原因或风险：  
+在凸轮升程段测量会导致气门处于开启状态，塞尺无法准确插入或读数失真，造成气门间隙误判，进而引发气门关闭不严、烧蚀、发动机异响甚至机械损坏等严重故障。  
+
+正确做法：  
+将塞尺插入凸轮轴基圆与滑动挺柱之间进行测量（见第14页图示及文字说明）。",基圆位置;非凸轮升程段,,,,1.0,True,False,False,retrieval_miss_answer_correct,必答事实全部命中,required_facts,2969,54,2914,knowledge_retrieval,,5
+case_024,气缸头 M10 螺母分几次拧紧？,torque,medium,True,M10 螺母使用定扭扳手分三次对角拧紧，第一次 25 N·m，第二次 45 N·m，第三次 60 N·m。,三次,25 N·m;45 N·m;60 N·m;对角拧紧,eee9bf78:12:txt:0018,eee9bf78:12:txt:0018;eee9bf78:10:img:0000;eee9bf78:07:txt:0000;eee9bf78:12:txt:0020;eee9bf78:12:txt:0014;eee9bf78:12:txt:0017;eee9bf78:12:txt:0019;eee9bf78:10:txt:0005;eee9bf78:10:img:0001;eee9bf78:10:txt:0000;eee9bf78:10:txt:0001,True,1,"拧紧对象：气缸头 M10 螺母  
+扭矩值：第一次 25 N·m，第二次 45 N·m，第三次 60 N·m  
+是否分次：是，分三次  
+顺序或注意事项：对角拧紧；拧紧前需在螺母螺纹处涂抹润滑油",三次,,25 N·m;45 N·m;60 N·m;对角拧紧,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1604,61,1542,knowledge_retrieval,,5
+case_025,拆卸气门时四组气门组件要注意什么？,safety,easy,True,4 组气门组件必须分别标记，确保装回原位。,4 组气门组件必须分别标记;确保装回原位。,,eee9bf78:13:txt:0003,eee9bf78:13:img:0000;eee9bf78:13:txt:0003;eee9bf78:13:txt:0000;eee9bf78:13:txt:0002;eee9bf78:13:txt:0001;eee9bf78:13:txt:0005;eee9bf78:13:img:0001;eee9bf78:13:txt:0004;eee9bf78:13:srw:0001;eee9bf78:13:srw:0002;eee9bf78:13:srw:0003,True,2,"注意事项：4组气门组件必须分别标记。  
+原因或风险：未标记可能导致气门组件混装，影响气门与座圈、导管的配合精度，造成密封不良、异响或早期磨损。  
+正确做法：拆卸时对每组气门（含气门、弹簧座、油封、内外弹簧、弹簧上圈、锁夹等）进行唯一标识，确保安装时原位装回。",4 组气门组件必须分别标记;确保装回原位。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2166,36,2130,knowledge_retrieval,,5
+case_026,气门弹簧安装方向有什么要求？,safety,easy,True,气门弹簧间距较密的一端（标记为 b 和 b′）必须朝下安装。,气门弹簧间距较密的一端（标记为 b 和 b′）必须朝下安装。,,eee9bf78:14:txt:0003,eee9bf78:14:txt:0003;eee9bf78:13:txt:0003;eee9bf78:08:txt:0003;eee9bf78:13:txt:0001;eee9bf78:13:txt:0000;eee9bf78:14:txt:0002;eee9bf78:14:tbl:0000;eee9bf78:13:txt:0002;eee9bf78:13:txt:0004;eee9bf78:08:txt:0002;eee9bf78:08:txt:0004,True,1,"注意事项：气门弹簧间距较密的一端（标记为“b”和“b′”）必须朝下安装。  
+原因或风险：方向装反可能导致弹簧受力异常、共振加剧、疲劳断裂，进而引发气门撞击活塞等严重机械故障。  
+正确做法：安装时确保气门弹簧密圈端（标有“b”或“b′”）朝向气缸盖下方，即朝向气门弹簧座一侧。",气门弹簧间距较密的一端（标记为 b 和 b′）必须朝下安装。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2577,64,2512,knowledge_retrieval,,5
+case_027,检查气缸与活塞时发现明显刮痕怎么办？,inspection,easy,True,检查气缸内壁与活塞裙部，若有明显刮痕或损伤且手触明显粗糙，必须更换有缺陷的部件。,更换有缺陷的部件,明显刮痕;手触明显粗糙,eee9bf78:15:txt:0010,eee9bf78:15:txt:0010;eee9bf78:15:txt:0008;eee9bf78:15:txt:0012;eee9bf78:15:txt:0000;eee9bf78:15:txt:0002;eee9bf78:15:txt:0009;eee9bf78:15:txt:0011;eee9bf78:15:txt:0007;eee9bf78:15:tbl:0000;eee9bf78:15:txt:0001;eee9bf78:15:txt:0005,True,1,"检查对象：气缸内壁与活塞裙部  
+正常标准：表面光滑，无刮痕或损伤（用手触摸无明显粗糙感）  
+异常表现：有明显刮痕或损伤（用手触摸明显粗糙）  
+处理方式：必须更换有缺陷的部件",更换有缺陷的部件,,明显刮痕;手触明显粗糙,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1425,60,1364,knowledge_retrieval,,5
+case_028,三道活塞环被卡住时怎么处理？,inspection,easy,True,如果三道活塞环被卡住，应更换活塞及活塞环。,如果三道活塞环被卡住;应更换活塞及活塞环。,,eee9bf78:15:txt:0012,eee9bf78:15:txt:0012;eee9bf78:17:txt:0007;eee9bf78:17:txt:0013;eee9bf78:17:txt:0015;eee9bf78:17:txt:0002;eee9bf78:15:txt:0011;eee9bf78:15:tbl:0000;eee9bf78:17:txt:0006;eee9bf78:17:txt:0012;eee9bf78:17:txt:0014;eee9bf78:15:txt:0001,True,1,"检查对象：三道活塞环  
+正常标准：资料中未找到明确依据  
+异常表现：被卡住  
+处理方式：更换活塞及活塞环",如果三道活塞环被卡住;应更换活塞及活塞环。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1300,25,1274,knowledge_retrieval,,5
+case_029,活塞与气缸组别装配有什么要求？,safety,medium,True,活塞与气缸均分为 A、B、C、D 四组，组装时必须使用相同组别的活塞与气缸。,活塞与气缸均分为 A、B、C、D 四组;组装时必须使用相同组别的活塞与气缸。,,eee9bf78:16:txt:0002,eee9bf78:16:txt:0002;eee9bf78:16:img:0002;eee9bf78:16:img:0003;eee9bf78:16:img:0004;eee9bf78:16:txt:0000;eee9bf78:16:txt:0001;eee9bf78:16:img:0000;eee9bf78:16:img:0001;eee9bf78:16:srw:0000,True,1,"注意事项：  
+活塞与气缸均分为 A、B、C、D 四组；组装时必须使用相同组别的活塞与气缸（如 A 组活塞只能装入 A 组气缸）；若更换活塞，新活塞组别必须与原气缸组别一致。  
+
+原因或风险：  
+组别不匹配会导致活塞与气缸配合间隙异常，引发拉缸、异响、密封不良、动力下降或发动机早期损坏等严重故障。  
+
+正确做法：  
+安装前核对活塞和气缸的组别标记（A/B/C/D），确保二者组别完全一致；更换活塞时，必须选用与原气缸同组别的新活塞。",活塞与气缸均分为 A、B、C、D 四组;组装时必须使用相同组别的活塞与气缸。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,3944,30,3913,knowledge_retrieval,,5
+case_030,活塞环开口角度有什么要求？,spec,easy,True,各活塞环开口位置不得重叠，任意两环开口之间应错开 120°。,各活塞环开口位置不得重叠;任意两环开口之间应错开 120°。,,eee9bf78:17:txt:0000,eee9bf78:17:txt:0018;eee9bf78:17:txt:0001;eee9bf78:17:img:0000;eee9bf78:17:txt:0011;eee9bf78:17:txt:0015;eee9bf78:17:txt:0017;eee9bf78:17:txt:0019;eee9bf78:17:txt:0000;eee9bf78:17:txt:0002;eee9bf78:17:txt:0005;eee9bf78:17:txt:0007,False,8,任意两环开口之间应错开120°。,任意两环开口之间应错开 120°。,各活塞环开口位置不得重叠,,,0.5,False,False,True,retrieval_miss,必答事实部分命中：1/2,required_facts,659,92,566,knowledge_retrieval,,5
+case_031,油环组合应该怎样安装？,procedure,medium,True,安装油环组合时先装铜质衬环，再装两道刮片环；铜质衬环接口不能重叠，两道刮片环开口应相互错开 120° 到 180°。,先装铜质衬环;再装两道刮片环;接口不得重叠;开口错开 120°;180°,,eee9bf78:17:txt:0013,eee9bf78:17:txt:0013;eee9bf78:17:txt:0015;eee9bf78:17:txt:0002;eee9bf78:17:txt:0011;eee9bf78:17:txt:0018;eee9bf78:17:txt:0012;eee9bf78:17:txt:0014;eee9bf78:17:txt:0016;eee9bf78:17:txt:0001;eee9bf78:17:txt:0003;eee9bf78:17:txt:0010,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+先装铜质衬环，再装两道刮片环；  
+铜质衬环接口处不能重叠；  
+铜质衬环位于两道刮片环之间；  
+两道刮片环开口应相互错开120°～180°。  
+
+安全注意：  
+各活塞环开口位置不得重叠；  
+任意两环开口之间应错开120°。",先装铜质衬环;再装两道刮片环;接口不得重叠;开口错开 120°;180°,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1985,32,1952,knowledge_retrieval,,5
+case_032,拆卸右曲轴箱盖前发动机应如何放置？,safety,easy,True,取出右曲轴箱盖之前，发动机应倾倒放置，以防水泵轴止推垫圈脱落。,发动机应倾倒放置,防水泵轴止推垫圈脱落,eee9bf78:20:txt:0003;eee9bf78:20:txt:0002,eee9bf78:20:txt:0003;eee9bf78:25:txt:0010;eee9bf78:20:txt:0002;eee9bf78:20:txt:0001;eee9bf78:25:txt:0007;eee9bf78:20:txt:0004;eee9bf78:25:txt:0009;eee9bf78:20:txt:0000;eee9bf78:25:txt:0006;eee9bf78:25:txt:0008;eee9bf78:20:txt:0005,True,1,"注意事项：  
+拆卸右曲轴箱盖前，发动机必须倾倒放置。  
+
+原因或风险：  
+防止水泵轴止推垫圈脱落，避免零件丢失或装配异常，影响水泵及发动机正常运行。  
+
+正确做法：  
+将发动机倾倒放置（即倾斜一定角度，使右侧朝上、便于操作且能防止止推垫圈滑脱），再进行右曲轴箱盖的拆卸。",发动机应倾倒放置,,防水泵轴止推垫圈脱落,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1835,65,1769,knowledge_retrieval,,5
+case_033,检查曲轴油封时什么情况需要更换？,inspection,easy,True,若曲轴油封损坏或内环硬化，则更换缺陷油封，拆出的油封不能再次使用。,曲轴油封损坏;内环硬化;更换缺陷油封,拆出的油封不能再次使用,eee9bf78:20:txt:0004,eee9bf78:20:txt:0004;eee9bf78:09:txt:0000;eee9bf78:31:txt:0004;eee9bf78:09:txt:0004;eee9bf78:09:txt:0002;eee9bf78:20:txt:0003;eee9bf78:20:txt:0005;eee9bf78:09:txt:0001;eee9bf78:31:txt:0003;eee9bf78:31:txt:0005;eee9bf78:09:txt:0003,True,1,"检查对象：曲轴油封  
+正常标准：资料中未找到明确依据  
+异常表现：损坏或内环硬化  
+处理方式：更换缺陷的油封（拆出的油封不能再次使用）",曲轴油封损坏;内环硬化;更换缺陷油封,,拆出的油封不能再次使用,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1384,30,1353,knowledge_retrieval,,5
+case_034,机油泵从动齿轮不能自由转动怎么办？,inspection,easy,True,拨动机油泵从动齿轮，若不能自由转动，应更换机油泵。,更换机油泵,从动齿轮不能自由转动,eee9bf78:21:txt:0003,eee9bf78:21:txt:0003;eee9bf78:21:txt:0016;eee9bf78:21:txt:0014;eee9bf78:21:txt:0007;eee9bf78:21:txt:0005;eee9bf78:21:txt:0002;eee9bf78:21:txt:0004;eee9bf78:21:txt:0015;eee9bf78:21:txt:0017;eee9bf78:21:txt:0013;eee9bf78:21:txt:0006,True,1,"检查对象：机油泵从动齿轮  
+正常标准：能自由转动  
+异常表现：不能自由转动  
+处理方式：更换机油泵",更换机油泵,,从动齿轮不能自由转动,,1.0,True,True,False,pass,必答事实全部命中,required_facts,946,23,922,knowledge_retrieval,,5
+case_035,水泵 O 型圈和密封圈异常时怎么处理？,inspection,easy,True,水泵 O 型圈开裂或硬化需要更换，水泵密封圈变形或开裂也需要更换。,水泵 O 型圈开裂或硬化需要更换;水泵密封圈变形或开裂也需要更换。,,eee9bf78:22:txt:0015,eee9bf78:22:txt:0015;eee9bf78:20:txt:0004;eee9bf78:22:txt:0013;eee9bf78:20:txt:0007;eee9bf78:20:txt:0005;eee9bf78:22:txt:0014;eee9bf78:22:txt:0016;eee9bf78:20:txt:0003;eee9bf78:22:txt:0012;eee9bf78:20:txt:0006;eee9bf78:20:txt:0008,True,1,"检查对象：水泵 O 型圈和水泵密封圈  
+正常标准：资料中未找到明确依据  
+异常表现：O 型圈开裂 / 硬化；水泵密封圈变形 / 开裂  
+处理方式：更换",水泵 O 型圈开裂或硬化需要更换;水泵密封圈变形或开裂也需要更换。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1206,49,1157,knowledge_retrieval,,5
+case_036,水泵组件锁紧扭力是多少？,torque,easy,True,水泵组件旋入水泵轴后，锁紧水泵并校验扭力，扭力为 20±1.5 N·m。,20±1.5 N·m,,eee9bf78:22:txt:0019;eee9bf78:20:tbl:0008;eee9bf78:20:tbl:0000,eee9bf78:22:txt:0019;eee9bf78:20:tbl:0008;eee9bf78:22:txt:0025;eee9bf78:22:txt:0021;eee9bf78:22:txt:0017;eee9bf78:22:txt:0018;eee9bf78:22:txt:0020;eee9bf78:20:tbl:0000;eee9bf78:20:tbl:0007;eee9bf78:20:tbl:0009;eee9bf78:22:txt:0024,True,1,"拧紧对象：水泵组件  
+扭矩值：20±1.5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：资料中未找到明确依据",20±1.5 N·m,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1172,66,1105,knowledge_retrieval,,5
+case_037,减速齿轮上下止推垫圈安装时要注意什么？,safety,easy,True,减速齿轮上下各有一个止推垫圈，不能漏装。,减速齿轮上下各有一个止推垫圈;不能漏装。,,eee9bf78:24:txt:0004,eee9bf78:24:txt:0004;eee9bf78:24:txt:0002;eee9bf78:23:tbl:0011;eee9bf78:24:txt:0001;eee9bf78:24:txt:0000;eee9bf78:24:txt:0003;eee9bf78:24:txt:0005;eee9bf78:23:tbl:0000;eee9bf78:23:tbl:0010;eee9bf78:23:tbl:0012;eee9bf78:24:txt:0006,True,1,"注意事项：减速齿轮上下各有一个止推垫圈，不能漏装。  
+原因或风险：漏装会导致轴向定位失效，可能引发齿轮轴向窜动、异常磨损、异响甚至损坏减速机构。  
+正确做法：安装时须确认上下两个止推垫圈均已装入，对应位置无遗漏（依据[evidence 1]和[evidence 2]明确指出“上下各有一个”且“不能漏装”）。",减速齿轮上下各有一个止推垫圈;不能漏装。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2050,21,2029,knowledge_retrieval,,5
+case_038,检查磁电机转子离合器单向器时顺时针转动应是什么状态？,inspection,medium,True,顺时针转动起动大齿时，磁电机转子离合器与起动大齿应无相对滑动，否则需更换相关部件。,无相对滑动,否则更换相关部件,eee9bf78:24:txt:0012,eee9bf78:24:img:0000;eee9bf78:24:txt:0009;eee9bf78:01:txt:0001;eee9bf78:01:txt:0015;eee9bf78:24:txt:0007;eee9bf78:24:txt:0015;eee9bf78:24:txt:0000;eee9bf78:24:txt:0001;eee9bf78:24:txt:0002;eee9bf78:24:txt:0003;eee9bf78:24:txt:0005,False,,"检查对象：磁电机转子离合器单向器  
+正常标准：顺时针转动起动大齿时，磁电机转子离合器与起动大齿应无相对滑动  
+异常表现：顺时针转动时出现相对滑动  
+处理方式：需更换起动大齿和磁电机转子离合器分部件",无相对滑动,,,否则更换相关部件,1.0,True,False,False,retrieval_miss_answer_correct,必答事实全部命中,required_facts,1613,56,1556,knowledge_retrieval,,5
+case_039,检查磁电机转子离合器单向器时逆时针转动应是什么状态？,inspection,medium,True,逆时针转动起动大齿时应能自由转动，否则磁电机转子离合器有故障，必须更换。,能自由转动,否则必须更换,eee9bf78:24:txt:0013,eee9bf78:24:img:0000;eee9bf78:24:txt:0013;eee9bf78:01:txt:0001;eee9bf78:01:txt:0015;eee9bf78:24:txt:0012;eee9bf78:24:txt:0015;eee9bf78:24:txt:0000;eee9bf78:24:txt:0001;eee9bf78:24:txt:0002;eee9bf78:24:txt:0003;eee9bf78:24:txt:0005,True,2,"检查对象：磁电机转子离合器单向器  
+正常标准：逆时针转动时应能自由转动  
+异常表现：逆时针转动时不能自由转动（即卡滞或有阻力）  
+处理方式：磁电机转子离合器有故障，必须更换",能自由转动,,,否则必须更换,1.0,True,True,False,pass,必答事实全部命中,required_facts,2026,53,1972,knowledge_retrieval,,5
+case_040,检查拨叉时哪些部位异常需要更换拨叉？,inspection,easy,True,检查拨叉凸轮从动件和拨叉卡爪，如有弯曲、损坏或裂纹，应更换拨叉。,检查拨叉凸轮从动件和拨叉卡爪;如有弯曲、损坏或裂纹;应更换拨叉。,,eee9bf78:28:txt:0003,eee9bf78:28:txt:0003;eee9bf78:01:txt:0006;eee9bf78:01:txt:0020;eee9bf78:28:txt:0002;eee9bf78:28:txt:0001;eee9bf78:28:img:0000;eee9bf78:01:txt:0005;eee9bf78:01:txt:0007;eee9bf78:01:txt:0019;eee9bf78:01:txt:0021;eee9bf78:28:txt:0000,True,1,"检查对象：拨叉凸轮从动件、拨叉卡爪  
+正常标准：无弯曲、无损坏、无裂纹  
+异常表现：弯曲、损坏或裂纹  
+处理方式：更换拨叉",检查拨叉凸轮从动件和拨叉卡爪;如有弯曲、损坏或裂纹;应更换拨叉。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1412,55,1356,knowledge_retrieval,,5
+case_041,弯曲的拨叉轴能不能校直？,safety,easy,True,不能尝试将弯曲的拨叉轴校直。,不能尝试将弯曲的拨叉轴校直。,,eee9bf78:29:txt:0002;eee9bf78:29:txt:0005;eee9bf78:29:txt:0008;eee9bf78:29:txt:0011,eee9bf78:29:txt:0002;eee9bf78:29:img:0000;eee9bf78:29:txt:0005;eee9bf78:29:txt:0008;eee9bf78:29:txt:0011;eee9bf78:29:txt:0001;eee9bf78:29:txt:0003;eee9bf78:29:txt:0020;eee9bf78:29:txt:0000;eee9bf78:29:txt:0004;eee9bf78:29:txt:0006,True,1,"注意事项：严禁校直弯曲的拨叉轴。  
+原因或风险：校直可能导致拨叉轴强度下降、变形复发或装配后功能失效，引发换档失灵、卡滞甚至传动系统损坏等安全隐患。  
+正确做法：如发现拨叉轴弯曲，必须更换新件。",,不能尝试将弯曲的拨叉轴校直。,,,0.0,False,False,False,answer_mismatch,必答事实未命中,required_facts,1442,17,1424,knowledge_retrieval,,5
+case_042,曲轴轴向跳动标准是多少？,spec,easy,True,曲轴轴向跳动应小于等于 0.03 mm。,曲轴轴向跳动应小于等于 0.03 mm。,,eee9bf78:31:txt:0007;eee9bf78:31:tbl:0001;eee9bf78:31:tbl:0000,eee9bf78:31:tbl:0001;eee9bf78:31:tbl:0000;eee9bf78:31:txt:0007;eee9bf78:31:txt:0009;eee9bf78:31:img:0000;eee9bf78:31:tbl:0002;eee9bf78:31:txt:0006;eee9bf78:31:txt:0008;eee9bf78:31:tbl:0004;eee9bf78:31:img:0001;eee9bf78:31:txt:0000,True,1,≤ 0.03 mm,曲轴轴向跳动应小于等于 0.03 mm。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,672,32,639,knowledge_retrieval,,5
+case_043,连杆大头轴向间隙标准是多少？,spec,easy,True,连杆大头轴向间隙为 0.15 到 0.35 mm，用塞尺测量。,0.15 到 0.35 mm,塞尺测量,eee9bf78:31:txt:0009;eee9bf78:31:tbl:0002;eee9bf78:31:tbl:0000,eee9bf78:31:tbl:0002;eee9bf78:31:tbl:0000;eee9bf78:31:txt:0009;eee9bf78:31:txt:0007;eee9bf78:31:img:0000;eee9bf78:31:tbl:0001;eee9bf78:31:tbl:0003;eee9bf78:31:txt:0008;eee9bf78:31:txt:0006;eee9bf78:31:tbl:0004;eee9bf78:31:img:0001,True,1,0.15 – 0.35 mm,0.15 到 0.35 mm,,,塞尺测量,1.0,True,True,False,pass,必答事实全部命中,required_facts,700,31,669,knowledge_retrieval,,5
+case_044,曲柄销与轴瓦径向间隙标准是多少？,spec,easy,True,曲柄销与轴瓦径向间隙为 0.03 到 0.056 mm。,曲柄销与轴瓦径向间隙为 0.03 到 0.056 mm。,,eee9bf78:32:txt:0000;eee9bf78:31:tbl:0003;eee9bf78:31:tbl:0000,eee9bf78:31:tbl:0003;eee9bf78:31:tbl:0000;eee9bf78:32:txt:0000;eee9bf78:32:img:0000;eee9bf78:32:img:0001;eee9bf78:31:tbl:0002;eee9bf78:31:tbl:0004;eee9bf78:31:txt:0009;eee9bf78:31:tbl:0001;eee9bf78:32:txt:0001;eee9bf78:32:txt:0006,True,1,0.03 – 0.056 mm,曲柄销与轴瓦径向间隙为 0.03 到 0.056 mm。,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,630,28,602,knowledge_retrieval,,5
+case_045,安装曲轴与平衡轴时齿轮标记怎么对正？,procedure,medium,True,平衡轴齿轮上的 B 标记与曲轴齿轮上的 A 标记必须对正角相。,B 标记;A 标记;对正角相,,eee9bf78:32:txt:0004,eee9bf78:31:txt:0004;eee9bf78:32:txt:0001;eee9bf78:01:txt:0011;eee9bf78:01:txt:0025;eee9bf78:31:txt:0001;eee9bf78:31:txt:0003;eee9bf78:31:txt:0005;eee9bf78:32:txt:0000;eee9bf78:01:txt:0010;eee9bf78:01:txt:0012;eee9bf78:31:txt:0007,False,,资料中未找到明确依据。,,B 标记;A 标记;对正角相,,,0.0,False,False,True,retrieval_miss,必答事实未命中,required_facts,634,34,599,knowledge_retrieval,,5
+case_046,安装曲轴和平衡轴后要检查什么？,inspection,medium,True,转动曲轴，检查曲轴转动是否灵活以及曲轴与平衡轴是否有干涉；若有干涉或转动不灵活，应重新对标记并重新安装。,曲轴转动是否灵活;曲轴与平衡轴是否有干涉;重新对标记并重新安装,,eee9bf78:32:txt:0006,eee9bf78:32:txt:0001;eee9bf78:32:txt:0006;eee9bf78:01:txt:0011;eee9bf78:01:txt:0025;eee9bf78:01:txt:0010;eee9bf78:32:txt:0000;eee9bf78:32:txt:0005;eee9bf78:32:img:0000;eee9bf78:01:txt:0012;eee9bf78:01:txt:0024;eee9bf78:32:txt:0002,True,2,"检查对象：曲轴转动灵活性、曲轴与平衡轴是否存在干涉  
+正常标准：曲轴转动灵活，无干涉  
+异常表现：转动不灵活或有干涉  
+处理方式：重新对标记，重新安装",曲轴转动是否灵活;曲轴与平衡轴是否有干涉;重新对标记并重新安装,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1683,68,1614,knowledge_retrieval,,5
+case_047,这台发动机推荐使用哪个品牌的机油？,no_answer,no_answer,False,知识库中没有相关信息，不能确认。,,,,eee9bf78:06:txt:0002;eee9bf78:06:txt:0001;eee9bf78:06:img:0000;eee9bf78:06:txt:0000;eee9bf78:06:txt:0003;eee9bf78:06:tbl:0021;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000;eee9bf78:06:srw:0004,False,,资料中未找到明确依据,,,,,1.0,True,True,False,pass,无答案问题正确拒答,local_rule,555,52,502,knowledge_retrieval,,5
+case_048,发动机 ECU 故障码 P0301 应该怎么处理？,no_answer,no_answer,False,知识库中没有相关信息，不能确认。,,,,eee9bf78:02:txt:0008;eee9bf78:02:txt:0000;eee9bf78:06:txt:0000;eee9bf78:06:txt:0002;eee9bf78:06:txt:0001;eee9bf78:02:txt:0003;eee9bf78:02:txt:0007;eee9bf78:02:srw:0003;eee9bf78:02:srw:0006;eee9bf78:02:srw:0008;eee9bf78:06:tbl:0004,False,,资料中未找到明确依据,,,,,1.0,True,True,False,pass,无答案问题正确拒答,local_rule,563,53,509,knowledge_retrieval,,5
+case_049,这款发动机是否支持涡轮增压改装？,no_answer,no_answer,False,知识库中没有相关信息，不能确认。,,,,eee9bf78:06:txt:0002;eee9bf78:06:txt:0001;eee9bf78:09:txt:0002;eee9bf78:06:txt:0000;eee9bf78:09:txt:0004;eee9bf78:09:txt:0001;eee9bf78:09:txt:0003;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000,False,,资料中未找到明确依据,,,,,1.0,True,True,False,pass,无答案问题正确拒答,local_rule,543,57,486,knowledge_retrieval,,5
+case_050,这台摩托车的整车保养周期是多少公里？,no_answer,no_answer,False,知识库中没有相关信息，不能确认。,,,,eee9bf78:06:img:0000;eee9bf78:23:img:0000;eee9bf78:07:img:0000;eee9bf78:11:img:0000;eee9bf78:11:img:0001;eee9bf78:06:tbl:0021;eee9bf78:06:txt:0000;eee9bf78:06:txt:0001;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007,False,,资料中未找到明确依据,,,,,1.0,True,True,False,pass,无答案问题正确拒答,local_rule,597,98,498,knowledge_retrieval,,5
+case_051,检查火花塞相关插图是哪张？,image,easy,True,应返回检查火花塞章节的插图。,检查火花塞,,eee9bf78:02:img:0000,eee9bf78:02:img:0000;eee9bf78:02:txt:0000;eee9bf78:07:img:0000;eee9bf78:02:txt:0006;eee9bf78:16:img:0004;eee9bf78:02:txt:0009;eee9bf78:02:txt:0001;eee9bf78:07:tbl:0015;eee9bf78:02:txt:0003;eee9bf78:02:txt:0008;eee9bf78:02:txt:0007,True,1,应返回第3页的插图，对应章节为“1.2 检查火花塞”，图示标题为“1.2 检查火花塞”，chunk_id=eee9bf78:02:img:0000。,检查火花塞,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2059,58,2001,knowledge_retrieval,,5
+case_052,起动电机装配部件清单有没有插图？,image,easy,True,应返回起动电机装配部件清单对应的插图。,起动电机装配部件清单,,eee9bf78:03:img:0000,eee9bf78:03:img:0000;eee9bf78:04:img:0000;eee9bf78:26:img:0000;eee9bf78:18:img:0001;eee9bf78:26:img:0001;eee9bf78:03:tbl:0004;eee9bf78:03:txt:0000;eee9bf78:03:txt:0001;eee9bf78:03:txt:0002;eee9bf78:03:txt:0009;eee9bf78:03:tbl:0001,True,1,有插图，对应图示为“2.1 起动电机装配部件清单”，位于第4页，chunk_id=eee9bf78:03:img:0000。,起动电机装配部件清单,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1339,127,1212,knowledge_retrieval,,5
+case_053,安装起动电机的图示在哪里？,image,easy,True,应返回安装起动电机章节的插图。,安装起动电机,,eee9bf78:04:img:0000,eee9bf78:04:img:0000;eee9bf78:03:img:0000;eee9bf78:04:txt:0003;eee9bf78:04:txt:0001;eee9bf78:04:txt:0005;eee9bf78:04:txt:0010;eee9bf78:04:txt:0000;eee9bf78:04:txt:0002;eee9bf78:04:txt:0004;eee9bf78:03:tbl:0004;eee9bf78:04:txt:0007,True,1,应返回“2.3 安装起动电机”章节中的图示，位于第5页，标题为“2.3 安装起动电机”，具体用于指导“连接负极线”步骤（证据1、证据5明确指出“按照图示安装起动电机负极线”）。,安装起动电机,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1520,124,1396,knowledge_retrieval,,5
+case_054,拆卸发动机相关插图有哪些？,image,medium,True,应返回拆卸发动机章节的任一相关插图。,拆卸发动机,,eee9bf78:05:img:0000;eee9bf78:05:img:0001;eee9bf78:05:img:0002;eee9bf78:05:img:0003;eee9bf78:05:img:0004,eee9bf78:05:img:0001;eee9bf78:05:img:0000;eee9bf78:05:img:0004;eee9bf78:05:img:0003;eee9bf78:05:img:0002;eee9bf78:05:txt:0000;eee9bf78:05:txt:0001;eee9bf78:05:txt:0002;eee9bf78:05:txt:0003;eee9bf78:05:tbl:0006;eee9bf78:05:srw:0000,True,1,"应返回以下插图：  
+- 图 **0000**（第6页）、**0001**（第6页）：标题均为“3.2 拆卸发动机”，对应拆卸发动机初始步骤及螺栓/部件列表；  
+- 图 **0002**、**0003**、**0004**（第7页）：标题均为“3.2 拆卸发动机”，分别对应“排放冷却液”“松开发动机安装螺栓”和“拆卸输出链轮组件”等关键拆卸步骤。  
+
+所有插图均位于第3.2节“拆卸发动机”，页码为第6–7页。",拆卸发动机,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,3917,59,3858,knowledge_retrieval,,5
+case_055,安装发动机章节的图片是哪张？,image,easy,True,应返回安装发动机章节的插图。,安装发动机,,eee9bf78:06:img:0000,eee9bf78:06:img:0000;eee9bf78:04:img:0000;eee9bf78:16:img:0000;eee9bf78:16:img:0001;eee9bf78:07:img:0000;eee9bf78:06:tbl:0021;eee9bf78:06:txt:0000;eee9bf78:06:txt:0001;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007,True,1,应返回第9页的图片，标题为“3.3 安装发动机”，对应章节为“三、发动机”下的“3.3 安装发动机”节。,安装发动机,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1045,55,989,knowledge_retrieval,,5
+case_056,凸轮轴拆卸和正时标记相关图示在哪里？,image,medium,True,应返回凸轮轴章节的相关插图。,凸轮轴,正时标记,eee9bf78:08:img:0000;eee9bf78:08:img:0001,eee9bf78:09:img:0000;eee9bf78:08:img:0000;eee9bf78:08:img:0001;eee9bf78:28:img:0001;eee9bf78:28:img:0000;eee9bf78:09:txt:0008;eee9bf78:09:txt:0000;eee9bf78:09:txt:0002;eee9bf78:09:txt:0004;eee9bf78:09:txt:0006;eee9bf78:09:txt:0007,True,2,应返回 **图4.3 凸轮轴**（页码11），该图示对应“凸轮轴拆卸”和“正时标记对齐”相关内容，明确包含磁电机转子“T”标记与M14×1.5螺塞孔缺口中线对齐的正时标记说明。,凸轮轴,,正时标记,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2187,123,2063,knowledge_retrieval,,5
+case_057,涨紧器相关图片是哪张？,image,easy,True,应返回涨紧器章节的插图。,涨紧器,,eee9bf78:09:img:0000,eee9bf78:07:img:0000;eee9bf78:09:img:0000;eee9bf78:10:img:0000;eee9bf78:10:img:0001;eee9bf78:03:img:0000;eee9bf78:07:tbl:0015;eee9bf78:07:txt:0000;eee9bf78:09:txt:0008;eee9bf78:09:txt:0000;eee9bf78:09:txt:0002;eee9bf78:09:txt:0004,True,2,涨紧器相关图片是第12页的图4.4（标题为“4.4 涨紧器”）。,涨紧器,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,973,104,868,knowledge_retrieval,,5
+case_058,安装气缸头盖的图示有哪些？,image,medium,True,应返回安装气缸头盖章节的相关插图。,安装气缸头盖,,eee9bf78:10:img:0000;eee9bf78:10:img:0001,eee9bf78:10:img:0000;eee9bf78:08:img:0000;eee9bf78:12:img:0000;eee9bf78:16:img:0000;eee9bf78:16:img:0001;eee9bf78:10:txt:0005;eee9bf78:10:img:0001;eee9bf78:10:txt:0000;eee9bf78:10:txt:0001;eee9bf78:10:txt:0002;eee9bf78:10:txt:0003,True,1,应返回图4.5，即第13页的“安装气缸头盖”图示。,安装气缸头盖,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1040,112,928,knowledge_retrieval,,5
+case_059,气门间隙章节有没有图片？,image,medium,True,应返回气门间隙章节的相关插图。,气门间隙,,eee9bf78:11:img:0000;eee9bf78:11:img:0001,eee9bf78:12:img:0000;eee9bf78:11:img:0000;eee9bf78:11:img:0001;eee9bf78:13:img:0001;eee9bf78:13:img:0000;eee9bf78:12:tbl:0002;eee9bf78:12:img:0001;eee9bf78:12:txt:0000;eee9bf78:12:txt:0002;eee9bf78:12:txt:0004;eee9bf78:12:txt:0005,True,2,有，气门间隙章节对应的是第14页的图片，标题为“4.6 气门间隙”，共两张图（img:0000 和 img:0001），用于说明测量气门间隙的操作：拆下气缸头盖后，将塞尺插入凸轮轴基圆与滑动挺柱之间进行测量。,气门间隙,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1817,118,1698,knowledge_retrieval,,5
+case_060,气缸头相关插图在哪里？,image,medium,True,应返回气缸头章节的相关插图。,气缸头,,eee9bf78:12:img:0000;eee9bf78:12:img:0001,eee9bf78:07:img:0000;eee9bf78:14:img:0001;eee9bf78:12:img:0000;eee9bf78:12:img:0001;eee9bf78:16:img:0000;eee9bf78:07:tbl:0015;eee9bf78:07:txt:0000;eee9bf78:14:img:0000;eee9bf78:14:txt:0000;eee9bf78:14:txt:0001;eee9bf78:07:tbl:0001,True,3,应返回图号为“4.7 气缸头”的插图，位于第15页，对应章节为“4.7 气缸头”，内容为气缸头拆装及相关部件示意图。,气缸头,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1268,128,1139,knowledge_retrieval,,5
+case_061,气门部件相关图片有哪些？,image,medium,True,应返回气门章节的相关插图。,气门,,eee9bf78:13:img:0000;eee9bf78:13:img:0001,eee9bf78:13:img:0001;eee9bf78:14:img:0001;eee9bf78:07:img:0000;eee9bf78:13:img:0000;eee9bf78:14:img:0000;eee9bf78:13:txt:0000;eee9bf78:13:txt:0001;eee9bf78:13:txt:0002;eee9bf78:13:txt:0003;eee9bf78:13:txt:0004;eee9bf78:14:txt:0000,True,1,"应返回图示：**4.8 气门**（对应页码 P16，图片编号 img:0001 和 img:0000），该图展示气门拆装步骤及相关部件，包括气门、气门弹簧座、气门杆径油封、内外弹簧、弹簧上圈、气门锁夹、滑动挺柱和气门间隙调整垫片等。  
+此外，**4.2 气缸头气门部装配部件清单**（P10，img:0000）也包含气门相关部件的清单图示。",气门,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2512,109,2402,knowledge_retrieval,,5
+case_062,水泵装配零件清单的图在哪里？,image,medium,True,应返回水泵装配零件清单章节的相关插图。,水泵装配零件清单,,eee9bf78:20:img:0000;eee9bf78:20:img:0001;eee9bf78:20:img:0002;eee9bf78:20:img:0003;eee9bf78:20:img:0004,eee9bf78:20:txt:0014;eee9bf78:20:txt:0000;eee9bf78:20:txt:0002;eee9bf78:20:txt:0012;eee9bf78:20:txt:0015;eee9bf78:20:txt:0013;eee9bf78:20:txt:0001;eee9bf78:20:txt:0003;eee9bf78:20:txt:0011;eee9bf78:20:txt:0016;eee9bf78:20:txt:0004,False,,应返回“6.3 水泵装配零件清单”对应的图示，位于第27页，章节标题为“6.3 水泵装配零件清单”。知识库中未提供具体图号或图名，仅明确该清单内容出现在第27页，且与水泵装配相关部件（如离合器衬套止推垫、滚针轴承、离合器主动盘分组件等）对应。资料中未找到明确图示编号或图片文件名。,水泵装配零件清单,,,,1.0,True,False,False,retrieval_miss_answer_correct,必答事实全部命中,required_facts,2055,23,2032,knowledge_retrieval,,5
+case_063,传动装置装配部件清单对应的图片是哪张？,image,medium,True,应返回传动装置装配部件清单章节的相关插图。,传动装置装配部件清单,,eee9bf78:26:img:0000;eee9bf78:26:img:0001,eee9bf78:26:img:0001;eee9bf78:27:img:0000;eee9bf78:26:img:0000;eee9bf78:30:img:0001;eee9bf78:01:img:0000;eee9bf78:26:txt:0000;eee9bf78:26:txt:0001;eee9bf78:27:tbl:0011;eee9bf78:27:txt:0000;eee9bf78:27:txt:0001;eee9bf78:26:tbl:0004,True,1,图8.1 传动装置装配部件清单，对应页码34，图片编号为eee9bf78:26:img:0001。,传动装置装配部件清单,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1119,129,990,knowledge_retrieval,,5
+case_064,曲轴和平衡轴装配部件清单有没有图？,image,medium,True,应返回曲轴、平衡轴装配部件清单章节的相关插图。,曲轴;平衡轴;装配部件清单,,eee9bf78:30:img:0000;eee9bf78:30:img:0001,eee9bf78:30:img:0001;eee9bf78:30:img:0000;eee9bf78:18:img:0001;eee9bf78:27:img:0000;eee9bf78:14:img:0001;eee9bf78:30:txt:0000;eee9bf78:30:tbl:0002;eee9bf78:18:img:0000;eee9bf78:18:txt:0000;eee9bf78:18:txt:0001;eee9bf78:30:tbl:0001,True,1,有图，应返回第38页的“9.1 曲轴、平衡轴装配部件清单”图示，对应章节为“九、曲轴与平衡轴”。,曲轴;平衡轴;装配部件清单,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1132,130,1001,knowledge_retrieval,,5
+case_065,拆卸曲轴与平衡轴的相关图片在哪里？,image,medium,True,应返回拆卸曲轴与平衡轴章节的相关插图。,拆卸曲轴与平衡轴,,eee9bf78:31:img:0000;eee9bf78:31:img:0001,eee9bf78:31:img:0000;eee9bf78:30:img:0001;eee9bf78:30:img:0000;eee9bf78:31:img:0001;eee9bf78:32:img:0002;eee9bf78:31:tbl:0004;eee9bf78:31:txt:0000;eee9bf78:31:txt:0001;eee9bf78:31:txt:0002;eee9bf78:31:txt:0003;eee9bf78:31:txt:0004,True,1,应返回第39页的图片，标题为“9.2 拆卸曲轴与平衡轴”，对应章节为“九、曲轴与平衡轴”下的“9.2 拆卸曲轴与平衡轴”。,拆卸曲轴与平衡轴,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1493,134,1357,knowledge_retrieval,,5
+case_066,拆卸发动机时机油要从哪里排出？,procedure,easy,True,拆卸发动机时要拆下发动机左曲轴箱上的放油螺栓排出发动机内部机油，并拆下车架上的放油螺栓排出车架内部机油。,左曲轴箱上的放油螺栓;车架上的放油螺栓,,eee9bf78:05:txt:0000,eee9bf78:05:txt:0000;eee9bf78:05:txt:0001;eee9bf78:05:txt:0002;eee9bf78:06:txt:0002;eee9bf78:05:img:0002;eee9bf78:05:txt:0003;eee9bf78:05:img:0001;eee9bf78:05:img:0003;eee9bf78:05:srw:0000;eee9bf78:05:srw:0001;eee9bf78:05:srw:0003,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+拆下发动机左曲轴箱上的放油螺栓，将发动机内部机油全部放出。  
+拆下车架上的放油螺栓，将车架内部机油全部放出。  
+
+安全注意：  
+资料中未找到明确依据。",左曲轴箱上的放油螺栓;车架上的放油螺栓,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1450,31,1419,knowledge_retrieval,,5
+case_067,拆卸发动机时冷却液怎么排干净？,procedure,easy,True,拆下水泵盖上的放水螺栓让冷却液流出，水流变小时打开右水箱盖，使发动机内剩余冷却液完全排出。,放水螺栓;打开右水箱盖;剩余冷却液完全排出,,eee9bf78:05:txt:0001,eee9bf78:05:txt:0001;eee9bf78:05:txt:0002;eee9bf78:05:txt:0000;eee9bf78:06:txt:0003;eee9bf78:05:img:0002;eee9bf78:05:txt:0003;eee9bf78:05:img:0001;eee9bf78:05:img:0003;eee9bf78:05:srw:0000;eee9bf78:05:srw:0001;eee9bf78:05:srw:0003,True,1,"前置条件：无明确前置条件说明  
+操作步骤：  
+1. 拆下水泵盖上的放水螺栓，让冷却液自动流出。  
+2. 当水流变小时，打开右水箱盖，使发动机内剩余冷却液完全排出。  
+安全注意：资料中未找到明确依据",放水螺栓;打开右水箱盖;剩余冷却液完全排出,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1572,28,1543,knowledge_retrieval,,5
+case_068,拆卸发动机表里后平叉轴的扭矩要求是多少？,torque,easy,True,后平叉轴 φ14×310 使用 19# 套筒，扭矩要求为 110 ± 5 N·m。,110 ± 5 N·m,后平叉轴,eee9bf78:05:tbl:0003,eee9bf78:05:tbl:0003;eee9bf78:05:tbl:0000;eee9bf78:05:img:0000;eee9bf78:05:img:0001;eee9bf78:05:txt:0002;eee9bf78:05:tbl:0002;eee9bf78:05:tbl:0004;eee9bf78:05:txt:0003;eee9bf78:05:tbl:0001;eee9bf78:05:tbl:0006;eee9bf78:05:txt:0000,True,1,"拧紧对象：后平叉轴 φ14×310（达克罗）  
+扭矩值：110 ± 5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：使用19# 套筒；该零件为达克罗处理，不可用普通螺栓替代",110 ± 5 N·m,,后平叉轴,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1681,42,1638,knowledge_retrieval,,5
+case_069,安装发动机时放油螺栓和放水螺栓的扭矩分别是多少？,torque,easy,True,放油螺栓拧紧力矩为 25 ± 4 N·m，放水螺栓拧紧力矩为 12 ± 1.5 N·m。,25 ± 4 N·m;12 ± 1.5 N·m,放油螺栓;放水螺栓,eee9bf78:06:txt:0001,eee9bf78:06:txt:0001;eee9bf78:06:txt:0000;eee9bf78:06:tbl:0012;eee9bf78:06:txt:0002;eee9bf78:06:img:0000;eee9bf78:06:tbl:0000;eee9bf78:06:tbl:0011;eee9bf78:06:tbl:0013;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007,True,1,"拧紧对象：放油螺栓、放水螺栓  
+扭矩值：放油螺栓：25 ± 4 N·m；放水螺栓：12 ± 1.5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：资料中未找到明确依据",25 ± 4 N·m;12 ± 1.5 N·m,,放油螺栓;放水螺栓,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1946,35,1910,knowledge_retrieval,,5
+case_070,安装发动机后机油加注量是多少？,spec,easy,True,未更换机油精滤芯时加注 1600 mL 机油，已更换机油精滤芯时加注 1700 mL 机油。,1600 mL;1700 mL,,eee9bf78:06:txt:0002,eee9bf78:06:txt:0002;eee9bf78:06:txt:0003;eee9bf78:06:txt:0001;eee9bf78:06:txt:0000;eee9bf78:06:tbl:0021;eee9bf78:06:tbl:0000;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000;eee9bf78:06:srw:0004,True,1,1600 mL（若未更换机油精滤芯）或 1700 mL（若已更换机油精滤芯），单位：mL。,1600 mL;1700 mL,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1203,29,1173,knowledge_retrieval,,5
+case_071,这台发动机要求使用什么规格的机油？,spec,easy,True,机油粘度要求 SAE 10W-40 或 SAE 10W-50，质量等级要求 API SM 级或以上。,SAE 10W-40;SAE 10W-50;API SM,,eee9bf78:06:txt:0002,eee9bf78:06:txt:0002;eee9bf78:06:txt:0001;eee9bf78:21:txt:0009;eee9bf78:21:txt:0011;eee9bf78:21:txt:0012;eee9bf78:21:txt:0008;eee9bf78:21:txt:0010;eee9bf78:21:txt:0013;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007,True,1,粘度：SAE 10W-40 或 SAE 10W-50；质量等级：API SM 级或以上。,SAE 10W-40;SAE 10W-50;API SM,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1295,67,1228,knowledge_retrieval,,5
+case_072,安装发动机时冷却液加注后还要做什么？,procedure,medium,True,向右水箱加满冷却液后启动发动机运行 8 到 10 秒再关机，再次向右水箱补液至满，并向副水箱加注到 F 线与 L 线之间。,8 到 10 秒;补液至满;F 线;L 线,,eee9bf78:06:txt:0003,eee9bf78:06:txt:0003;eee9bf78:06:txt:0000;eee9bf78:06:txt:0002;eee9bf78:06:txt:0001;eee9bf78:06:tbl:0018;eee9bf78:06:tbl:0000;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000;eee9bf78:06:srw:0004,True,1,"前置条件：  
+冷却液已按要求加注完毕（右水箱加满，启动发动机运行8～10秒后关机，再次补满右水箱；副水箱液面位于F线与L线之间）。  
+
+操作步骤：  
+启动发动机运行 8 ～ 10 秒后关机。  
+再次向 右水箱 补液至满。  
+向 副水箱 加注冷却液，使液面位于 F 线与 L 线之间。  
+
+安全注意：  
+资料中未找到明确依据。",8 到 10 秒;补液至满;F 线;L 线,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2414,68,2345,knowledge_retrieval,,5
+case_073,安装发动机时水温传感器的扭矩要求是多少？,torque,easy,True,水温传感器使用 17# T 杆或套筒，扭矩要求为 13 ± 1.5 N·m。,13 ± 1.5 N·m,水温传感器,eee9bf78:06:tbl:0018,eee9bf78:06:tbl:0018;eee9bf78:06:tbl:0000;eee9bf78:06:txt:0001;eee9bf78:06:txt:0000;eee9bf78:06:tbl:0012;eee9bf78:06:tbl:0017;eee9bf78:06:tbl:0019;eee9bf78:06:txt:0005;eee9bf78:06:tbl:0001;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005,True,1,"拧紧对象：水温传感器  
+扭矩值：13 ± 1.5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：使用17# T杆或套筒",13 ± 1.5 N·m,,水温传感器,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1092,33,1058,knowledge_retrieval,,5
+case_074,拆卸气缸头盖螺栓时要注意什么？,safety,easy,True,气缸头盖螺栓必须对角均匀拧松，防止变形。,对角均匀拧松;防止变形,,eee9bf78:08:txt:0004,eee9bf78:08:txt:0004;eee9bf78:08:txt:0001;eee9bf78:08:img:0000;eee9bf78:08:txt:0002;eee9bf78:08:txt:0012;eee9bf78:08:txt:0003;eee9bf78:08:txt:0005;eee9bf78:08:txt:0000;eee9bf78:08:txt:0013;eee9bf78:08:img:0001;eee9bf78:08:txt:0006,True,1,"注意事项：气缸头盖螺栓必须对角均匀拧松。  
+原因或风险：防止气缸头盖变形。  
+正确做法：按对角顺序、分步均匀拧松螺栓，不可单侧或依次顺序拆卸。",对角均匀拧松;防止变形,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1399,65,1333,knowledge_retrieval,,5
+case_075,检查凸轮轴时哪些部位有问题需要更换？,inspection,medium,True,分别检查进气与排气凸轮轴的轴颈和凸轮基圆表面，若存在磨损、腐蚀或划伤，应更换相应凸轮轴。,轴颈;凸轮基圆表面;磨损、腐蚀或划伤;更换相应凸轮轴,进气与排气凸轮轴,eee9bf78:09:txt:0000,eee9bf78:09:txt:0004;eee9bf78:09:txt:0000;eee9bf78:09:txt:0002;eee9bf78:09:txt:0006;eee9bf78:08:txt:0000;eee9bf78:09:txt:0003;eee9bf78:09:txt:0005;eee9bf78:09:txt:0001;eee9bf78:09:txt:0007;eee9bf78:08:txt:0001;eee9bf78:09:txt:0008,True,2,"检查对象：轴颈、凸轮基圆表面  
+正常标准：资料中未找到明确依据  
+异常表现：磨损、腐蚀或划伤  
+处理方式：更换相应凸轮轴",轴颈;凸轮基圆表面;磨损、腐蚀或划伤;更换相应凸轮轴,,,进气与排气凸轮轴,1.0,True,True,False,pass,必答事实全部命中,required_facts,1131,63,1067,knowledge_retrieval,,5
+case_076,安装凸轮轴时先装进气还是排气？,procedure,easy,True,安装凸轮轴时先安装排气凸轮轴，再安装进气凸轮轴，并按对应位置安装凸轮轴座盖。,先安装排气凸轮轴;再安装进气凸轮轴,凸轮轴座盖,eee9bf78:09:txt:0002,eee9bf78:09:txt:0002;eee9bf78:09:txt:0004;eee9bf78:09:txt:0000;eee9bf78:09:txt:0006;eee9bf78:08:txt:0006;eee9bf78:09:txt:0001;eee9bf78:09:txt:0003;eee9bf78:09:txt:0005;eee9bf78:09:txt:0007;eee9bf78:08:txt:0005;eee9bf78:08:txt:0007,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+先安装排气凸轮轴，再安装进气凸轮轴。  
+
+安全注意：  
+座盖定位销必须放回气缸头对应孔位，不得错放。",先安装排气凸轮轴;再安装进气凸轮轴,,凸轮轴座盖,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1188,32,1156,knowledge_retrieval,,5
+case_077,凸轮轴上的 IN EX L M 标记分别代表什么？,spec,easy,True,IN 表示进气，EX 表示排气，L 表示左侧，M 表示中间。,IN;进气;EX;排气;L;左侧;M;中间,,eee9bf78:09:txt:0004,eee9bf78:09:txt:0004;eee9bf78:09:img:0000;eee9bf78:08:txt:0006;eee9bf78:09:txt:0000;eee9bf78:09:txt:0002;eee9bf78:09:txt:0003;eee9bf78:09:txt:0005;eee9bf78:09:txt:0008;eee9bf78:09:txt:0006;eee9bf78:09:txt:0007;eee9bf78:09:txt:0001,True,1,“IN”：进气；“EX”：排气；“L”：左侧；“M”：中间。,IN;进气;EX;排气;L;左侧;M;中间,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1304,58,1246,knowledge_retrieval,,5
+case_078,安装凸轮轴时哪些部位需要涂抹机油？,procedure,medium,True,需要在滑动挺柱、凸轮轴颈座、凸轮轴颈和凸轮基圆处涂抹适量机油。,滑动挺柱;凸轮轴颈座;凸轮轴颈;凸轮基圆;涂抹机油,,eee9bf78:09:txt:0006,eee9bf78:09:txt:0002;eee9bf78:09:txt:0000;eee9bf78:09:txt:0006;eee9bf78:09:txt:0004;eee9bf78:21:txt:0009;eee9bf78:09:txt:0001;eee9bf78:09:txt:0003;eee9bf78:09:txt:0005;eee9bf78:09:txt:0007;eee9bf78:21:txt:0008;eee9bf78:21:txt:0010,True,3,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+在以下部位涂抹适量机油：  
+- 滑动挺柱  
+- 凸轮轴颈座  
+- 凸轮轴颈  
+- 凸轮基圆  
+
+安全注意：  
+无明确安全注意事项说明。",滑动挺柱;凸轮轴颈座;凸轮轴颈;凸轮基圆;涂抹机油,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1561,28,1533,knowledge_retrieval,,5
+case_079,安装涨紧器本体时要先套入什么？,procedure,easy,True,安装涨紧器本体时先套入涨紧器垫片，再将涨紧器及垫片装入气缸涨紧器安装位。,涨紧器垫片,,eee9bf78:10:txt:0001,eee9bf78:04:txt:0009;eee9bf78:09:txt:0007;eee9bf78:10:txt:0001;eee9bf78:09:txt:0006;eee9bf78:10:txt:0000;eee9bf78:04:txt:0008;eee9bf78:09:txt:0008;eee9bf78:10:txt:0002;eee9bf78:09:txt:0005;eee9bf78:04:txt:0001;eee9bf78:04:txt:0007,True,3,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+套入涨紧器垫片。  
+将涨紧器及垫片装入气缸涨紧器安装位。  
+
+安全注意：  
+资料中未找到明确依据。",涨紧器垫片,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1576,31,1545,knowledge_retrieval,,5
+case_080,安装气缸头盖前密封胶应该涂在哪里？,procedure,medium,True,应在气缸头密封帽周围均匀涂抹耐热平面密封硅胶，并在气缸头装配平面和新气缸头盖垫片两面涂抹耐热平面密封硅胶。,气缸头密封帽周围;新气缸头盖垫片两面;耐热平面密封硅胶,气缸头装配平面,eee9bf78:10:txt:0005,eee9bf78:10:txt:0005;eee9bf78:10:txt:0001;eee9bf78:10:txt:0003;eee9bf78:10:txt:0002;eee9bf78:10:txt:0000;eee9bf78:10:txt:0004;eee9bf78:10:img:0000;eee9bf78:10:srw:0000;eee9bf78:10:srw:0001;eee9bf78:10:srw:0002,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+在气缸头密封帽周围均匀涂抹耐热平面密封硅胶。  
+在气缸头装配平面和新气缸头盖垫片两面均涂抹耐热平面密封硅胶。  
+
+安全注意：  
+资料中未找到明确依据。",气缸头密封帽周围;新气缸头盖垫片两面;耐热平面密封硅胶,,气缸头装配平面,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1470,29,1440,knowledge_retrieval,,5
+case_081,测量气门间隙时塞尺应插在哪里？,procedure,easy,True,应将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。,凸轮轴基圆;滑动挺柱之间,塞尺,eee9bf78:11:txt:0001,eee9bf78:11:txt:0001;eee9bf78:11:img:0000;eee9bf78:11:img:0001;eee9bf78:11:txt:0000;eee9bf78:12:txt:0002;eee9bf78:12:txt:0001;eee9bf78:12:txt:0003;eee9bf78:11:srw:0000;eee9bf78:11:srw:0001;eee9bf78:12:txt:0000;eee9bf78:12:txt:0004,True,1,"前置条件：  
+拆下气缸头盖。  
+
+操作步骤：  
+将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。  
+
+安全注意：  
+必须测量基圆位置，非凸轮升程段。",凸轮轴基圆;滑动挺柱之间,,塞尺,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1221,57,1163,knowledge_retrieval,,5
+case_082,进气门标准间隙范围是多少？,spec,easy,True,进气门标准间隙范围为 0.13～0.20 mm。,0.13;0.20 mm,进气门,eee9bf78:12:tbl:0001,eee9bf78:12:tbl:0001;eee9bf78:12:tbl:0002;eee9bf78:12:tbl:0000;eee9bf78:12:img:0000;eee9bf78:12:img:0001;eee9bf78:12:txt:0021;eee9bf78:12:txt:0000;eee9bf78:12:txt:0002;eee9bf78:12:txt:0004;eee9bf78:12:txt:0005;eee9bf78:12:txt:0008,True,1,进气门标准间隙范围是0.13～0.20 mm（冷态，测量位置为凸轮基圆）。,0.13;0.20 mm,,进气门,,1.0,True,True,False,pass,必答事实全部命中,required_facts,979,32,947,knowledge_retrieval,,5
+case_083,排气门标准间隙范围是多少？,spec,easy,True,排气门标准间隙范围为 0.20～0.30 mm。,0.20;0.30 mm,排气门,eee9bf78:12:tbl:0002,eee9bf78:12:tbl:0002;eee9bf78:12:tbl:0001;eee9bf78:12:tbl:0000;eee9bf78:12:img:0000;eee9bf78:12:img:0001;eee9bf78:12:txt:0021;eee9bf78:12:txt:0000;eee9bf78:12:txt:0002;eee9bf78:12:txt:0004;eee9bf78:12:txt:0005;eee9bf78:12:txt:0008,True,1,排气门标准间隙范围是0.20～0.30 mm。,0.20;0.30 mm,,排气门,,1.0,True,True,False,pass,必答事实全部命中,required_facts,840,27,812,knowledge_retrieval,,5
+case_084,调整气门间隙时滑动挺柱和调整垫片能不能混用？,safety,easy,True,滑动挺柱、调整垫片与气门是一对一匹配，严禁混用。,严禁混用;一对一匹配,滑动挺柱;调整垫片;气门,eee9bf78:12:txt:0007,eee9bf78:14:txt:0001;eee9bf78:13:txt:0001;eee9bf78:12:txt:0007;eee9bf78:12:txt:0004;eee9bf78:12:txt:0002;eee9bf78:14:txt:0000;eee9bf78:13:txt:0000;eee9bf78:13:txt:0002;eee9bf78:12:txt:0006;eee9bf78:12:txt:0008;eee9bf78:14:txt:0003,True,3,"注意事项：滑动挺柱、调整垫片与气门为一对一匹配，严禁混用。  
+原因或风险：混用可能导致气门间隙失准，引发气门撞击、密封不良、功率下降或发动机损坏等严重故障。  
+正确做法：每个滑动挺柱和对应调整垫片必须与其原配气门配套使用；更换时应按实测间隙偏差，选用指定厚度的新垫片，并确保原挺柱与气门一一对应。",严禁混用;一对一匹配,,滑动挺柱;调整垫片;气门,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2618,75,2542,knowledge_retrieval,,5
+case_085,安装气缸头时 M10 螺母分三次拧紧的扭矩是多少？,torque,medium,True,M10 螺母需要分三次对角拧紧，第一次 25 N·m，第二次 45 N·m，第三次 60 N·m。,25 N·m;45 N·m;60 N·m,分三次;对角拧紧,eee9bf78:12:txt:0018,eee9bf78:12:txt:0018;eee9bf78:10:txt:0002;eee9bf78:10:txt:0000;eee9bf78:10:txt:0001;eee9bf78:10:txt:0003;eee9bf78:12:txt:0017;eee9bf78:12:txt:0019;eee9bf78:10:txt:0004;eee9bf78:12:txt:0000;eee9bf78:12:txt:0002;eee9bf78:12:txt:0004,True,1,"拧紧对象：M10 螺母  
+扭矩值：第一次 25 N·m，第二次 45 N·m，第三次 60 N·m  
+是否分次：是  
+顺序或注意事项：分三次对角拧紧；拧紧前需在螺母螺纹处涂抹润滑油。",25 N·m;45 N·m;60 N·m,,分三次;对角拧紧,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2052,75,1977,knowledge_retrieval,,5
+case_086,拆卸气门弹簧时需要使用什么工具？,procedure,easy,True,拆卸气门弹簧时使用气门拆装器压缩气门弹簧，然后依次拆下气门锁夹、气门弹簧上圈、气门外弹簧、气门内弹簧等部件。,气门拆装器,,eee9bf78:13:txt:0003,eee9bf78:13:txt:0003;eee9bf78:13:txt:0005;eee9bf78:13:txt:0000;eee9bf78:13:txt:0002;eee9bf78:13:txt:0004;eee9bf78:13:img:0000;eee9bf78:13:txt:0001;eee9bf78:13:srw:0001;eee9bf78:13:srw:0002;eee9bf78:13:srw:0003;eee9bf78:13:srw:0004,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+2. 使用气门拆装器压缩气门弹簧，依次拆下：气门锁夹、气门弹簧上圈、气门外弹簧、气门内弹簧、气门杆径油封、气门弹簧座、气门（进气门×2，排气门×2）。  
+
+安全注意：  
+4组气门组件必须分别标记，确保装回原位。",气门拆装器,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1869,30,1838,knowledge_retrieval,,5
+case_087,安装气门弹簧时哪一端必须朝下？,safety,easy,True,气门弹簧间距较密的一端，也就是标记为 b 和 b′ 的一端必须朝下安装。,间距较密的一端;朝下,b;b′,eee9bf78:14:txt:0003,eee9bf78:14:txt:0003;eee9bf78:13:txt:0003;eee9bf78:14:txt:0001;eee9bf78:13:txt:0005;eee9bf78:14:txt:0000;eee9bf78:14:txt:0002;eee9bf78:14:tbl:0000;eee9bf78:13:txt:0002;eee9bf78:13:txt:0004;eee9bf78:13:img:0000;eee9bf78:14:tbl:0003,True,1,"注意事项：  
+气门弹簧间距较密的一端（标记为“b”和“b′”）必须朝下安装。  
+
+原因或风险：  
+若安装方向错误，可能导致弹簧受力不均、弹力异常、气门关闭不严，进而引发漏气、烧蚀、发动机功率下降甚至机械损坏等安全风险。  
+
+正确做法：  
+安装时确保气门弹簧间距较密的一端（标有“b”或“b′”）朝向气门座方向（即朝下）。",间距较密的一端;朝下,,b;b′,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2329,67,2262,knowledge_retrieval,,5
+case_088,拆卸气缸与活塞时活塞销挡圈要注意什么？,safety,easy,True,拆卸活塞时要防止活塞销挡圈掉入箱体内部。,防止活塞销挡圈掉入箱体,,eee9bf78:15:txt:0006,eee9bf78:15:txt:0006;eee9bf78:15:img:0000;eee9bf78:15:txt:0000;eee9bf78:15:txt:0003;eee9bf78:15:txt:0005;eee9bf78:15:txt:0007;eee9bf78:15:tbl:0003;eee9bf78:15:img:0001;eee9bf78:15:txt:0001;eee9bf78:15:txt:0002;eee9bf78:15:txt:0004,True,1,"注意事项：防止活塞销挡圈掉入箱体内部。  
+原因或风险：挡圈掉入箱体内部可能导致发动机运转时异响、卡滞，甚至损坏其他部件。  
+正确做法：拆卸时用尖嘴钳夹稳挡圈，并在开口对准挡圈槽缺口后小心取下，全程注意接住并妥善放置。",防止活塞销挡圈掉入箱体,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1591,27,1563,knowledge_retrieval,,5
+case_089,检查气缸内壁与活塞裙部时什么情况必须更换？,inspection,easy,True,如果气缸内壁或活塞裙部有明显刮痕或损伤，且用手触摸明显粗糙，必须更换有缺陷的部件。,明显刮痕或损伤;手触摸明显粗糙;更换有缺陷的部件,,eee9bf78:15:txt:0010,eee9bf78:15:txt:0010;eee9bf78:15:img:0000;eee9bf78:15:img:0001;eee9bf78:15:txt:0012;eee9bf78:15:txt:0009;eee9bf78:15:txt:0011;eee9bf78:15:tbl:0003;eee9bf78:15:txt:0000;eee9bf78:15:txt:0001;eee9bf78:15:txt:0002;eee9bf78:15:txt:0003,True,1,"检查对象：气缸内壁与活塞裙部  
+正常标准：表面光滑，无明显刮痕或损伤（用手触摸不粗糙）  
+异常表现：有明显刮痕或损伤（用手触摸明显粗糙）  
+处理方式：必须更换有缺陷的部件",明显刮痕或损伤;手触摸明显粗糙;更换有缺陷的部件,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1274,27,1247,knowledge_retrieval,,5
+case_090,检查三道活塞环时什么情况需要更换活塞及活塞环？,inspection,easy,True,如果三道活塞环被卡住，则需要更换活塞及活塞环。,三道活塞环被卡住;更换活塞及活塞环,,eee9bf78:15:txt:0012,eee9bf78:15:txt:0012;eee9bf78:17:txt:0007;eee9bf78:17:txt:0011;eee9bf78:17:txt:0015;eee9bf78:17:txt:0002;eee9bf78:15:txt:0011;eee9bf78:15:tbl:0000;eee9bf78:17:txt:0006;eee9bf78:17:txt:0010;eee9bf78:17:txt:0012;eee9bf78:15:txt:0001,True,1,"检查对象：三道活塞环  
+正常标准：资料中未找到明确依据  
+异常表现：活塞环被卡住  
+处理方式：更换活塞及活塞环",三道活塞环被卡住;更换活塞及活塞环,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1128,29,1099,knowledge_retrieval,,5
+case_091,检查机油泵从动齿轮时什么情况要更换机油泵？,inspection,easy,True,拨动机油泵从动齿轮时如果不能自由转动，就要更换机油泵。,不能自由转动;更换机油泵,机油泵从动齿轮,eee9bf78:21:txt:0003,eee9bf78:21:txt:0003;eee9bf78:21:txt:0016;eee9bf78:21:txt:0005;eee9bf78:21:txt:0007;eee9bf78:21:txt:0014;eee9bf78:21:txt:0002;eee9bf78:21:txt:0004;eee9bf78:21:txt:0015;eee9bf78:21:txt:0017;eee9bf78:21:txt:0006;eee9bf78:21:txt:0008,True,1,"检查对象：机油泵从动齿轮  
+正常标准：能自由转动  
+异常表现：不能自由转动  
+处理方式：更换机油泵",不能自由转动;更换机油泵,,机油泵从动齿轮,,1.0,True,True,False,pass,必答事实全部命中,required_facts,995,25,970,knowledge_retrieval,,5
+case_092,检查机油泵座垫时什么情况需要更换？,inspection,easy,True,检查油泵座垫时如果发现变形或开裂，需要更换。,变形或开裂;更换,油泵座垫,eee9bf78:21:txt:0005,eee9bf78:21:txt:0009;eee9bf78:21:txt:0001;eee9bf78:21:txt:0005;eee9bf78:21:txt:0003;eee9bf78:21:txt:0007;eee9bf78:21:txt:0008;eee9bf78:21:txt:0010;eee9bf78:21:txt:0000;eee9bf78:21:txt:0002;eee9bf78:21:txt:0004;eee9bf78:21:txt:0006,True,3,"检查对象：机油泵座垫  
+正常标准：资料中未找到明确依据  
+异常表现：变形或开裂  
+处理方式：更换",变形或开裂;更换,,油泵座垫,,1.0,True,True,False,pass,必答事实全部命中,required_facts,874,30,843,knowledge_retrieval,,5
+case_093,安装换挡星形凸轮后需要检查什么？,inspection,easy,True,安装后需要检查各档位转换是否灵活，并小心放置圆柱销防止其掉入箱体内。,各档位转换是否灵活,圆柱销防止掉入箱体,eee9bf78:22:txt:0009,eee9bf78:22:txt:0009;eee9bf78:22:txt:0003;eee9bf78:22:txt:0005;eee9bf78:22:txt:0007;eee9bf78:22:txt:0002;eee9bf78:22:txt:0008;eee9bf78:22:txt:0010;eee9bf78:22:txt:0004;eee9bf78:22:txt:0006;eee9bf78:22:txt:0001;eee9bf78:22:txt:0011,True,1,"检查对象：各档位转换  
+正常标准：灵活  
+异常表现：卡滞、不顺畅、有异响  
+处理方式：资料中未找到明确依据",各档位转换是否灵活,,,圆柱销防止掉入箱体,1.0,True,True,False,pass,必答事实全部命中,required_facts,1008,26,981,knowledge_retrieval,,5
+case_094,检查水泵 O 型圈和水泵密封圈时什么情况需要更换？,inspection,easy,True,水泵 O 型圈开裂或硬化需要更换，水泵密封圈变形或开裂也需要更换。,O 型圈开裂或硬化;密封圈变形或开裂;更换,水泵,eee9bf78:22:txt:0015,eee9bf78:22:txt:0015;eee9bf78:20:txt:0004;eee9bf78:22:txt:0013;eee9bf78:20:txt:0007;eee9bf78:20:txt:0005;eee9bf78:22:txt:0014;eee9bf78:22:txt:0016;eee9bf78:20:txt:0003;eee9bf78:22:txt:0012;eee9bf78:20:txt:0006;eee9bf78:20:txt:0008,True,1,"检查对象：水泵 O 型圈和水泵密封圈  
+正常标准：资料中未找到明确依据  
+异常表现：O 型圈开裂 / 硬化；水泵密封圈变形 / 开裂  
+处理方式：更换",O 型圈开裂或硬化;密封圈变形或开裂;更换,,水泵,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1564,66,1498,knowledge_retrieval,,5
+case_095,安装水泵时水封动环光面要涂什么？,procedure,easy,True,安装水泵时先将水封动环装入水泵，并在动环光面上涂抹适量硅油。,水封动环光面;涂抹硅油,,eee9bf78:22:txt:0017,eee9bf78:22:txt:0017;eee9bf78:22:txt:0025;eee9bf78:22:txt:0015;eee9bf78:22:txt:0021;eee9bf78:22:txt:0013;eee9bf78:22:txt:0016;eee9bf78:22:txt:0018;eee9bf78:22:txt:0024;eee9bf78:22:txt:0026;eee9bf78:22:txt:0014;eee9bf78:22:txt:0020,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+1. 先将水封动环装入水泵，在动环光面上涂抹适量硅油。  
+
+安全注意：  
+资料中未找到明确依据。",水封动环光面;涂抹硅油,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1263,60,1203,knowledge_retrieval,,5
+case_096,减速齿轮表中 M12×1.25×50 六角法兰面螺栓的扭矩是多少？,torque,easy,True,M12×1.25×50 六角法兰面螺栓使用 17# T 杆或套筒，扭矩为 103±15 N·m。,103±15 N·m,M12×1.25×50 六角法兰面螺栓,eee9bf78:23:tbl:0004,eee9bf78:23:tbl:0004;eee9bf78:23:tbl:0000;eee9bf78:23:tbl:0001;eee9bf78:06:tbl:0010;eee9bf78:26:tbl:0003;eee9bf78:23:tbl:0003;eee9bf78:23:tbl:0005;eee9bf78:23:txt:0001;eee9bf78:23:tbl:0002;eee9bf78:06:tbl:0000;eee9bf78:06:tbl:0009,True,1,"拧紧对象：M12×1.25×50 六角法兰面螺栓  
+扭矩值：103±15 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：使用17# T杆或套筒",103±15 N·m,,M12×1.25×50 六角法兰面螺栓,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1350,34,1316,knowledge_retrieval,,5
+case_097,安装减速齿轮盖时止推垫圈有什么注意事项？,safety,easy,True,减速齿轮上下各有一个止推垫圈 3，不能漏装。,止推垫圈;不能漏装,,eee9bf78:24:txt:0004,eee9bf78:24:txt:0004;eee9bf78:23:tbl:0011;eee9bf78:01:txt:0000;eee9bf78:01:txt:0014;eee9bf78:01:txt:0002;eee9bf78:24:txt:0003;eee9bf78:24:txt:0005;eee9bf78:23:tbl:0000;eee9bf78:23:tbl:0010;eee9bf78:23:tbl:0012;eee9bf78:01:txt:0001,True,1,"注意事项：减速齿轮上下各有一个止推垫圈，不能漏装。  
+原因或风险：漏装止推垫圈会导致轴向定位失效，可能引发齿轮轴向窜动、异常磨损、异响甚至机械卡滞等安全风险。  
+正确做法：安装减速齿轮盖前，须确认上下位置共2个止推垫圈（依据表格证据，序号3和7分别为12.2×20×1和26.2×38×1止推垫圈，数量均为2）均已正确安装到位。",止推垫圈;不能漏装,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2999,48,2951,knowledge_retrieval,,5
+case_098,检查磁电机转子离合器单向器时顺时针转动应该是什么状态？,diagnosis,medium,True,顺时针 A 转动起动大齿时，磁电机转子离合器与起动大齿应无相对滑动，否则需更换起动大齿和磁电机转子离合器分部件。,无相对滑动,更换起动大齿和磁电机转子离合器分部件,eee9bf78:24:txt:0012,eee9bf78:24:img:0000;eee9bf78:24:txt:0009;eee9bf78:24:txt:0013;eee9bf78:24:txt:0012;eee9bf78:24:txt:0007;eee9bf78:24:txt:0015;eee9bf78:24:txt:0000;eee9bf78:24:txt:0001;eee9bf78:24:txt:0002;eee9bf78:24:txt:0003;eee9bf78:24:txt:0005,True,4,顺时针转动起动大齿时，磁电机转子离合器与起动大齿应无相对滑动。,无相对滑动,,,更换起动大齿和磁电机转子离合器分部件,1.0,True,True,False,pass,必答事实全部命中,required_facts,891,67,823,knowledge_retrieval,,5
+case_099,检查磁电机转子离合器单向器时逆时针转动应该是什么状态？,diagnosis,medium,True,逆时针 B 转动起动大齿时应能自由转动，否则磁电机转子离合器有故障，必须更换。,能自由转动,否则必须更换,eee9bf78:24:txt:0013,eee9bf78:24:img:0000;eee9bf78:24:txt:0013;eee9bf78:01:txt:0001;eee9bf78:01:txt:0015;eee9bf78:24:txt:0012;eee9bf78:24:txt:0015;eee9bf78:24:txt:0000;eee9bf78:24:txt:0001;eee9bf78:24:txt:0002;eee9bf78:24:txt:0003;eee9bf78:24:txt:0005,True,2,应能自由转动。,能自由转动,,,否则必须更换,1.0,True,True,False,pass,必答事实全部命中,required_facts,546,66,479,knowledge_retrieval,,5
+case_100,安装左曲轴箱盖前导出线束橡胶周围要怎么处理？,procedure,easy,True,装上左曲轴箱盖前，需要在导出线束的橡胶周围均匀涂抹耐热平面密封硅胶。,导出线束橡胶周围;均匀涂抹耐热平面密封硅胶,,eee9bf78:25:txt:0010,eee9bf78:25:txt:0010;eee9bf78:25:txt:0007;eee9bf78:25:txt:0002;eee9bf78:25:txt:0001;eee9bf78:25:txt:0006;eee9bf78:25:txt:0009;eee9bf78:25:txt:0008;eee9bf78:25:txt:0003;eee9bf78:25:txt:0000;eee9bf78:25:txt:0005;eee9bf78:25:txt:0004,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+在导出线束的橡胶周围均匀涂抹耐热平面密封硅胶。  
+
+安全注意：  
+资料中未找到明确依据。",导出线束橡胶周围;均匀涂抹耐热平面密封硅胶,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1132,32,1099,knowledge_retrieval,,5
+case_101,离合器机油泵表中 M6×60 六角法兰面螺栓的数量和扭矩是多少？,spec,medium,True,M6×60 六角法兰面螺栓数量为 1，工具为 8# T杆或套筒，扭矩为 12±1.5 N·m。,数量为 1;12±1.5 N·m,M6×60 六角法兰面螺栓;8# T杆或套筒,eee9bf78:19:tbl:0027,eee9bf78:19:tbl:0027;eee9bf78:19:tbl:0026;eee9bf78:18:tbl:0003;eee9bf78:19:img:0001;eee9bf78:18:tbl:0000;eee9bf78:19:tbl:0028;eee9bf78:19:tbl:0025;eee9bf78:18:tbl:0002;eee9bf78:18:tbl:0004;eee9bf78:19:img:0000;eee9bf78:19:txt:0000,True,1,数量：1个；扭矩：12±1.5 N·m。,数量为 1;12±1.5 N·m,,,M6×60 六角法兰面螺栓;8# T杆或套筒,1.0,True,True,False,pass,必答事实全部命中,required_facts,711,83,627,knowledge_retrieval,,5
+case_102,水泵装配表中 M6×16 六角法兰面螺栓的预紧力是多少？,spec,easy,True,M6×16 六角法兰面螺栓数量为 1，使用 8# T杆或套筒，预紧力为 5±1 N·m。,5±1 N·m,M6×16 六角法兰面螺栓;数量为 1,eee9bf78:20:tbl:0001,eee9bf78:20:tbl:0001;eee9bf78:06:tbl:0016;eee9bf78:20:tbl:0000;eee9bf78:20:tbl:0002;eee9bf78:18:tbl:0003;eee9bf78:06:tbl:0000;eee9bf78:06:tbl:0015;eee9bf78:06:tbl:0017;eee9bf78:20:txt:0018;eee9bf78:20:tbl:0003;eee9bf78:18:tbl:0000,True,1,5±1 N·m（适用于水泵装配表中序号45的M6×16六角法兰面螺栓）,5±1 N·m,,M6×16 六角法兰面螺栓;数量为 1,,1.0,True,True,False,pass,必答事实全部命中,required_facts,904,72,832,knowledge_retrieval,,5
+case_103,曲轴轴向跳动的技术要求是多少？,spec,easy,True,曲轴轴向跳动技术要求为 ≤ 0.03 mm。,≤ 0.03 mm,曲轴轴向跳动,eee9bf78:31:tbl:0001,eee9bf78:31:tbl:0001;eee9bf78:31:tbl:0000;eee9bf78:31:tbl:0003;eee9bf78:31:tbl:0002;eee9bf78:31:txt:0007;eee9bf78:31:txt:0009;eee9bf78:31:tbl:0004;eee9bf78:31:txt:0006;eee9bf78:31:txt:0008;eee9bf78:31:txt:0001;eee9bf78:31:txt:0005,True,1,≤ 0.03 mm,≤ 0.03 mm,,,曲轴轴向跳动,1.0,True,True,False,pass,必答事实全部命中,required_facts,573,35,538,knowledge_retrieval,,5
+case_104,连杆大头轴向间隙的标准范围是多少？,spec,easy,True,连杆大头轴向间隙标准范围为 0.15-0.35 mm。,0.15;0.35 mm,连杆大头轴向间隙,eee9bf78:31:tbl:0002,eee9bf78:31:tbl:0002;eee9bf78:31:tbl:0000;eee9bf78:31:txt:0009;eee9bf78:31:txt:0007;eee9bf78:31:img:0000;eee9bf78:31:tbl:0001;eee9bf78:31:tbl:0003;eee9bf78:31:txt:0008;eee9bf78:31:txt:0006;eee9bf78:31:tbl:0004;eee9bf78:31:img:0001,True,1,0.15 – 0.35 mm,0.15;0.35 mm,,,连杆大头轴向间隙,1.0,True,True,False,pass,必答事实全部命中,required_facts,677,34,642,knowledge_retrieval,,5
+case_105,平衡轴表面状态的技术要求是什么？,spec,easy,True,平衡轴表面状态要求为无刮痕、无磨损。,无刮痕;无磨损,平衡轴表面状态,eee9bf78:31:tbl:0004,eee9bf78:31:tbl:0004;eee9bf78:31:img:0000;eee9bf78:31:tbl:0000;eee9bf78:31:tbl:0001;eee9bf78:31:tbl:0003;eee9bf78:31:img:0001;eee9bf78:31:txt:0000;eee9bf78:31:txt:0001;eee9bf78:31:txt:0002;eee9bf78:31:txt:0003;eee9bf78:31:txt:0004,True,1,无刮痕、无磨损,无刮痕;无磨损,,,平衡轴表面状态,1.0,True,True,False,pass,必答事实全部命中,required_facts,559,26,532,knowledge_retrieval,,5
+case_106,水泵装配表中水泵密封圈数量是多少？,spec,easy,True,水泵密封圈数量为 1。,数量为 1,水泵密封圈,eee9bf78:20:tbl:0005,eee9bf78:20:tbl:0005;eee9bf78:20:tbl:0000;eee9bf78:20:tbl:0008;eee9bf78:20:img:0000;eee9bf78:20:tbl:0010;eee9bf78:20:tbl:0004;eee9bf78:20:tbl:0006;eee9bf78:20:txt:0018;eee9bf78:20:tbl:0001;eee9bf78:20:tbl:0007;eee9bf78:20:tbl:0009,True,1,1个,数量为 1,,,水泵密封圈,1.0,True,True,False,pass,必答事实全部命中,required_facts,475,30,444,knowledge_retrieval,,5
+case_107,离合器 M16×1 六角薄螺母的拧紧扭矩是多少？,torque,easy,True,M16×1 六角薄螺母使用 24# 套筒，扭矩为 108±15 N·m。,108±15 N·m,M16×1 六角薄螺母,eee9bf78:19:tbl:0011,eee9bf78:19:tbl:0011;eee9bf78:19:tbl:0036;eee9bf78:19:tbl:0005;eee9bf78:20:tbl:0001;eee9bf78:19:tbl:0043;eee9bf78:19:tbl:0010;eee9bf78:19:tbl:0012;eee9bf78:19:tbl:0034;eee9bf78:19:tbl:0035;eee9bf78:19:tbl:0037;eee9bf78:19:tbl:0004,True,1,"拧紧对象：离合器 M16×1 六角薄螺母  
+扭矩值：108±15 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：使用24# 套筒",108±15 N·m,,M16×1 六角薄螺母,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1625,32,1592,knowledge_retrieval,,5
+case_108,初级驱动齿轮相关 M18×1.0 六角薄螺母扭矩是多少？,torque,medium,True,M18×1.0 六角薄螺母使用 24# 套筒，扭矩为 108±15 N·m。,108±15 N·m,M18×1.0 六角薄螺母,eee9bf78:19:tbl:0036,eee9bf78:19:tbl:0036;eee9bf78:19:tbl:0034;eee9bf78:19:tbl:0011;eee9bf78:19:tbl:0038;eee9bf78:06:tbl:0000;eee9bf78:19:tbl:0035;eee9bf78:19:tbl:0037;eee9bf78:19:tbl:0033;eee9bf78:19:tbl:0005;eee9bf78:19:tbl:0010;eee9bf78:19:tbl:0012,True,1,"拧紧对象：M18×1.0 六角薄螺母（10级/氧化黑）  
+扭矩值：108±15 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：使用24# 套筒",108±15 N·m,,M18×1.0 六角薄螺母,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1369,28,1340,knowledge_retrieval,,5
+case_109,水泵本体安装扭矩是多少？,torque,easy,True,水泵数量为 1，使用 12# T杆或套筒，扭矩为 20±1.5 N·m。,20±1.5 N·m,水泵;数量为 1,eee9bf78:20:tbl:0008,eee9bf78:22:txt:0019;eee9bf78:20:tbl:0008;eee9bf78:22:txt:0015;eee9bf78:22:txt:0025;eee9bf78:22:txt:0013;eee9bf78:22:txt:0018;eee9bf78:22:txt:0020;eee9bf78:20:tbl:0000;eee9bf78:20:tbl:0007;eee9bf78:20:tbl:0009;eee9bf78:22:txt:0014,True,2,"拧紧对象：水泵本体  
+扭矩值：20±1.5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：使用12# T杆或套筒；安装时需校验扭力。",20±1.5 N·m,,水泵,数量为 1,1.0,True,True,False,pass,必答事实全部命中,required_facts,1353,68,1285,knowledge_retrieval,,5
+case_110,起动电机正极线螺母的扭矩是多少？,torque,easy,True,正极线螺母数量为 1，使用 10# 扳手或套筒，扭矩为 5±1.5 N·m。,5±1.5 N·m,正极线螺母,eee9bf78:03:tbl:0002,eee9bf78:03:tbl:0002;eee9bf78:03:img:0000;eee9bf78:03:tbl:0004;eee9bf78:03:txt:0005;eee9bf78:03:tbl:0000;eee9bf78:03:tbl:0001;eee9bf78:03:tbl:0003;eee9bf78:03:txt:0000;eee9bf78:03:txt:0001;eee9bf78:03:txt:0002;eee9bf78:03:txt:0009,True,1,"拧紧对象：起动电机正极线螺母  
+扭矩值：5 ± 1.5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：使用10#扳手或套筒；拧紧力矩需严格按规范执行",5±1.5 N·m,,正极线螺母,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1432,30,1401,knowledge_retrieval,,5
+case_111,起动电机 M6×30 六角法兰面螺栓扭矩是多少？,torque,easy,True,M6×30 六角法兰面螺栓数量为 2，使用 8# T杆或套筒，扭矩为 12±1.5 N·m。,12±1.5 N·m,M6×30 六角法兰面螺栓;数量为 2,eee9bf78:03:tbl:0003,eee9bf78:03:tbl:0003;eee9bf78:03:tbl:0000;eee9bf78:03:txt:0008;eee9bf78:03:txt:0002;eee9bf78:03:txt:0000;eee9bf78:03:tbl:0002;eee9bf78:03:tbl:0004;eee9bf78:03:txt:0011;eee9bf78:03:tbl:0001;eee9bf78:03:txt:0007;eee9bf78:03:txt:0009,True,1,"拧紧对象：M6×30 六角法兰面螺栓（环保彩锌）  
+扭矩值：12 ± 1.5 N·m  
+是否分次：资料中未找到明确依据  
+顺序或注意事项：资料中未找到明确依据",12±1.5 N·m,,M6×30 六角法兰面螺栓,数量为 2,1.0,True,True,False,pass,必答事实全部命中,required_facts,1663,41,1621,knowledge_retrieval,,5
+case_112,拆卸右曲轴箱盖时怎么防止水泵轴止推垫圈脱落？,procedure,medium,True,取出右曲轴箱盖之前，发动机应倾倒放置，以防水泵轴止推垫圈脱落。,发动机应倾倒放置,防止水泵轴止推垫圈脱落,eee9bf78:20:txt:0002,eee9bf78:20:txt:0002;eee9bf78:20:txt:0003;eee9bf78:20:txt:0001;eee9bf78:20:txt:0007;eee9bf78:18:txt:0000;eee9bf78:20:txt:0004;eee9bf78:20:txt:0000;eee9bf78:20:txt:0006;eee9bf78:20:txt:0008;eee9bf78:18:txt:0001;eee9bf78:20:txt:0005,True,1,"前置条件：发动机应倾倒放置。  
+操作步骤：在取出右曲轴箱盖之前，将发动机倾倒放置。  
+安全注意：防止水泵轴止推垫圈脱落。",发动机应倾倒放置,,防止水泵轴止推垫圈脱落,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1167,31,1135,knowledge_retrieval,,5
+case_113,安装右盖时右曲轴箱装配平面和新垫片要怎么处理？,procedure,hard,True,安装新垫片之前要在右曲轴箱装配平面均匀涂抹耐热平面密封硅胶，垫片上也要涂抹，安装后还要在新垫片上均匀涂抹适量密封硅胶。,右曲轴箱装配平面;新垫片;均匀涂抹耐热平面密封硅胶,,eee9bf78:20:txt:0007,eee9bf78:20:txt:0007;eee9bf78:25:txt:0007;eee9bf78:25:txt:0010;eee9bf78:20:txt:0004;eee9bf78:25:txt:0006;eee9bf78:20:txt:0006;eee9bf78:20:txt:0008;eee9bf78:25:txt:0008;eee9bf78:25:txt:0009;eee9bf78:20:txt:0003;eee9bf78:20:txt:0005,True,1,"前置条件：  
+使用全新右曲轴箱盖垫片；准备耐热平面密封硅胶。
+
+操作步骤：  
+1. 在右曲轴箱装配平面上均匀涂抹耐热平面密封硅胶；  
+2. 在新垫片上也涂抹耐热平面密封硅胶；  
+3. 安装新垫片后，必须在新垫片上均匀涂抹适量耐热平面密封硅胶。
+
+安全注意：  
+资料中未找到明确依据。",右曲轴箱装配平面;新垫片;均匀涂抹耐热平面密封硅胶,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2590,37,2552,knowledge_retrieval,,5
+case_114,拆卸离合器第一步要取下哪些部件？,procedure,medium,True,先取下顶杆轴套组件 9，对角松开锁紧螺栓 11，取出离合器举升板 12 和离合器弹簧 13。,顶杆轴套组件;锁紧螺栓;离合器举升板;离合器弹簧,对角松开,eee9bf78:20:txt:0008,eee9bf78:24:txt:0007;eee9bf78:24:txt:0002;eee9bf78:24:txt:0009;eee9bf78:24:txt:0008;eee9bf78:24:txt:0000;eee9bf78:24:txt:0006;eee9bf78:24:txt:0001;eee9bf78:24:txt:0003;eee9bf78:24:txt:0010;eee9bf78:24:txt:0005;eee9bf78:24:txt:0004,False,,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+拆下 M12×1.25×50 六角法兰面螺栓（4），用拉玛将磁电机转子离合器拉出，依次取下：  
+磁电机转子 6  
+止推垫圈 7  
+电起动大齿 8  
+半圆键 9  
+滚针轴承 10  
+
+安全注意：  
+资料中未找到明确依据。",,顶杆轴套组件;锁紧螺栓;离合器举升板;离合器弹簧,,对角松开,0.0,False,False,True,retrieval_miss,必答事实未命中,required_facts,2040,66,1973,knowledge_retrieval,,5
+case_115,安装机油泵时依次放入哪些部件？,procedure,hard,True,安装机油泵时依次放入两个 φ8 定位销、机油泵座垫、机油泵、φ3 个 10 定位销、3 个 O 型圈和 3 颗螺栓，其中 M6×30 螺栓需安装铜垫。,φ8 定位销;机油泵座垫;机油泵;φ3 个 10 定位销;3 个 O 型圈;3 颗螺栓,M6×30 螺栓需安装铜垫,eee9bf78:21:txt:0009,eee9bf78:21:txt:0009;eee9bf78:21:txt:0007;eee9bf78:21:txt:0020;eee9bf78:21:txt:0003;eee9bf78:21:txt:0005;eee9bf78:21:txt:0008;eee9bf78:21:txt:0010;eee9bf78:21:txt:0006;eee9bf78:21:txt:0019;eee9bf78:21:txt:0021;eee9bf78:21:txt:0002,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+依次放入：  
+两个 φ8 定位销  
+机油泵座垫  
+机油泵  
+3 个 φ10 定位销  
+3 个 O 型圈  
+3 颗螺栓（其中 M6×30 螺栓需安装铜垫）  
+
+安全注意：  
+资料中未找到明确依据。",φ8 定位销;机油泵座垫;机油泵;φ3 个 10 定位销;3 个 O 型圈;3 颗螺栓,,M6×30 螺栓需安装铜垫,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1764,29,1735,knowledge_retrieval,,5
+case_116,拆卸初级驱动齿轮前用什么固定曲轴？,procedure,medium,True,用 17# 套筒从左曲轴箱盖上的铝螺塞孔伸入，套在磁电机转子离合器 M12×1.25×50 螺栓上固定住曲轴。,17# 套筒;M12×1.25×50 螺栓;固定曲轴,左曲轴箱盖铝螺塞孔,eee9bf78:21:txt:0014,eee9bf78:21:txt:0016;eee9bf78:21:txt:0012;eee9bf78:31:txt:0003;eee9bf78:21:txt:0014;eee9bf78:31:txt:0000;eee9bf78:21:txt:0015;eee9bf78:21:txt:0017;eee9bf78:21:txt:0011;eee9bf78:21:txt:0013;eee9bf78:31:txt:0002;eee9bf78:31:txt:0004,True,4,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+用 17# 套筒从左曲轴箱盖上的铝螺塞孔伸入，套在磁电机转子离合器 M12×1.25×50 螺栓上，固定住曲轴。  
+
+安全注意：  
+资料中未找到明确依据。",17# 套筒;M12×1.25×50 螺栓;固定曲轴,,左曲轴箱盖铝螺塞孔,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2146,32,2113,knowledge_retrieval,,5
+case_117,安装初级驱动齿轮和正时主动链轮时依次放入哪些部件？,procedure,medium,True,依次放入限位挡圈、半圆键、正时主动链轮、平键、初级驱动齿轮、防松垫圈和螺母。,限位挡圈;半圆键;正时主动链轮;平键;初级驱动齿轮;防松垫圈;螺母,,eee9bf78:21:txt:0020,eee9bf78:21:txt:0020;eee9bf78:21:txt:0016;eee9bf78:21:txt:0012;eee9bf78:29:txt:0004;eee9bf78:24:txt:0012;eee9bf78:21:txt:0019;eee9bf78:21:txt:0021;eee9bf78:21:txt:0015;eee9bf78:21:txt:0017;eee9bf78:21:txt:0011;eee9bf78:21:txt:0013,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+依次放入：  
+限位挡圈  
+半圆键  
+正时主动链轮  
+平键  
+初级驱动齿轮  
+防松垫圈  
+螺母  
+
+安全注意：  
+资料中未找到明确依据。",限位挡圈;半圆键;正时主动链轮;平键;初级驱动齿轮;防松垫圈;螺母,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1403,29,1373,knowledge_retrieval,,5
+case_118,安装传动装置时传动主轴和传动副轴怎么放入？,procedure,easy,True,将传动主轴分部件和传动副轴分部件预装完成后，一同装入左曲轴箱内。,传动主轴分部件;传动副轴分部件;一同装入左曲轴箱内,,eee9bf78:29:txt:0001,eee9bf78:29:txt:0001;eee9bf78:29:txt:0007;eee9bf78:29:txt:0004;eee9bf78:29:txt:0010;eee9bf78:29:txt:0016;eee9bf78:29:txt:0000;eee9bf78:29:txt:0002;eee9bf78:29:txt:0006;eee9bf78:29:txt:0008;eee9bf78:29:txt:0003;eee9bf78:29:txt:0005,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+1. 将传动主轴分部件和传动副轴分部件预装完成后，一同装入左曲轴箱内。  
+
+安全注意：  
+资料中未找到明确依据。",传动主轴分部件;传动副轴分部件;一同装入左曲轴箱内,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1247,31,1216,knowledge_retrieval,,5
+case_119,安装传动装置时涂机油后依次安装哪些部件？,procedure,medium,True,在零件表面涂抹适量机油后，依次安装 L 拨叉、变速鼓、C 拨叉、R 拨叉、拨叉轴和换档轴。,L 拨叉;变速鼓;C 拨叉;R 拨叉;拨叉轴;换档轴,涂抹机油,eee9bf78:29:txt:0004,eee9bf78:29:txt:0004;eee9bf78:29:txt:0001;eee9bf78:29:txt:0016;eee9bf78:29:txt:0010;eee9bf78:29:txt:0007;eee9bf78:29:txt:0003;eee9bf78:29:txt:0005;eee9bf78:29:txt:0000;eee9bf78:29:txt:0002;eee9bf78:29:txt:0015;eee9bf78:29:txt:0017,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+依次安装以下部件（在零件表面涂抹适量机油）：  
+“L” 拨叉  
+变速鼓  
+“C” 拨叉  
+“R” 拨叉  
+拨叉轴  
+换档轴  
+
+安全注意：  
+警告：不要尝试将弯曲的拨叉轴校直。",L 拨叉;变速鼓;C 拨叉;R 拨叉;拨叉轴;换档轴,,涂抹机油,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1753,28,1724,knowledge_retrieval,,5
+case_120,安装传动装置时盖上右曲轴箱体后螺栓要怎么处理？,procedure,medium,True,装上所有螺栓后要对角预紧并校验所有螺栓扭力，同时不要漏装右曲轴箱体上的 M6×30 螺栓。,对角预紧;校验所有螺栓扭力;不要漏装 M6×30 螺栓,右曲轴箱体,eee9bf78:29:txt:0016,eee9bf78:29:txt:0016;eee9bf78:29:txt:0013;eee9bf78:28:txt:0000;eee9bf78:29:txt:0010;eee9bf78:28:txt:0001;eee9bf78:29:txt:0015;eee9bf78:29:txt:0017;eee9bf78:29:txt:0012;eee9bf78:29:txt:0014;eee9bf78:29:txt:0009;eee9bf78:29:txt:0011,True,1,"前置条件：  
+无明确前置条件说明。  
+
+操作步骤：  
+5. 盖上右曲轴箱体，直至无缝。  
+6. 装上所有螺栓，对角预紧并校验所有螺栓扭力。切记：不要漏装右曲轴箱体上的 M6×30 螺栓。  
+
+安全注意：  
+资料中未找到明确依据。",对角预紧;校验所有螺栓扭力;不要漏装 M6×30 螺栓,,右曲轴箱体,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1891,71,1819,knowledge_retrieval,,5
+case_121,拆卸曲轴与平衡轴时如何取下曲轴和平衡轴？,procedure,easy,True,一手扶住曲轴右曲柄一端，另一手用橡胶锤轻敲左曲柄一端，取下曲轴与平衡轴。,一手扶住曲轴右曲柄一端;橡胶锤轻敲左曲柄一端;取下曲轴与平衡轴,,eee9bf78:31:txt:0003,eee9bf78:31:txt:0003;eee9bf78:31:txt:0001;eee9bf78:31:txt:0004;eee9bf78:31:txt:0000;eee9bf78:31:txt:0002;eee9bf78:31:txt:0005;eee9bf78:31:txt:0007;eee9bf78:31:srw:0001;eee9bf78:31:srw:0002;eee9bf78:31:srw:0003,True,1,"前置条件：  
+将曲轴与平衡轴角度错开。  
+
+操作步骤：  
+一手扶住曲轴右曲柄一端，另一手用橡胶锤轻敲左曲柄一端，取下曲轴与平衡轴。  
+
+安全注意：  
+连杆杆身不得撞击箱体。",一手扶住曲轴右曲柄一端;橡胶锤轻敲左曲柄一端;取下曲轴与平衡轴,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1402,26,1376,knowledge_retrieval,,5
+case_122,安装曲轴与平衡轴前轴承需要怎么处理？,procedure,easy,True,在曲轴轴承与平衡轴轴承上喷涂适量机油。,曲轴轴承;平衡轴轴承;喷涂适量机油,,eee9bf78:32:txt:0003,eee9bf78:31:txt:0004;eee9bf78:31:txt:0003;eee9bf78:32:txt:0001;eee9bf78:31:txt:0000;eee9bf78:31:txt:0002;eee9bf78:31:txt:0005;eee9bf78:32:txt:0000;eee9bf78:31:txt:0001;eee9bf78:31:txt:0007;eee9bf78:31:srw:0001;eee9bf78:31:srw:0002,False,,"前置条件：  
+- 将左曲轴箱体水平放置（合箱面朝上）；  
+- 曲轴与平衡轴角度需错开。  
+
+操作步骤：  
+- 用手拨动轴承内圈，检查有无卡滞或磨损现象；若有，则更换有缺陷的轴承；  
+- 箱体上的曲轴轴承不可左右互换；  
+- 曲轴轴承与曲轴上的衬套须一一对应。  
+
+安全注意：  
+- 连杆杆身不得撞击箱体。",曲轴轴承;平衡轴轴承,喷涂适量机油,,,0.5,False,False,True,retrieval_miss,必答事实部分命中：2/3,required_facts,2398,68,2329,knowledge_retrieval,,5
+case_123,拆卸右盖前发动机为什么要倾倒放置？,safety,easy,True,取出右曲轴箱盖之前发动机应倾倒放置，目的是防止水泵轴止推垫圈 3 脱落。,防止水泵轴止推垫圈脱落,发动机倾倒放置,eee9bf78:20:txt:0003,eee9bf78:20:txt:0003;eee9bf78:05:txt:0001;eee9bf78:05:txt:0000;eee9bf78:05:txt:0002;eee9bf78:06:txt:0000;eee9bf78:20:txt:0002;eee9bf78:20:txt:0004;eee9bf78:05:txt:0003;eee9bf78:20:txt:0005;eee9bf78:20:txt:0007;eee9bf78:20:txt:0008,True,1,"注意事项：  
+拆卸右曲轴箱盖前必须将发动机倾倒放置。  
+
+原因或风险：  
+防止水泵轴止推垫圈3在拆卸过程中脱落，造成零件丢失或装配异常，影响水泵轴向定位及后续装配精度。  
+
+正确做法：  
+在取出右曲轴箱盖之前，将发动机倾倒放置（具体倾倒方向手册未说明，但需确保止推垫圈受重力作用不致滑脱）。",防止水泵轴止推垫圈脱落,,发动机倾倒放置,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2054,63,1991,knowledge_retrieval,,5
+case_124,安装离合器拉杆时顶杆槽要注意什么？,safety,easy,True,要旋转离合器拉杆，使离合器拉杆上的顶杆槽与右盖上的顶杆孔对齐。,顶杆槽;顶杆孔;对齐,离合器拉杆,eee9bf78:20:txt:0006,eee9bf78:20:txt:0005;eee9bf78:20:txt:0006;eee9bf78:20:img:0001;eee9bf78:19:tbl:0006;eee9bf78:20:img:0002;eee9bf78:20:txt:0004;eee9bf78:20:txt:0007;eee9bf78:20:img:0000;eee9bf78:20:txt:0000;eee9bf78:20:txt:0001;eee9bf78:20:txt:0002,True,2,"注意事项：  
+顶杆槽必须与右盖上的顶杆孔对齐。  
+
+原因或风险：  
+若未对齐，可能导致离合器分离顶杆无法正常装配或运动受阻，影响离合器分离功能，引发换挡困难、打滑甚至机械卡滞等安全隐患。  
+
+正确做法：  
+安装离合器拉杆时，需手动旋转拉杆，确保其上的顶杆槽与右盖对应位置的顶杆孔精确对齐后再固定。",顶杆槽;顶杆孔;对齐,,离合器拉杆,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2085,66,2019,knowledge_retrieval,,5
+case_125,右曲轴箱 A 孔周围密封胶有什么要求？,safety,easy,True,A 孔周围 3mm 内不得有平面密封胶。,A 孔周围 3mm 内不得有平面密封胶,,eee9bf78:20:txt:0009,eee9bf78:25:txt:0010;eee9bf78:20:txt:0009;eee9bf78:32:img:0000;eee9bf78:25:txt:0007;eee9bf78:25:txt:0006;eee9bf78:25:txt:0009;eee9bf78:20:txt:0008;eee9bf78:20:txt:0010;eee9bf78:32:txt:0006;eee9bf78:32:img:0001;eee9bf78:32:txt:0000,True,2,"注意事项：  
+A 孔周围 3mm 内不得涂抹平面密封胶。  
+
+原因或风险：  
+在 A 孔周围涂胶可能堵塞孔道、影响通气/通油功能，或导致装配后密封胶挤入运动部件引发干涉、磨损甚至失效。  
+
+正确做法：  
+严格保持 A 孔边缘 3mm 范围内无任何平面密封胶；该区域需清洁干燥，不得涂抹。",A 孔周围 3mm 内不得有平面密封胶,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1882,57,1824,knowledge_retrieval,,5
+case_126,安装离合器摩擦片时大孔摩擦片应放在哪里？,safety,medium,True,安装摩擦片时摩擦片与从动片两两相隔，其中大孔摩擦片靠近从动盘侧。,大孔摩擦片靠近从动盘侧,摩擦片与从动片两两相隔,eee9bf78:20:txt:0018,eee9bf78:20:txt:0018;eee9bf78:20:txt:0016;eee9bf78:20:txt:0012;eee9bf78:20:txt:0014;eee9bf78:24:txt:0002;eee9bf78:20:txt:0017;eee9bf78:20:tbl:0000;eee9bf78:20:txt:0015;eee9bf78:20:txt:0011;eee9bf78:20:txt:0013;eee9bf78:24:txt:0001,True,1,"注意事项：  
+大孔摩擦片安装位置错误可能导致离合器接合不良、打滑或异常磨损，影响传动效率与行车安全。
+
+原因或风险：  
+若大孔摩擦片未靠近从动盘侧，将破坏摩擦片与从动片交替布置的装配关系，造成压力分布不均、热变形加剧，严重时引发离合器失效。
+
+正确做法：  
+大孔摩擦片应靠近从动盘侧安装，且摩擦片与从动片需两两相隔。",大孔摩擦片靠近从动盘侧,,摩擦片与从动片两两相隔,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2803,28,2775,knowledge_retrieval,,5
+case_127,拆卸曲轴与平衡轴时连杆杆身有什么注意事项？,safety,easy,True,连杆杆身不得撞击箱体。,连杆杆身不得撞击箱体,,eee9bf78:31:txt:0005,eee9bf78:31:txt:0003;eee9bf78:31:img:0000;eee9bf78:31:txt:0000;eee9bf78:31:txt:0005;eee9bf78:31:txt:0002;eee9bf78:31:txt:0004;eee9bf78:31:tbl:0004;eee9bf78:31:img:0001;eee9bf78:31:txt:0001;eee9bf78:31:txt:0006;eee9bf78:31:txt:0007,True,4,"注意事项：连杆杆身不得撞击箱体。  
+原因或风险：撞击可能导致连杆杆身变形、箱体损伤或表面刮痕，影响装配精度和发动机运行可靠性。  
+正确做法：拆卸过程中应稳妥操作曲轴与平衡轴，避免连杆杆身与箱体内壁发生接触或碰撞。",连杆杆身不得撞击箱体,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1478,22,1455,knowledge_retrieval,,5
+case_128,弯曲的拨叉轴能不能尝试校直？,safety,easy,True,不要尝试将弯曲的拨叉轴校直。,不要尝试校直,弯曲的拨叉轴,eee9bf78:29:txt:0002,eee9bf78:29:txt:0002;eee9bf78:29:img:0000;eee9bf78:29:txt:0005;eee9bf78:29:txt:0008;eee9bf78:29:txt:0011;eee9bf78:29:txt:0001;eee9bf78:29:txt:0003;eee9bf78:29:txt:0020;eee9bf78:29:txt:0000;eee9bf78:29:txt:0004;eee9bf78:29:txt:0006,True,1,"注意事项：严禁尝试校直弯曲的拨叉轴。  
+原因或风险：校直可能导致拨叉轴强度下降、变形复发或装配后功能失效，引发换档失灵、卡滞甚至传动系统损坏。  
+正确做法：如拨叉轴滚动检查发现弯曲，必须更换新件。",不要尝试校直,,弯曲的拨叉轴,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1455,33,1422,knowledge_retrieval,,5
+case_129,第二道活塞环的 2R 标记面应朝哪里？,safety,easy,True,2R 标记面应朝活塞顶部。,2R 标记面;朝活塞顶部,,eee9bf78:17:txt:0017,eee9bf78:17:txt:0017;eee9bf78:17:txt:0015;eee9bf78:17:img:0000;eee9bf78:17:txt:0013;eee9bf78:17:txt:0018;eee9bf78:17:txt:0016;eee9bf78:17:txt:0014;eee9bf78:17:txt:0019;eee9bf78:17:txt:0000;eee9bf78:17:txt:0002;eee9bf78:17:txt:0005,True,1,"注意事项：  
+第二道活塞环的“2R”标记面方向错误可能导致环密封不良、窜气、机油消耗异常或拉缸。
+
+原因或风险：  
+“2R”为方向标识，若朝向错误（如朝向活塞底部），将导致活塞环工作面与气缸壁接触异常，影响密封与润滑，加速磨损，甚至引发发动机故障。
+
+正确做法：  
+“2R”标记面应朝向活塞顶部。",2R 标记面;朝活塞顶部,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,2117,58,2058,knowledge_retrieval,,5
+case_130,检查机油泵从动齿轮时如果不能自由转动怎么办？,inspection,easy,True,拨动机油泵从动齿轮检查是否能自由转动，若不能自由转动则更换机油泵。,不能自由转动;更换机油泵,机油泵从动齿轮,eee9bf78:21:txt:0003,eee9bf78:21:txt:0003;eee9bf78:21:txt:0016;eee9bf78:21:txt:0014;eee9bf78:21:txt:0007;eee9bf78:21:txt:0005;eee9bf78:21:txt:0002;eee9bf78:21:txt:0004;eee9bf78:21:txt:0015;eee9bf78:21:txt:0017;eee9bf78:21:txt:0013;eee9bf78:21:txt:0006,True,1,"检查对象：机油泵从动齿轮  
+正常标准：能自由转动  
+异常表现：不能自由转动  
+处理方式：更换机油泵",不能自由转动;更换机油泵,,机油泵从动齿轮,,1.0,True,True,False,pass,必答事实全部命中,required_facts,864,19,844,knowledge_retrieval,,5
+case_131,检查油泵座垫发现变形或开裂怎么办？,inspection,easy,True,检查油泵座垫，若变形或开裂则更换。,变形或开裂;更换,油泵座垫,eee9bf78:21:txt:0005,eee9bf78:21:txt:0005;eee9bf78:21:txt:0009;eee9bf78:22:txt:0015;eee9bf78:21:txt:0003;eee9bf78:21:txt:0007;eee9bf78:21:txt:0004;eee9bf78:21:txt:0006;eee9bf78:21:txt:0008;eee9bf78:21:txt:0010;eee9bf78:22:txt:0014;eee9bf78:22:txt:0016,True,1,"检查对象：油泵座垫  
+正常标准：资料中未找到明确依据  
+异常表现：变形或开裂  
+处理方式：更换",变形或开裂;更换,,油泵座垫,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1381,24,1356,knowledge_retrieval,,5
+case_132,检查 O 型圈开裂或硬化时怎么处理？,inspection,easy,True,检查 O 型圈，若开裂或硬化则更换。,开裂或硬化;更换,O 型圈,eee9bf78:21:txt:0007,eee9bf78:21:txt:0007;eee9bf78:22:txt:0015;eee9bf78:17:txt:0007;eee9bf78:17:txt:0000;eee9bf78:17:txt:0005;eee9bf78:21:txt:0006;eee9bf78:21:txt:0008;eee9bf78:22:txt:0014;eee9bf78:22:txt:0016;eee9bf78:17:txt:0006;eee9bf78:21:txt:0001,True,1,"检查对象：O 型圈  
+正常标准：资料中未找到明确依据  
+异常表现：开裂或硬化  
+处理方式：更换",开裂或硬化;更换,,O 型圈,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1143,101,1041,knowledge_retrieval,,5
+case_133,安装初级驱动齿轮前如果部件有磨损怎么办？,inspection,easy,True,安装前检查各部件，如有磨损则更换缺陷部件。,有磨损;更换缺陷部件,安装前检查,eee9bf78:21:txt:0018,eee9bf78:21:txt:0016;eee9bf78:24:txt:0000;eee9bf78:24:txt:0013;eee9bf78:24:txt:0012;eee9bf78:24:txt:0002;eee9bf78:21:txt:0015;eee9bf78:21:txt:0017;eee9bf78:24:txt:0001;eee9bf78:24:txt:0014;eee9bf78:24:txt:0011;eee9bf78:24:txt:0003,False,,"检查对象：初级驱动齿轮及相关配合部件（如平键、正时主动链轮、限位挡圈等）  
+正常标准：资料中未找到明确依据  
+异常表现：资料中未找到明确依据  
+处理方式：资料中未找到明确依据",,有磨损;更换缺陷部件,,安装前检查,0.0,False,False,True,retrieval_miss,必答事实未命中,required_facts,1346,27,1318,knowledge_retrieval,,5
+case_134,检查拨叉时哪些部位有弯曲损坏或裂纹需要更换？,inspection,medium,True,检查拨叉凸轮从动件和拨叉卡爪，如有弯曲、损坏或裂纹则更换拨叉。,拨叉凸轮从动件;拨叉卡爪;弯曲、损坏或裂纹;更换拨叉,,eee9bf78:28:txt:0003,eee9bf78:28:txt:0003;eee9bf78:01:txt:0006;eee9bf78:01:txt:0020;eee9bf78:28:txt:0002;eee9bf78:28:txt:0001;eee9bf78:28:img:0000;eee9bf78:01:txt:0005;eee9bf78:01:txt:0007;eee9bf78:01:txt:0019;eee9bf78:01:txt:0021;eee9bf78:28:txt:0000,True,1,"检查对象：拨叉凸轮从动件（标记1）、拨叉卡爪（标记2）  
+正常标准：无弯曲、无损坏、无裂纹  
+异常表现：弯曲、损坏或裂纹  
+处理方式：更换拨叉",拨叉凸轮从动件;拨叉卡爪;弯曲、损坏或裂纹;更换拨叉,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1525,62,1462,knowledge_retrieval,,5
+case_135,安装传动装置后传动主轴与副轴转动不灵活怎么办？,inspection,easy,True,检查传动主轴与副轴转动是否灵活，若不灵活则重新安装。,转动不灵活;重新安装,传动主轴;传动副轴,eee9bf78:29:txt:0007,eee9bf78:29:txt:0007;eee9bf78:29:txt:0001;eee9bf78:29:img:0000;eee9bf78:29:txt:0016;eee9bf78:29:txt:0004;eee9bf78:29:txt:0006;eee9bf78:29:txt:0008;eee9bf78:29:txt:0000;eee9bf78:29:txt:0002;eee9bf78:29:txt:0020;eee9bf78:29:txt:0003,True,1,"检查对象：传动主轴与副轴  
+正常标准：转动灵活  
+异常表现：转动不灵活（卡滞）  
+处理方式：重新安装；若因轴承卡滞或磨损导致不灵活，则更换缺陷轴承",转动不灵活;重新安装,,传动主轴;传动副轴,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1178,30,1148,knowledge_retrieval,,5
+case_136,安装换档星形凸轮后换档不顺畅怎么办？,inspection,medium,True,装上换档星形凸轮后检查换档是否顺畅，若不顺畅则重新安装传动装置。,换档不顺畅;重新安装传动装置,换档星形凸轮,eee9bf78:29:txt:0019,eee9bf78:29:txt:0019;eee9bf78:22:txt:0009;eee9bf78:22:txt:0005;eee9bf78:22:txt:0003;eee9bf78:22:txt:0002;eee9bf78:29:txt:0018;eee9bf78:29:txt:0020;eee9bf78:22:txt:0008;eee9bf78:22:txt:0010;eee9bf78:22:txt:0004;eee9bf78:22:txt:0006,True,1,"检查对象：换档星形凸轮及传动装置安装状态  
+正常标准：换档顺畅，各档位转换灵活  
+异常表现：换档不顺畅  
+处理方式：重新安装传动装置",换档不顺畅;重新安装传动装置,,换档星形凸轮,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1280,27,1253,knowledge_retrieval,,5
+case_137,检查曲轴与平衡轴轴承内圈有卡滞或磨损怎么办？,inspection,medium,True,用手拨动轴承内圈，若有卡滞或磨损现象则更换有缺陷的轴承。,卡滞或磨损;更换有缺陷的轴承,轴承内圈,eee9bf78:31:txt:0004,eee9bf78:31:txt:0004;eee9bf78:31:txt:0009;eee9bf78:31:txt:0007;eee9bf78:31:txt:0003;eee9bf78:31:txt:0001;eee9bf78:31:txt:0005;eee9bf78:31:txt:0008;eee9bf78:31:tbl:0000;eee9bf78:31:txt:0006;eee9bf78:31:txt:0002;eee9bf78:31:txt:0000,True,1,"检查对象：曲轴与平衡轴轴承内圈  
+正常标准：用手拨动轴承内圈应转动顺畅，无卡滞、无磨损  
+异常表现：轴承内圈有卡滞或磨损现象  
+处理方式：更换有缺陷的轴承",卡滞或磨损;更换有缺陷的轴承,,轴承内圈,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1544,30,1513,knowledge_retrieval,,5
+case_138,平衡轴有刮痕或磨损时怎么处理？,inspection,easy,True,平衡轴若有刮痕或磨损，需要更换平衡轴。,刮痕或磨损;更换平衡轴,,eee9bf78:32:txt:0001,eee9bf78:32:txt:0001;eee9bf78:31:txt:0003;eee9bf78:31:txt:0009;eee9bf78:31:txt:0004;eee9bf78:31:txt:0007;eee9bf78:32:txt:0000;eee9bf78:31:txt:0002;eee9bf78:31:txt:0008;eee9bf78:31:tbl:0000;eee9bf78:31:txt:0005;eee9bf78:32:txt:0002,True,1,"检查对象：平衡轴表面  
+正常标准：无刮痕、无磨损  
+异常表现：有刮痕、磨损  
+处理方式：更换平衡轴",刮痕或磨损;更换平衡轴,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1007,67,939,knowledge_retrieval,,5
+case_139,离合器摩擦片发黑严重时说明要怎么处理？,diagnosis,medium,True,检查离合器摩擦片，如发黑严重，则需更换一套新摩擦片。,更换一套新摩擦片,发黑严重,eee9bf78:20:txt:0012,eee9bf78:20:txt:0012;eee9bf78:24:txt:0013;eee9bf78:24:txt:0002;eee9bf78:20:txt:0016;eee9bf78:20:txt:0014;eee9bf78:20:txt:0011;eee9bf78:20:txt:0013;eee9bf78:24:txt:0012;eee9bf78:24:txt:0014;eee9bf78:24:txt:0001;eee9bf78:24:txt:0003,True,1,需更换一套新摩擦片。,更换一套新摩擦片,,,发黑严重,1.0,True,True,False,pass,必答事实全部命中,required_facts,722,58,663,knowledge_retrieval,,5
+case_140,曲轴与平衡轴安装后有干涉或转动不灵活怎么办？,diagnosis,medium,True,转动曲轴检查曲轴与平衡轴是否有干涉，若有干涉或转动不灵活，则重新对标记并重新安装。,重新对标记;重新安装,有干涉或转动不灵活,eee9bf78:32:txt:0006,eee9bf78:32:txt:0006;eee9bf78:31:txt:0009;eee9bf78:31:txt:0007;eee9bf78:31:txt:0006;eee9bf78:31:txt:0008;eee9bf78:32:txt:0005;eee9bf78:32:img:0000;eee9bf78:31:tbl:0000;eee9bf78:31:txt:0005;eee9bf78:32:txt:0001;eee9bf78:32:txt:0002,True,1,重新对标记，重新安装。,重新对标记;重新安装,,,有干涉或转动不灵活,1.0,True,True,False,pass,必答事实全部命中,required_facts,528,25,502,knowledge_retrieval,,5
+case_141,离合器机油泵装配零件清单第23页插图是哪张？,image,easy,True,对应离合器、机油泵装配零件清单第23页插图。,离合器机油泵装配零件清单;第23页,,eee9bf78:19:img:0000,eee9bf78:19:img:0000;eee9bf78:27:img:0000;eee9bf78:18:img:0000;eee9bf78:18:img:0001;eee9bf78:07:img:0000;eee9bf78:19:tbl:0045;eee9bf78:19:img:0001;eee9bf78:19:txt:0000;eee9bf78:19:txt:0001;eee9bf78:27:tbl:0011;eee9bf78:27:txt:0000,True,1,第23页插图对应的是“6.2 离合器、机油泵装配零件清单”章节的插图。,离合器机油泵装配零件清单;第23页,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1084,262,822,knowledge_retrieval,,5
+case_142,离合器机油泵装配零件清单第24页插图是哪张？,image,easy,True,对应离合器、机油泵装配零件清单第24页插图。,离合器机油泵装配零件清单;第24页,,eee9bf78:19:img:0001,eee9bf78:19:img:0001;eee9bf78:18:img:0000;eee9bf78:18:img:0001;eee9bf78:07:img:0000;eee9bf78:27:img:0000;eee9bf78:19:img:0000;eee9bf78:19:txt:0000;eee9bf78:19:txt:0001;eee9bf78:18:tbl:0008;eee9bf78:18:txt:0000;eee9bf78:18:txt:0001,True,1,6.2 离合器、机油泵装配零件清单 第24页插图,离合器机油泵装配零件清单;第24页,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1124,262,861,knowledge_retrieval,,5
+case_143,水泵装配零件清单第25页插图是哪张？,image,easy,True,对应水泵装配零件清单第25页插图。,水泵装配零件清单;第25页,,eee9bf78:20:img:0000,eee9bf78:20:img:0000;eee9bf78:27:img:0000;eee9bf78:07:img:0000;eee9bf78:30:img:0000;eee9bf78:30:img:0001;eee9bf78:20:tbl:0010;eee9bf78:20:img:0001;eee9bf78:20:txt:0000;eee9bf78:20:txt:0001;eee9bf78:20:txt:0002;eee9bf78:20:txt:0004,True,1,第25页插图是“6.3 水泵装配零件清单”章节下的插图，对应页码为25，图示类型为水泵装配零件清单图。,水泵装配零件清单;第25页,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1644,260,1384,knowledge_retrieval,,5
+case_144,水泵装配零件清单第27页插图是哪张？,image,easy,True,对应水泵装配零件清单第27页插图。,水泵装配零件清单;第27页,,eee9bf78:20:img:0004,eee9bf78:20:img:0004;eee9bf78:27:img:0000;eee9bf78:30:img:0000;eee9bf78:30:img:0001;eee9bf78:14:img:0000;eee9bf78:20:img:0003;eee9bf78:20:txt:0000;eee9bf78:20:txt:0001;eee9bf78:20:txt:0002;eee9bf78:20:txt:0004;eee9bf78:20:txt:0005,True,1,6.3 水泵装配零件清单 第27页插图,水泵装配零件清单;第27页,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1174,258,915,knowledge_retrieval,,5
+case_145,检查传动装置相关插图有哪些？,image,medium,True,检查传动装置相关插图为第36页两张插图。,img:0000;img:0001;第36页,检查传动装置;两张插图,eee9bf78:28:img:0000;eee9bf78:28:img:0001,eee9bf78:28:img:0000;eee9bf78:28:img:0001;eee9bf78:26:img:0001;eee9bf78:01:img:0000;eee9bf78:29:img:0000;eee9bf78:28:txt:0003;eee9bf78:28:txt:0000;eee9bf78:28:txt:0001;eee9bf78:28:txt:0002;eee9bf78:26:img:0000;eee9bf78:28:srw:0000,True,1,应返回第36页的插图，标题为“8.4 检查传动装置”，对应章节为“八、传动装置”下的“8.4 检查传动装置”，用于说明拨叉检查部位（标记1：拨叉凸轮从动件；标记2：拨叉卡爪）。该图在手册中出现两次（chunk_id: eee9bf78:28:img:0000 和 eee9bf78:28:img:0001），均位于第36页。,img:0000;img:0001;第36页,,检查传动装置,两张插图,1.0,True,True,False,pass,必答事实全部命中,required_facts,3329,135,3193,knowledge_retrieval,,5
+case_146,安装传动装置的图示是哪张？,image,easy,True,安装传动装置对应第37页插图。,安装传动装置;第37页,,eee9bf78:29:img:0000,eee9bf78:26:img:0001;eee9bf78:28:img:0000;eee9bf78:29:img:0000;eee9bf78:01:img:0000;eee9bf78:28:img:0001;eee9bf78:26:img:0000;eee9bf78:26:txt:0000;eee9bf78:26:txt:0001;eee9bf78:28:txt:0003;eee9bf78:28:txt:0000;eee9bf78:26:tbl:0004,True,3,图示为第37页的“8.5 安装传动装置”。,安装传动装置;第37页,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,986,123,862,knowledge_retrieval,,5
+case_147,拆卸曲轴与平衡轴的插图有哪些？,image,medium,True,拆卸曲轴与平衡轴对应第39页两张插图。,拆卸曲轴与平衡轴;第39页;两张插图,,eee9bf78:31:img:0000;eee9bf78:31:img:0001,eee9bf78:32:img:0002;eee9bf78:30:img:0000;eee9bf78:30:img:0001;eee9bf78:31:img:0000;eee9bf78:31:img:0001;eee9bf78:32:img:0001;eee9bf78:32:img:0003;eee9bf78:32:txt:0000;eee9bf78:32:txt:0001;eee9bf78:32:txt:0002;eee9bf78:32:txt:0003,True,4,应返回图 9.2“拆卸曲轴与平衡轴”，对应章节“九、曲轴与平衡轴”下的 9.2 节，位于手册第 39 页。,拆卸曲轴与平衡轴;第39页,两张插图,,,0.5,False,False,False,partial_answer,必答事实部分命中：2/3,required_facts,1273,133,1140,knowledge_retrieval,,5
+case_148,安装曲轴与平衡轴第41页的图示有哪些？,image,medium,True,安装曲轴与平衡轴第41页图示包括两张插图。,安装曲轴与平衡轴;第41页;两张插图,,eee9bf78:32:img:0003;eee9bf78:32:img:0004,eee9bf78:32:img:0003;eee9bf78:32:img:0004;eee9bf78:32:img:0000;eee9bf78:32:img:0001;eee9bf78:32:img:0002;eee9bf78:32:txt:0000;eee9bf78:32:txt:0001;eee9bf78:32:txt:0002;eee9bf78:32:txt:0003;eee9bf78:32:txt:0006;eee9bf78:32:txt:0004,True,1,第41页的图示为“9.4”章节下的插图，对应安装曲轴与平衡轴步骤中“将左曲轴箱体水平放置（合箱面朝上）”的操作示意图，具体为证据中提到的 `img:0003` 和 `img:0004` 两张图。,安装曲轴与平衡轴;第41页;两张插图,,,,1.0,True,True,False,pass,必答事实全部命中,required_facts,1792,124,1668,knowledge_retrieval,,5
+case_149,这台发动机蓝牙诊断模块如何配对手机？,no_answer,no_answer,False,知识库中没有相关信息，不能确认。,,,,eee9bf78:06:txt:0000;eee9bf78:06:txt:0002;eee9bf78:04:txt:0007;eee9bf78:04:txt:0001;eee9bf78:04:txt:0005;eee9bf78:04:txt:0006;eee9bf78:04:txt:0008;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000,False,,资料中未找到明确依据,,,,,1.0,True,True,False,pass,无答案问题正确拒答,local_rule,505,57,447,knowledge_retrieval,,5
+case_150,该发动机电喷喷油嘴清洗周期是多少公里？,no_answer,no_answer,False,知识库中没有相关信息，不能确认。,,,,eee9bf78:06:txt:0002;eee9bf78:02:txt:0008;eee9bf78:05:txt:0000;eee9bf78:06:txt:0001;eee9bf78:06:txt:0000;eee9bf78:05:txt:0001;eee9bf78:06:tbl:0004;eee9bf78:06:tbl:0005;eee9bf78:06:tbl:0007;eee9bf78:06:srw:0000;eee9bf78:06:srw:0004,False,,资料中未找到明确依据,,,,,1.0,True,True,False,pass,无答案问题正确拒答,local_rule,579,63,515,knowledge_retrieval,,5

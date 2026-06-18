@@ -1,0 +1,9 @@
+.env
+__pycache__/
+manual_tests/
+docs/superpowers/plans
+.venv/
+venv/
+*.pyc
+.pytest_cache/
+.idea/

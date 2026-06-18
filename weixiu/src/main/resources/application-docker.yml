@@ -1,0 +1,21 @@
+# ============================================================
+# Docker 部署 profile（SPRING_PROFILES_ACTIVE=docker 激活）
+# 只覆盖「容器内必须指向 compose 服务名」的 3 处硬编码 localhost；
+# 其余配置沿用 application.yml 的 ${ENV} 占位，密钥由 docker-compose 注入。
+# ============================================================
+spring:
+  datasource:
+    url: jdbc:mysql://mysql:3306/fix?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+
+# Java → Python AI 服务（compose 服务名 fixagent）
+ai:
+  python-service-url: http://fixagent:8000
+
+# MinIO（compose 服务名 minio）
+minio:
+  endpoint: http://minio:9000
+
+logging:
+  level:
+    org.neo4j.ogm: WARN
+    org.springframework.data.neo4j: WARN

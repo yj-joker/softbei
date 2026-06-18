@@ -1,0 +1,85 @@
+spring:
+  application:
+    name: weixiu
+  mail:
+    host: smtp.qq.com
+    port: 587
+    username: your-email@qq.com
+    password: YOUR_SMTP_AUTH_CODE        # QQ邮箱授权码
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+  neo4j:
+    uri: bolt://localhost:7687       # 协议是 bolt，不是 http
+    authentication:
+      username: neo4j
+      password: YOUR_NEO4J_PASSWORD
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/fix?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: root
+    password: YOUR_MYSQL_PASSWORD
+  rabbitmq:
+    host: localhost
+    port: 5672
+    username: guest
+    password: guest
+    virtual-host: /
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 10
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      password:
+      database: 1
+      timeout: 10s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+server:
+  port: 8080
+logging:
+  level:
+    org.neo4j.ogm: DEBUG              # 打印 OGM 生成的 Cypher
+    org.springframework.data.neo4j: DEBUG
+aliyun:
+  oss:
+    region: cn-beijing
+    bucket: your-oss-bucket
+    access-key-id: YOUR_ALIYUN_ACCESS_KEY_ID
+    access-key-secret: YOUR_ALIYUN_ACCESS_KEY_SECRET
+ai:
+  internal-token: fix-agent-internal-2026
+apikey: YOUR_DASHSCOPE_API_KEY          # sk-xxxx 百炼API密钥
+# ===== MinIO 配置 =====
+minio:
+  endpoint: http://localhost:9000
+  access-key: minioadmin
+  secret-key: minioadmin
+  bucket: weixiu

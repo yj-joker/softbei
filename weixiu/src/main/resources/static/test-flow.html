@@ -1,0 +1,838 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>检修流程接口测试</title>
+<style>
+:root {
+  --primary: #4f46e5;
+  --primary-hover: #4338ca;
+  --success: #059669;
+  --warning: #d97706;
+  --danger: #dc2626;
+  --bg: #f8fafc;
+  --card-bg: #ffffff;
+  --border: #e2e8f0;
+  --text: #1e293b;
+  --text-muted: #64748b;
+  --sidebar-bg: #1e293b;
+  --sidebar-text: #cbd5e1;
+  --sidebar-active: #4f46e5;
+  --radius: 8px;
+  --shadow: 0 1px 3px rgba(0,0,0,.1), 0 1px 2px rgba(0,0,0,.06);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--text); display: flex; height: 100vh; overflow: hidden; }
+
+/* Sidebar */
+.sidebar { width: 260px; background: var(--sidebar-bg); color: var(--sidebar-text); display: flex; flex-direction: column; flex-shrink: 0; }
+.sidebar-header { padding: 20px; border-bottom: 1px solid rgba(255,255,255,.1); }
+.sidebar-header h2 { font-size: 18px; color: #fff; margin-bottom: 4px; }
+.sidebar-header p { font-size: 12px; color: var(--sidebar-text); }
+.sidebar-nav { flex: 1; overflow-y: auto; padding: 12px 0; }
+.nav-group { margin-bottom: 8px; }
+.nav-group-title { font-size: 11px; text-transform: uppercase; letter-spacing: .5px; padding: 8px 20px 4px; color: rgba(255,255,255,.4); }
+.nav-item { display: block; width: 100%; text-align: left; padding: 10px 20px; border: none; background: none; color: var(--sidebar-text); cursor: pointer; font-size: 14px; transition: all .15s; border-left: 3px solid transparent; }
+.nav-item:hover { background: rgba(255,255,255,.06); color: #fff; }
+.nav-item.active { background: rgba(79,70,229,.2); color: #fff; border-left-color: var(--sidebar-active); }
+.nav-item .method { display: inline-block; font-size: 10px; font-weight: 700; padding: 2px 6px; border-radius: 3px; margin-right: 6px; width: 40px; text-align: center; }
+.method.get { background: #059669; color: #fff; }
+.method.post { background: #4f46e5; color: #fff; }
+.sidebar-footer { padding: 16px 20px; border-top: 1px solid rgba(255,255,255,.1); font-size: 12px; }
+.login-status { display: flex; align-items: center; gap: 8px; }
+.login-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); }
+.login-dot.on { background: var(--success); }
+
+/* Main */
+.main { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+.main-header { padding: 16px 24px; background: var(--card-bg); border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.main-header h1 { font-size: 20px; }
+.main-header .endpoint-badge { font-size: 13px; color: var(--text-muted); }
+.main-body { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+
+/* Cards */
+.card { background: var(--card-bg); border-radius: var(--radius); box-shadow: var(--shadow); padding: 20px; }
+.card-title { font-size: 16px; font-weight: 600; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
+.form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 20px; }
+.form-grid.span-2 { grid-template-columns: 1fr; }
+.form-group { display: flex; flex-direction: column; gap: 4px; }
+.form-group.full { grid-column: 1 / -1; }
+.form-group label { font-size: 13px; font-weight: 500; color: var(--text-muted); }
+.form-group input, .form-group select, .form-group textarea {
+  padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 14px; font-family: inherit; transition: border-color .15s;
+  background: #fff;
+}
+.form-group input:focus, .form-group select:focus, .form-group textarea:focus { outline: none; border-color: var(--primary); box-shadow: 0 0 0 3px rgba(79,70,229,.1); }
+.form-group textarea { resize: vertical; min-height: 80px; font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; font-size: 13px; }
+.form-group .hint { font-size: 11px; color: var(--text-muted); }
+.btn-row { display: flex; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.btn { padding: 9px 18px; border: none; border-radius: 6px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all .15s; display: inline-flex; align-items: center; gap: 6px; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-outline { background: #fff; color: var(--primary); border: 1px solid var(--primary); }
+.btn-outline:hover { background: rgba(79,70,229,.05); }
+.btn-sm { padding: 5px 12px; font-size: 12px; }
+.btn-danger { background: var(--danger); color: #fff; }
+.btn-danger:hover { background: #b91c1c; }
+
+/* Response panel */
+.response-panel { background: #1e293b; color: #e2e8f0; border-radius: var(--radius); overflow: hidden; }
+.response-header { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; background: rgba(0,0,0,.2); }
+.response-header h3 { font-size: 14px; color: #94a3b8; }
+.response-body { padding: 16px; overflow-x: auto; max-height: 500px; overflow-y: auto; }
+.response-body pre { font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
+.response-status { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; font-weight: 600; }
+.response-status.success { background: rgba(5,150,105,.2); color: #34d399; }
+.response-status.error { background: rgba(220,38,38,.2); color: #f87171; }
+.response-empty { color: #64748b; font-style: italic; padding: 40px; text-align: center; }
+
+/* SSE stream area */
+.sse-stream { background: #0f172a; color: #34d399; border-radius: var(--radius); padding: 16px; max-height: 400px; overflow-y: auto; font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
+.sse-stream .system-msg { color: #94a3b8; }
+.sse-stream .error-msg { color: #f87171; }
+
+/* Log panel */
+.log-panel { border-top: 2px solid var(--border); background: var(--card-bg); max-height: 150px; overflow-y: auto; }
+.log-panel-header { padding: 8px 24px; font-size: 13px; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; justify-content: space-between; }
+.log-entry { padding: 4px 24px; font-size: 12px; font-family: 'SF Mono', 'Monaco', 'Consolas', monospace; border-bottom: 1px solid var(--border); display: flex; gap: 12px; }
+.log-time { color: var(--text-muted); white-space: nowrap; }
+.log-msg { flex: 1; }
+.log-msg.ok { color: var(--success); }
+.log-msg.err { color: var(--danger); }
+.log-msg.info { color: var(--primary); }
+
+/* Login overlay */
+.overlay { position: fixed; inset: 0; background: rgba(0,0,0,.5); display: flex; align-items: center; justify-content: center; z-index: 100; }
+.login-card { background: var(--card-bg); border-radius: 12px; padding: 32px; width: 380px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+.login-card h2 { margin-bottom: 20px; text-align: center; }
+.login-card .form-group { margin-bottom: 12px; }
+.login-card .btn { width: 100%; justify-content: center; margin-top: 8px; }
+
+/* Misc */
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; font-weight: 600; }
+.badge-blue { background: #dbeafe; color: #1d4ed8; }
+.badge-green { background: #d1fae5; color: #065f46; }
+.badge-red { background: #fee2e2; color: #991b1b; }
+.badge-yellow { background: #fef3c7; color: #92400e; }
+.empty-state { text-align: center; padding: 60px 20px; color: var(--text-muted); }
+.empty-state svg { opacity: .3; margin-bottom: 12px; }
+.flex-row { display: flex; align-items: center; gap: 8px; }
+.spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid rgba(255,255,255,.3); border-top-color: #fff; border-radius: 50%; animation: spin .6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<!-- Login Overlay -->
+<div id="loginOverlay" class="overlay">
+  <div class="login-card">
+    <h2>🔐 登录</h2>
+    <div class="form-group">
+      <label>用户名</label>
+      <input id="loginUsername" type="text" value="admin" placeholder="请输入用户名">
+    </div>
+    <div class="form-group">
+      <label>密码</label>
+      <input id="loginPassword" type="password" value="123456" placeholder="请输入密码">
+    </div>
+    <div id="loginError" style="color:var(--danger);font-size:13px;margin-bottom:8px;display:none;"></div>
+    <button class="btn btn-primary" onclick="doLogin()">登 录</button>
+  </div>
+</div>
+
+<!-- Sidebar -->
+<aside class="sidebar">
+  <div class="sidebar-header">
+    <h2>🔧 检修流程测试</h2>
+    <p>MaintenanceTaskController</p>
+  </div>
+  <nav class="sidebar-nav">
+    <div class="nav-group">
+      <div class="nav-group-title">基础操作</div>
+      <button class="nav-item active" data-section="create">
+        <span class="method post">POST</span>创建任务
+      </button>
+      <button class="nav-item" data-section="list">
+        <span class="method get">GET</span>任务列表
+      </button>
+      <button class="nav-item" data-section="detail">
+        <span class="method get">GET</span>任务详情
+      </button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">执行流程</div>
+      <button class="nav-item" data-section="start">
+        <span class="method post">POST</span>开始执行
+      </button>
+      <button class="nav-item" data-section="retry">
+        <span class="method post">POST</span>重试生成
+      </button>
+      <button class="nav-item" data-section="steps">
+        <span class="method get">GET</span>步骤列表
+      </button>
+      <button class="nav-item" data-section="execute">
+        <span class="method post">POST</span>执行步骤
+      </button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">AI 交互</div>
+      <button class="nav-item" data-section="chat">
+        <span class="method post">POST</span>AI对话(SSE)
+      </button>
+    </div>
+    <div class="nav-group">
+      <div class="nav-group-title">提升操作</div>
+      <button class="nav-item" data-section="promote">
+        <span class="method post">POST</span>提升为规程
+      </button>
+      <button class="nav-item" data-section="promoteGraph">
+        <span class="method post">POST</span>提升到图谱
+      </button>
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="login-status">
+      <span class="login-dot" id="statusDot"></span>
+      <span id="statusText">未登录</span>
+    </div>
+  </div>
+</aside>
+
+<!-- Main Content -->
+<main class="main">
+  <div class="main-header">
+    <div class="flex-row">
+      <h1 id="sectionTitle">创建任务</h1>
+      <span class="endpoint-badge" id="endpointBadge">POST /weixiu/task</span>
+    </div>
+    <div class="flex-row">
+      <span style="font-size:13px;color:var(--text-muted);">当前taskId:</span>
+      <span id="currentTaskIdDisplay" style="font-family:monospace;font-size:14px;font-weight:600;color:var(--primary);">--</span>
+      <button class="btn btn-sm btn-outline" onclick="copyTaskId()">复制</button>
+    </div>
+  </div>
+  <div class="main-body" id="mainBody">
+    <!-- Dynamic content -->
+  </div>
+
+  <!-- Log panel -->
+  <div class="log-panel" id="logPanel">
+    <div class="log-panel-header">
+      <span>📋 操作日志</span>
+      <button class="btn btn-sm btn-outline" onclick="clearLogs()">清空</button>
+    </div>
+    <div id="logEntries"></div>
+  </div>
+</main>
+
+<script>
+// ==================== STATE ====================
+let currentSection = 'create';
+let loggedIn = false;
+
+// ==================== HELPERS ====================
+function $(id) { return document.getElementById(id); }
+function escapeHtml(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function now() { return new Date().toLocaleTimeString('zh-CN', { hour12: false }); }
+function getTaskId() { return sessionStorage.getItem('taskId') || ''; }
+function setTaskId(id) { sessionStorage.setItem('taskId', String(id)); $('currentTaskIdDisplay').textContent = id; updateTaskIdDisplays(); }
+function updateTaskIdDisplays() {
+  const tid = getTaskId();
+  $('currentTaskIdDisplay').textContent = tid || '--';
+  document.querySelectorAll('.auto-task-id').forEach(el => { if (!el.value) el.placeholder = tid || '请输入taskId'; });
+}
+function copyTaskId() {
+  const tid = getTaskId();
+  if (!tid) return log('没有可复制的taskId', 'info');
+  navigator.clipboard.writeText(tid).then(() => log('taskId 已复制: ' + tid, 'ok'));
+}
+
+// ==================== LOG ====================
+function log(msg, type) {
+  type = type || 'info';
+  const entry = document.createElement('div');
+  entry.className = 'log-entry';
+  entry.innerHTML = `<span class="log-time">${now()}</span><span class="log-msg ${type}">${escapeHtml(msg)}</span>`;
+  const container = $('logEntries');
+  container.prepend(entry);
+  if (container.children.length > 100) container.removeChild(container.lastChild);
+}
+function clearLogs() { $('logEntries').innerHTML = ''; }
+
+// ==================== API ====================
+async function api(method, path, options) {
+  options = options || {};
+  const { body, params, raw } = options;
+  let url = path;
+  if (params) {
+    const sp = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) {
+      if (v !== undefined && v !== null && v !== '') sp.append(k, String(v));
+    }
+    const qs = sp.toString();
+    if (qs) url += '?' + qs;
+  }
+  const fetchOpts = { method, credentials: 'include', headers: {} };
+  if (body && method !== 'GET') {
+    fetchOpts.headers['Content-Type'] = 'application/json';
+    fetchOpts.body = JSON.stringify(body);
+  }
+  try {
+    const res = await fetch(url, fetchOpts);
+    if (raw) return res;
+    const json = await res.json();
+    return json;
+  } catch (e) {
+    return { code: 'NETWORK_ERROR', message: e.message, data: null };
+  }
+}
+
+function isSuccess(json) { return json && json.code === '200'; }
+
+function showResponse(json, reqInfo) {
+  const panel = $('responsePanel');
+  if (!panel) return;
+  const statusClass = isSuccess(json) ? 'success' : 'error';
+  const statusText = isSuccess(json) ? '✓ ' + json.code : '✗ ' + (json.code || 'ERROR');
+  let html = '<div class="response-header"><div class="flex-row">';
+  html += `<span class="response-status ${statusClass}">${statusText}</span>`;
+  html += `<span style="font-size:12px;color:#94a3b8;">${escapeHtml(json.message || '')}</span>`;
+  html += '</div>';
+  html += '<div class="flex-row">';
+  if (reqInfo) html += `<span style="font-size:11px;color:#64748b;">${escapeHtml(reqInfo)}</span>`;
+  html += '<button class="btn btn-sm btn-outline" style="color:#94a3b8;border-color:#475569;" onclick="copyResponse()">复制响应</button>';
+  html += '</div></div>';
+  html += '<div class="response-body"><pre id="responseContent">' + escapeHtml(JSON.stringify(json, null, 2)) + '</pre></div>';
+  panel.innerHTML = html;
+}
+
+function copyResponse() {
+  const pre = $('responseContent');
+  if (!pre) return;
+  navigator.clipboard.writeText(pre.textContent).then(() => log('响应已复制', 'ok'));
+}
+
+async function callAndShow(method, path, options, label) {
+  log(`${method} ${path}`, 'info');
+  const json = await api(method, path, options);
+  const ok = isSuccess(json);
+  log(`${ok ? '✓' : '✗'} ${json.code || 'ERROR'} ${json.message || ''}`, ok ? 'ok' : 'err');
+  showResponse(json, label || (method + ' ' + path));
+  // Auto-set taskId if response contains one
+  if (ok && json.data && json.data.id) {
+    setTaskId(json.data.id);
+  }
+  return json;
+}
+
+// ==================== SSE Chat ====================
+async function sseChat(taskId, stepId, message, images) {
+  const streamArea = $('sseStreamArea');
+  if (streamArea) streamArea.innerHTML = '';
+  log(`SSE POST /weixiu/task/${taskId}/steps/${stepId}/chat`, 'info');
+  try {
+    const res = await fetch(`/weixiu/task/${taskId}/steps/${stepId}/chat`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message, images: images || [] })
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      if (streamArea) streamArea.innerHTML = '<span class="error-msg">HTTP ' + res.status + ': ' + escapeHtml(err) + '</span>';
+      log('✗ SSE 连接失败: ' + res.status, 'err');
+      return;
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        if (line.startsWith('data:')) {
+          const data = line.substring(5).trim();
+          if (data === '[DONE]') {
+            if (streamArea) streamArea.innerHTML += '<span class="system-msg">--- 对话结束 ---</span>\n';
+            log('✓ SSE 对话完成', 'ok');
+            return;
+          }
+          try {
+            const parsed = JSON.parse(data);
+            if (streamArea) streamArea.innerHTML += escapeHtml(JSON.stringify(parsed, null, 2)) + '\n';
+          } catch {
+            if (streamArea) streamArea.innerHTML += escapeHtml(data) + '\n';
+          }
+        } else if (line.startsWith('event:')) {
+          if (streamArea) streamArea.innerHTML += '<span class="system-msg">[' + escapeHtml(line.substring(6).trim()) + ']</span>\n';
+        }
+        if (streamArea) streamArea.scrollTop = streamArea.scrollHeight;
+      }
+    }
+  } catch (e) {
+    if (streamArea) streamArea.innerHTML += '<span class="error-msg">错误: ' + escapeHtml(e.message) + '</span>\n';
+    log('✗ SSE 错误: ' + e.message, 'err');
+  }
+}
+
+// ==================== LOGIN ====================
+async function doLogin() {
+  const username = $('loginUsername').value.trim();
+  const password = $('loginPassword').value.trim();
+  if (!username || !password) {
+    $('loginError').style.display = 'block';
+    $('loginError').textContent = '请输入用户名和密码';
+    return;
+  }
+  log('POST /weixiu/user/login', 'info');
+  $('loginError').style.display = 'none';
+  try {
+    const res = await fetch('/weixiu/user/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    const json = await res.json();
+    if (json.code === '200') {
+      loggedIn = true;
+      $('loginOverlay').style.display = 'none';
+      $('statusDot').classList.add('on');
+      $('statusText').textContent = username;
+      log('✓ 登录成功', 'ok');
+    } else {
+      $('loginError').style.display = 'block';
+      $('loginError').textContent = json.message || '登录失败';
+      log('✗ 登录失败: ' + json.message, 'err');
+    }
+  } catch (e) {
+    $('loginError').style.display = 'block';
+    $('loginError').textContent = '网络错误: ' + e.message;
+    log('✗ 登录网络错误', 'err');
+  }
+}
+
+// Check login status on load
+async function checkLogin() {
+  try {
+    const res = await fetch('/weixiu/user/login', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+    // This will likely fail with 401 - just show the login overlay
+    $('loginOverlay').style.display = 'flex';
+  } catch (e) {
+    $('loginOverlay').style.display = 'flex';
+  }
+}
+
+// ==================== SECTION RENDERING ====================
+function showSection(name) {
+  currentSection = name;
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  document.querySelector(`[data-section="${name}"]`).classList.add('active');
+  updateTaskIdDisplays();
+  renderSection(name);
+}
+
+function responsePanelHtml() {
+  return '<div class="card" id="responsePanel"><div class="response-empty">点击发送按钮后，响应将显示在此处</div></div>';
+}
+
+function quickFillBtn(taskId) {
+  return `<button class="btn btn-sm btn-outline" onclick="setTaskId('${taskId}');updateTaskIdDisplays();log('已设置 taskId: ${taskId}','info');">填充当前taskId</button>`;
+}
+
+function renderSection(name) {
+  const body = $('mainBody');
+  const tid = getTaskId();
+  let html = '';
+
+  switch (name) {
+    // ==================== CREATE ====================
+    case 'create':
+      $('sectionTitle').textContent = '创建任务';
+      $('endpointBadge').textContent = 'POST /weixiu/task';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>📝 创建检修任务</span><button class="btn btn-sm btn-outline" onclick="fillCreateSample()">填入示例数据</button></div>
+          <div class="form-grid">
+            <div class="form-group"><label>设备ID (deviceId)</label><input id="f_deviceId" placeholder="知识图谱节点ID，可选"></div>
+            <div class="form-group"><label>设备名称 (deviceName)</label><input id="f_deviceName" placeholder="例如：注塑机A-01"></div>
+            <div class="form-group full"><label>故障描述 (faultDescription) *必填</label><textarea id="f_faultDescription" placeholder="描述设备故障现象..."></textarea></div>
+            <div class="form-group"><label>紧急程度 (urgencyLevel)</label>
+              <select id="f_urgencyLevel"><option value="0">0 - 低</option><option value="1" selected>1 - 一般</option><option value="2">2 - 紧急</option></select>
+            </div>
+            <div class="form-group"><label>维修级别 (maintenanceLevel)</label>
+              <select id="f_maintenanceLevel"><option value="">无</option><option value="ROUTINE" selected>ROUTINE - 日常</option><option value="MINOR">MINOR - 小修</option><option value="MAJOR">MAJOR - 大修</option></select>
+            </div>
+            <div class="form-group full"><label>报修图片 (reportImages)</label><input id="f_reportImages" placeholder="图片URL，逗号分隔，可选"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doCreate()">发送请求</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== LIST ====================
+    case 'list':
+      $('sectionTitle').textContent = '任务列表';
+      $('endpointBadge').textContent = 'GET /weixiu/task';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>📋 查询任务列表（分页）</span></div>
+          <div class="form-grid">
+            <div class="form-group"><label>页码 (page)</label><input id="f_page" type="number" value="1" min="1"></div>
+            <div class="form-group"><label>每页条数 (size)</label><input id="f_size" type="number" value="10" min="1" max="100"></div>
+            <div class="form-group"><label>状态筛选 (status)</label>
+              <select id="f_status"><option value="">全部</option><option value="CREATED">CREATED</option><option value="GENERATING">GENERATING</option><option value="GENERATED">GENERATED</option><option value="GENERATE_FAILED">GENERATE_FAILED</option><option value="EXECUTING">EXECUTING</option><option value="CLOSED">CLOSED</option></select>
+            </div>
+            <div class="form-group"><label>设备名称模糊搜索 (deviceName)</label><input id="f_listDeviceName" placeholder="模糊搜索设备名称"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doList()">查询</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== DETAIL ====================
+    case 'detail':
+      $('sectionTitle').textContent = '任务详情';
+      $('endpointBadge').textContent = 'GET /weixiu/task/{taskId}';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>🔍 获取任务详情（含步骤列表）</span>${quickFillBtn(tid)}</div>
+          <div class="form-grid span-2">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_detailId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doDetail()">查询</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== START ====================
+    case 'start':
+      $('sectionTitle').textContent = '开始执行';
+      $('endpointBadge').textContent = 'POST /weixiu/task/{taskId}/start';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>▶️ 开始执行任务</span>${quickFillBtn(tid)}</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">将任务状态从 GENERATED 转换为 EXECUTING。仅当任务状态为 GENERATED 时可调用。</p>
+          <div class="form-grid span-2">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_startId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doStart()">开始执行</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== RETRY ====================
+    case 'retry':
+      $('sectionTitle').textContent = '重试生成';
+      $('endpointBadge').textContent = 'POST /weixiu/task/{taskId}/retry';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>🔄 重试AI生成步骤</span>${quickFillBtn(tid)}</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">仅当任务状态为 GENERATE_FAILED 时可调用，将重新触发AI生成检修步骤。</p>
+          <div class="form-grid span-2">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_retryId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doRetry()">重试生成</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== STEPS ====================
+    case 'steps':
+      $('sectionTitle').textContent = '步骤列表';
+      $('endpointBadge').textContent = 'GET /weixiu/task/{taskId}/steps';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>📜 获取任务步骤列表</span>${quickFillBtn(tid)}</div>
+          <div class="form-grid span-2">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_stepsId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doSteps()">查询步骤</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== EXECUTE ====================
+    case 'execute':
+      $('sectionTitle').textContent = '执行步骤';
+      $('endpointBadge').textContent = 'POST /weixiu/task/{taskId}/steps/{stepId}/execute';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>✅ 执行检修步骤</span><div class="flex-row">${quickFillBtn(tid)}</div></div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">提交步骤执行证据。仅当任务状态为 EXECUTING 时可调用。需要拍照的步骤必须提供图片，需要备注的步骤必须提供备注，检查点步骤必须确认。</p>
+          <div class="form-grid">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_execTaskId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+            <div class="form-group"><label>步骤ID (stepId)</label><input id="f_execStepId" placeholder="请输入stepId"></div>
+            <div class="form-group full"><label>图片 (images)</label><input id="f_execImages" placeholder="图片URL，逗号分隔"></div>
+            <div class="form-group full"><label>备注 (note)</label><textarea id="f_execNote" placeholder="执行备注..."></textarea></div>
+            <div class="form-group"><label style="display:flex;align-items:center;gap:8px;cursor:pointer;"><input type="checkbox" id="f_execCheckpoint" style="width:auto;"> 检查点确认 (checkpointConfirmed)</label></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doExecute()">执行步骤</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== CHAT ====================
+    case 'chat':
+      $('sectionTitle').textContent = 'AI对话 (SSE)';
+      $('endpointBadge').textContent = 'POST /weixiu/task/{taskId}/steps/{stepId}/chat (SSE)';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>🤖 检修步骤AI对话</span>${quickFillBtn(tid)}</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">向AI助手发送消息，获取当前步骤的指导。响应为SSE流式输出。</p>
+          <div class="form-grid">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_chatTaskId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+            <div class="form-group"><label>步骤ID (stepId)</label><input id="f_chatStepId" placeholder="请输入stepId"></div>
+            <div class="form-group full"><label>消息 (message)</label><textarea id="f_chatMessage" placeholder="输入你想问AI的问题..."></textarea></div>
+            <div class="form-group full"><label>图片 (images)</label><input id="f_chatImages" placeholder="图片URL，逗号分隔，可选"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doChat()">发送消息</button>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-title"><span>📡 SSE 实时输出</span><button class="btn btn-sm btn-outline" onclick="$('sseStreamArea').innerHTML='';">清空</button></div>
+          <div class="sse-stream" id="sseStreamArea"><span class="system-msg">等待发送消息...</span></div>
+        </div>
+      `;
+      break;
+
+    // ==================== PROMOTE ====================
+    case 'promote':
+      $('sectionTitle').textContent = '提升为标准规程';
+      $('endpointBadge').textContent = 'POST /weixiu/task/{taskId}/promote';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>📋 提升为检修标准规程</span>${quickFillBtn(tid)}</div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">将已关闭(CLOSED)的任务转化为标准规程(StandardProcedure)草稿。返回新创建的规程ID。</p>
+          <div class="form-grid span-2">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_promoteId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doPromote()">提升为规程</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+
+    // ==================== PROMOTE TO GRAPH ====================
+    case 'promoteGraph':
+      $('sectionTitle').textContent = '提升到知识图谱';
+      $('endpointBadge').textContent = 'POST /weixiu/task/{taskId}/promote-to-graph';
+      html = `
+        <div class="card">
+          <div class="card-title"><span>🧠 提升到Neo4j知识图谱</span><div class="flex-row">${quickFillBtn(tid)}<button class="btn btn-sm btn-outline" onclick="fillGraphSample()">填入示例数据</button></div></div>
+          <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">将已关闭(CLOSED)任务的设备、部件、故障、解决方案信息写入Neo4j知识图谱。</p>
+          <div class="form-grid span-2">
+            <div class="form-group"><label>任务ID (taskId)</label><input id="f_graphTaskId" class="auto-task-id" value="${tid}" placeholder="请输入taskId"></div>
+            <div class="form-group"><label>设备名称 (deviceName)</label><input id="f_graphDeviceName" placeholder="例如：注塑机A-01"></div>
+            <div class="form-group"><label>规程ID (procedureId)</label><input id="f_graphProcedureId" type="number" placeholder="可选"></div>
+            <div class="form-group full"><label>部件列表 (components) - JSON数组</label><textarea id="f_graphComponents" placeholder='["料筒", "加热圈", "注射油缸"]'></textarea></div>
+            <div class="form-group full"><label>故障列表 (faults) - JSON数组</label><textarea id="f_graphFaults" placeholder='["温度异常", "注射压力不足"]'></textarea></div>
+            <div class="form-group full"><label>解决方案列表 (solutions) - JSON数组</label><textarea id="f_graphSolutions" placeholder='["更换加热圈", "检查液压系统"]'></textarea></div>
+          </div>
+          <div class="btn-row" style="margin-top:16px;">
+            <button class="btn btn-primary" onclick="doPromoteGraph()">提升到图谱</button>
+          </div>
+        </div>
+        ${responsePanelHtml()}
+      `;
+      break;
+  }
+
+  body.innerHTML = html;
+}
+
+// ==================== API CALLS ====================
+function getParam(id) { return $(id) ? $(id).value : ''; }
+function getInt(id) { const v = parseInt(getParam(id)); return isNaN(v) ? undefined : v; }
+function getBool(id) { return $(id) ? $(id).checked : false; }
+function parseImages(str) {
+  if (!str || !str.trim()) return [];
+  return str.split(',').map(s => s.trim()).filter(Boolean);
+}
+function parseJsonArray(str) {
+  if (!str || !str.trim()) return [];
+  try { const v = JSON.parse(str); return Array.isArray(v) ? v : []; }
+  catch (e) { log('JSON解析失败: ' + e.message + '，将作为空数组处理', 'err'); return []; }
+}
+
+async function doCreate() {
+  const body = {
+    deviceId: getParam('f_deviceId') || undefined,
+    deviceName: getParam('f_deviceName') || undefined,
+    faultDescription: getParam('f_faultDescription'),
+    urgencyLevel: getInt('f_urgencyLevel'),
+    reportImages: parseImages(getParam('f_reportImages')),
+    maintenanceLevel: getParam('f_maintenanceLevel') || undefined,
+  };
+  // Remove undefined keys
+  Object.keys(body).forEach(k => { if (body[k] === undefined) delete body[k]; });
+  const json = await callAndShow('POST', '/weixiu/task', { body }, 'POST /weixiu/task');
+  if (isSuccess(json) && json.data) {
+    // Create returns MaintenanceTaskVO which has id
+    if (json.data.id) setTaskId(json.data.id);
+    // Also try taskNumber for display
+    if (json.data.taskNumber) log('任务编号: ' + json.data.taskNumber, 'ok');
+  }
+}
+
+async function doList() {
+  const params = {
+    page: getInt('f_page') || 1,
+    size: getInt('f_size') || 10,
+    status: getParam('f_status') || undefined,
+    deviceName: getParam('f_listDeviceName') || undefined,
+  };
+  Object.keys(params).forEach(k => { if (params[k] === undefined) delete params[k]; });
+  await callAndShow('GET', '/weixiu/task', { params }, 'GET /weixiu/task');
+}
+
+async function doDetail() {
+  const tid = getParam('f_detailId') || getTaskId();
+  if (!tid) { log('请先输入taskId', 'err'); return; }
+  setTaskId(tid);
+  const json = await callAndShow('GET', `/weixiu/task/${tid}`, {}, `GET /weixiu/task/${tid}`);
+  if (isSuccess(json) && json.data) {
+    log(`任务状态: ${json.data.status || '?'}, 步骤数: ${(json.data.steps || []).length}`, 'ok');
+  }
+}
+
+async function doStart() {
+  const tid = getParam('f_startId') || getTaskId();
+  if (!tid) { log('请先输入taskId', 'err'); return; }
+  setTaskId(tid);
+  await callAndShow('POST', `/weixiu/task/${tid}/start`, {}, `POST /weixiu/task/${tid}/start`);
+}
+
+async function doRetry() {
+  const tid = getParam('f_retryId') || getTaskId();
+  if (!tid) { log('请先输入taskId', 'err'); return; }
+  setTaskId(tid);
+  await callAndShow('POST', `/weixiu/task/${tid}/retry`, {}, `POST /weixiu/task/${tid}/retry`);
+}
+
+async function doSteps() {
+  const tid = getParam('f_stepsId') || getTaskId();
+  if (!tid) { log('请先输入taskId', 'err'); return; }
+  setTaskId(tid);
+  const json = await callAndShow('GET', `/weixiu/task/${tid}/steps`, {}, `GET /weixiu/task/${tid}/steps`);
+  if (isSuccess(json) && json.data) {
+    log(`共 ${json.data.length} 个步骤`, 'ok');
+  }
+}
+
+async function doExecute() {
+  const tid = getParam('f_execTaskId') || getTaskId();
+  const sid = getParam('f_execStepId');
+  if (!tid || !sid) { log('请输入taskId和stepId', 'err'); return; }
+  setTaskId(tid);
+  const body = {
+    images: parseImages(getParam('f_execImages')),
+    note: getParam('f_execNote') || undefined,
+    checkpointConfirmed: getBool('f_execCheckpoint') || undefined,
+  };
+  Object.keys(body).forEach(k => { if (body[k] === undefined) delete body[k]; });
+  await callAndShow('POST', `/weixiu/task/${tid}/steps/${sid}/execute`, { body }, `POST /weixiu/task/${tid}/steps/${sid}/execute`);
+}
+
+async function doChat() {
+  const tid = getParam('f_chatTaskId') || getTaskId();
+  const sid = getParam('f_chatStepId');
+  const message = getParam('f_chatMessage');
+  if (!tid || !sid || !message) { log('请输入taskId、stepId和message', 'err'); return; }
+  setTaskId(tid);
+  const images = parseImages(getParam('f_chatImages'));
+  await sseChat(tid, sid, message, images);
+}
+
+async function doPromote() {
+  const tid = getParam('f_promoteId') || getTaskId();
+  if (!tid) { log('请先输入taskId', 'err'); return; }
+  setTaskId(tid);
+  const json = await callAndShow('POST', `/weixiu/task/${tid}/promote`, {}, `POST /weixiu/task/${tid}/promote`);
+  if (isSuccess(json) && json.data) {
+    log('新规程ID: ' + json.data, 'ok');
+  }
+}
+
+async function doPromoteGraph() {
+  const tid = getParam('f_graphTaskId') || getTaskId();
+  if (!tid) { log('请先输入taskId', 'err'); return; }
+  setTaskId(tid);
+  const body = {
+    deviceName: getParam('f_graphDeviceName') || undefined,
+    components: parseJsonArray(getParam('f_graphComponents')),
+    faults: parseJsonArray(getParam('f_graphFaults')),
+    solutions: parseJsonArray(getParam('f_graphSolutions')),
+    procedureId: getInt('f_graphProcedureId'),
+  };
+  Object.keys(body).forEach(k => { if (body[k] === undefined) delete body[k]; });
+  await callAndShow('POST', `/weixiu/task/${tid}/promote-to-graph`, { body }, `POST /weixiu/task/${tid}/promote-to-graph`);
+}
+
+// ==================== QUICK FILL ====================
+function fillCreateSample() {
+  $('f_deviceName').value = '注塑机A-03';
+  $('f_faultDescription').value = '注塑机温度不稳定，加热圈频繁报警，注射压力波动超过正常范围';
+  $('f_urgencyLevel').value = '1';
+  $('f_maintenanceLevel').value = 'ROUTINE';
+  $('f_deviceId').value = '';
+  $('f_reportImages').value = '';
+  log('已填入示例创建数据', 'info');
+}
+
+function fillGraphSample() {
+  $('f_graphDeviceName').value = '注塑机A-03';
+  $('f_graphComponents').value = '["料筒加热系统", "注射油缸", "温度传感器"]';
+  $('f_graphFaults').value = '["加热温度不稳定", "注射压力波动"]';
+  $('f_graphSolutions').value = '["更换加热圈并校准温控器", "检查液压油路并清洗伺服阀"]';
+  log('已填入示例图谱数据', 'info');
+}
+
+// ==================== INIT ====================
+function init() {
+  // Nav click handlers
+  document.querySelectorAll('.nav-item').forEach(el => {
+    el.addEventListener('click', () => showSection(el.dataset.section));
+  });
+  // Enter key for login
+  $('loginUsername').addEventListener('keydown', e => { if (e.key === 'Enter') $('loginPassword').focus(); });
+  $('loginPassword').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
+  // Show initial section
+  renderSection('create');
+  updateTaskIdDisplays();
+}
+
+window.addEventListener('DOMContentLoaded', init);
+</script>
+
+</body>
+</html>

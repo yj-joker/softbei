@@ -1,0 +1,246 @@
+/* ============================================================
+   设计令牌 — 暖意大胆（赤陶 × 奶油羊皮纸 × 暖咖控制台）
+   灵感取 Claude App 的温润纸感，但更浓烈、更有层次：
+   · 主色：赤陶/陶土橙（terracotta）
+   · 副色：藏红/琥珀金、暖橄榄、陶红
+   · 底色：暖奶油羊皮纸；外壳：暖咖espresso + 信号橙
+   · 标题：Fraunces 衬线（有性格）；正文：Hanken Grotesque
+   说明：保留全部历史变量名，统一映射到暖色体系，
+   令所有引用变量的组件无需改动即可整体换肤。
+   ============================================================ */
+:root {
+  /* —— 中性底色（暖）—— */
+  --vt-c-white: #fffdf8;
+  --vt-c-white-soft: #faf4ea;
+  --vt-c-white-mute: #f3ebdd;
+
+  --vt-c-black: #221a13;
+  --vt-c-black-soft: #2f241a;
+  --vt-c-black-mute: #463829;
+
+  --vt-c-indigo: #3a2a1c;
+
+  /* —— 品牌主色：赤陶 —— */
+  --app-primary: #c4602f;
+  --app-primary-light: #db8556;
+  --app-primary-dark: #a54d22;
+  --app-primary-bg: rgba(196, 96, 47, 0.09);
+  --app-accent: #c4602f;
+  --app-success: #5e8c3e;
+  --app-shadow: 0 1px 2px rgba(74, 45, 20, 0.05), 0 6px 20px rgba(120, 70, 30, 0.08);
+  --app-shadow-hover: 0 12px 34px rgba(120, 70, 30, 0.16);
+
+  --color-background: var(--plaza-bg);
+  --color-background-soft: var(--plaza-bg-card);
+  --color-background-mute: var(--plaza-bg-input);
+
+  --color-border: var(--plaza-border);
+  --color-border-hover: var(--plaza-accent);
+  --color-heading: var(--plaza-heading);
+  --color-text: var(--plaza-text);
+
+  /* —— 主配色：暖奶油羊皮纸 —— */
+  --atmospheric-bg-from: #f6efe2;
+  --atmospheric-bg-to: #f2e9d9;
+  --plaza-bg: #f4ecdf;
+  --plaza-bg-card: #fffdf8;
+  --plaza-bg-input: #f6f0e5;
+  --plaza-accent: #c4602f;
+  --plaza-accent-hover: #a54d22;
+  --plaza-tag-bg: #c4602f;
+  --plaza-accent-soft: rgba(196, 96, 47, 0.11);
+  --plaza-accent-soft-strong: rgba(196, 96, 47, 0.20);
+  --plaza-accent-grad: linear-gradient(135deg, #db8556 0%, #c4602f 55%, #a54d22 100%);
+  --plaza-heading: #2a2018;
+  --plaza-text: #4a3f34;
+  --plaza-text-muted: #8a7c6c;
+  --plaza-border: #e6dccb;
+  --plaza-border-strong: #d6c8b2;
+  --plaza-panel-bg: #f6f0e5;
+  --plaza-link: #c4602f;
+  --plaza-grid-light: #fffdf8;
+  --plaza-grid-dark: #f4ecdf;
+
+  /* —— 语义色（暖偏向）—— */
+  --plaza-success: #5e8c3e;
+  --plaza-success-soft: #f1f5e6;
+  --plaza-warning: #df9226;
+  --plaza-warning-soft: #fdf2e0;
+  --plaza-danger: #c5402c;
+  --plaza-danger-soft: #fbeae4;
+  --plaza-info: #c4602f;
+  --plaza-info-soft: #f8ece2;
+  --plaza-gold: #e0982f;
+
+  /* —— 阴影：暖调、有进深 —— */
+  --plaza-shadow-organic: 0 1px 2px rgba(74, 45, 20, 0.05), 0 3px 12px rgba(120, 70, 30, 0.07);
+  --plaza-shadow-organic-hover: 0 14px 34px rgba(120, 70, 30, 0.16), 0 3px 8px rgba(120, 70, 30, 0.06);
+  --plaza-radius-sm: 9px;
+  --plaza-radius: 12px;
+  --plaza-radius-lg: 18px;
+
+  /* —— 首页 / 主按钮 —— */
+  --home-btn-sage: #c4602f;
+  --home-btn-sage-hover: #a54d22;
+  --home-btn-text: #fffdf8;
+  --home-btn-radius: 13px;
+
+  /* —— 弹窗 —— */
+  --dialog-dark-bg: #fffdf8;
+  --dialog-dark-header: rgba(246, 240, 229, 0.98);
+  --dialog-dark-border: #e6dccb;
+  --dialog-dark-text: #2a2018;
+  --dialog-dark-muted: #8a7c6c;
+
+  /* —— Element Plus 覆盖（赤陶主色）—— */
+  --el-bg-color: #fffdf8;
+  --el-bg-color-overlay: #fffdf8;
+  --el-bg-color-page: #f4ecdf;
+  --el-fill-color: #f6f0e5;
+  --el-fill-color-light: #f3ebdd;
+  --el-fill-color-lighter: #f6f0e5;
+  --el-fill-color-blank: #fffdf8;
+  --el-text-color-primary: #2a2018;
+  --el-text-color-regular: #4a3f34;
+  --el-text-color-secondary: #8a7c6c;
+  --el-text-color-placeholder: #b3a692;
+  --el-border-color: #e6dccb;
+  --el-border-color-light: #ece3d4;
+  --el-border-color-lighter: #f1e9db;
+  --el-border-color-extra-light: #f6f0e5;
+  --el-border-color-dark: #d6c8b2;
+  --el-border-color-hover: #c9a878;
+  --el-fill-color-dark: #ece3d4;
+  --el-color-white: #fffdf8;
+  --el-color-black: #000000;
+  --el-color-primary: #c4602f;
+  --el-color-primary-light-3: #d2845b;
+  --el-color-primary-light-5: #de9f80;
+  --el-color-primary-light-7: #ebbfa8;
+  --el-color-primary-light-8: #f1d1bf;
+  --el-color-primary-light-9: #f8e8dd;
+  --el-color-primary-dark-2: #a54d22;
+  --el-color-success: #5e8c3e;
+  --el-color-warning: #df9226;
+  --el-color-danger: #c5402c;
+  --el-color-error: #c5402c;
+  --el-color-info: #8a7c6c;
+  --el-svg-icon-color: #8a7c6c;
+  --el-border-radius-base: 12px;
+  --el-box-shadow-light: 0 1px 2px rgba(74, 45, 20, 0.06);
+
+  /* —— 步骤序号 —— */
+  --step-num-bg: #f1d1bf;
+  --step-num-text: #a54d22;
+
+  /* —— Profile 页面兼容 —— */
+  --primary-blue: #c4602f;
+  --light-blue: #f1d1bf;
+  --text-dark: #2a2018;
+  --text-gray: #8a7c6c;
+  --bg-light: #f4ecdf;
+  --hover-blue: rgba(196, 96, 47, 0.09);
+  --border-color: #e6dccb;
+
+  /* —— 字体（有性格的暖编排）—— */
+  --font-mono: 'JetBrains Mono', 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: 'Fraunces', 'Bricolage Grotesque', 'Songti SC', Georgia, serif;
+  --font-body: 'Hanken Grotesque', 'Public Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+
+  /* —— 应用外壳：浅奶油控制台（warm cream + 赤陶信号，方案 C）—— */
+  --shell-ink: #ece0cd;
+  --shell-ink-soft: #f3e9da;
+  --shell-ink-raised: #e3d4bd;
+  --shell-ink-tail: #e6d8c0;
+  --shell-ink-line: rgba(90, 60, 35, 0.12);
+  --shell-ink-text: #5f4c39;
+  --shell-ink-text-dim: #8a755f;
+  --shell-ink-strong: #3a2c20;
+  --shell-hover-bg: rgba(165, 95, 40, 0.09);
+  --shell-glow: radial-gradient(130% 55% at 50% -8%, rgba(219, 133, 86, 0.13), transparent 62%);
+  --shell-active-bg: linear-gradient(90deg, rgba(219, 111, 42, 0.16), rgba(219, 111, 42, 0.035));
+  --shell-active-text: #a54d22;
+  --shell-rail-shadow: 8px 0 30px rgba(120, 80, 50, 0.10);
+  --signal: #f0974a;
+  --signal-strong: #db6f2a;
+  --signal-soft: rgba(240, 151, 74, 0.16);
+  --signal-line: rgba(240, 151, 74, 0.36);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  font-weight: normal;
+}
+
+html {
+  color-scheme: light !important;
+  height: 100%;
+}
+
+body {
+  min-height: 100%;
+  height: 100%;
+  color: var(--plaza-text);
+  background-color: var(--plaza-bg);
+  /* 暖色氛围：赤陶与琥珀的柔光在奶油纸上晕开 */
+  background-image:
+    radial-gradient(900px 540px at 8% -6%, rgba(219, 133, 86, 0.16), transparent 60%),
+    radial-gradient(760px 520px at 102% 6%, rgba(224, 152, 47, 0.12), transparent 58%),
+    radial-gradient(820px 680px at 50% 116%, rgba(196, 96, 47, 0.08), transparent 62%);
+  background-attachment: fixed;
+  line-height: 1.55;
+  font-family: var(--font-body);
+  font-size: 15px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+button {
+  font-family: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+}
+
+/* 标题默认走衬线展示字体，赋予编辑级气质 */
+h1, h2, h3, .display-font {
+  font-family: var(--font-display);
+}
+
+/* —— 全局滚动条：细、暖沙、悬停加深 —— */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #d6c8b2;
+  border-radius: 8px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: #c2a98a;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* —— 复用动效：入场上浮（GSAP 不可用时的优雅降级）—— */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

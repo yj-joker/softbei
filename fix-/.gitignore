@@ -1,0 +1,10 @@
+node_modules/
+dist/
+cookies.txt
+.DS_Store
+*.log
+.vite-dev.*
+*.swp
+*.swo
+src/api/request_*_*.js
+src/api/.request*.swp

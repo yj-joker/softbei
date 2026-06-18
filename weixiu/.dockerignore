@@ -1,0 +1,10 @@
+target/
+*.iml
+.idea/
+.git/
+.gitignore
+test-results/
+*.log
+logs/
+HELP.md
+.mvn/

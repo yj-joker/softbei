@@ -1,0 +1,30 @@
+# ===== 通用 =====
+.DS_Store
+*.log
+*.swp
+*.swo
+
+# ===== 前端 (fix-) =====
+node_modules/
+dist/
+.vite-dev.*
+cookies.txt
+
+# ===== Python 端 (FixAgent) =====
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+
+# ===== Java 端 (weixiu) =====
+target/
+*.iml
+.mvn/wrapper/maven-wrapper.jar
+# 含真实密钥的本地开发配置，不入库（用 application-dev.yml.example 作模板）
+application-dev.yml
+
+# ===== IDE =====
+.idea/
+.vscode/

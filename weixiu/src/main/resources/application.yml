@@ -1,0 +1,92 @@
+spring:
+  profiles:
+    active: dev
+  mail:
+    host: ${SMTP_HOST}
+    port: ${SMTP_PORT}
+    username: ${SMTP_USER}
+    password: ${SMTP_PASSWORD}
+    properties:
+      mail:
+        smtp:
+          auth: true
+          starttls:
+            enable: true
+            required: true
+  application:
+    name: weixiu
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+  neo4j:
+    uri: ${BOLT_URI}       # 协议是 bolt，不是 http
+    authentication:
+      username: neo4j
+      password: ${NEO4J_PASSWORD}              # 改成你设置的密码
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: jdbc:mysql://localhost:3306/fix?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
+    username: ${MYSQL_USER}
+    password: ${MYSQL_PASSWORD}
+  rabbitmq:
+    host: ${RABBITMQ_HOST}
+    port: ${RABBITMQ_PORT}
+    username: ${RABBITMQ_USER}
+    password: ${RABBITMQ_PASSWORD}
+    virtual-host: /
+    publisher-confirm-type: correlated
+    publisher-returns: true
+    listener:
+      simple:
+        acknowledge-mode: manual
+        prefetch: 10
+  data:
+    redis:
+      host: ${REDIS_HOST}
+      port: ${REDIS_PORT}
+      password: ${REDIS_PASSWORD}
+      database: 1
+      timeout: 10s
+      lettuce:
+        pool:
+          max-active: 8
+          max-idle: 8
+          min-idle: 0
+          max-wait: -1ms
+mybatis-plus:
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+  global-config:
+    db-config:
+      id-type: auto
+      logic-delete-field: deleted
+      logic-delete-value: 1
+      logic-not-delete-value: 0
+server:
+  port: 8080
+logging:
+  level:
+    org.neo4j.ogm: DEBUG              # 打印 OGM 生成的 Cypher
+    org.springframework.data.neo4j: DEBUG
+aliyun:
+  oss:
+    region: ${OSS_REGION}
+    bucket: ${OSS_BUCKET}
+    access-key-id: ${OSS_ACCESS_KEY_ID}
+    access-key-secret: ${OSS_ACCESS_KEY_SECRET}
+apikey: ${APIKEY}
+ai:
+  python-service-url: http://localhost:8000
+  internal-token: ${INTERNAL_TOKEN:fix-agent-internal-2026}
+weixiu:
+  task-validate:
+    enabled: true        # 入口校验总开关
+    llm-enabled: true    # Layer2 快模型层（可单独关，仅留规则层）
+# ===== MinIO 配置 =====
+minio:
+  endpoint: http://localhost:9000
+  access-key: ${MINIO_ACCESS_KEY}
+  secret-key: ${MINIO_SECRET_KEY}
+  bucket: ${MINIO_BUCKET}
