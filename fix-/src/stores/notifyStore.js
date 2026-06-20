@@ -101,14 +101,14 @@ function resolveByMessage(msg) {
 
 async function checkStatus(job) {
   if (job.kind === 'knowledge') {
-    const res = await request({ url: `/weixiu/maintenance-manual/${job.refId}`, method: 'GET' })
+    const res = await request({ url: `/weixiu/maintenance-manual/${job.refId}`, method: 'GET', silent: true })
     const ps = res?.data?.parseStatus
     if (ps === 'ready') return 'success'
     if (ps === 'failed') return 'failed'
     return 'running'
   }
   if (job.kind === 'task') {
-    const res = await request({ url: `/weixiu/task/${job.refId}`, method: 'GET' })
+    const res = await request({ url: `/weixiu/task/${job.refId}`, method: 'GET', silent: true })
     const st = res?.data?.status
     if (st && /fail/i.test(st)) return 'failed' // GENERATE_FAILED 等
     // 非「生成中/待生成/失败」即视为完成
