@@ -119,12 +119,13 @@ export async function request(options) {
       if (!silent) tip('服务返回异常，请稍后重试')
       throw error
     }
-    // 会话失效（后端 SessionInterceptor 返回 401）：提示 + 清登录态并跳登录页。
-    // 登录页自身的请求不处理，避免回环。（登录后回跳原页的 redirect 由第②条统一补上）
+    // 会话失效（后端 SessionInterceptor 返回 401）：提示 + 清登录态并带 redirect 跳登录页，
+    // 登录后由 Login.vue 跳回原页。登录页自身的请求不处理，避免回环。
     if (json && String(json.code) === '401' && location.pathname !== '/login') {
       try { localStorage.removeItem('userInfo') } catch (e) {}
       if (!silent) tip('登录已过期，请重新登录', 'warning')
-      location.href = '/login'
+      const redirect = encodeURIComponent(location.pathname + location.search)
+      location.href = `/login?redirect=${redirect}`
     }
     // 业务码非 200：默认交调用方处理（零回归）；仅当显式 autoTip 时才在此统一提示。
     if (autoTip && String(json.code) !== '200' && String(json.code) !== '401') {

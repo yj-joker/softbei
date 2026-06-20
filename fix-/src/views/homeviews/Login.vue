@@ -1,11 +1,12 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { gsap } from 'gsap'
 import { User, Lock, ArrowRight, Check } from '@element-plus/icons-vue'
 import { login } from '@/api/user'
 
 const router = useRouter()
+const route = useRoute()
 
 // 入场动效：左侧品牌信息逐项上浮 + 右侧卡片弹入
 onMounted(() => {
@@ -52,7 +53,12 @@ const handleSubmit = async () => {
         localStorage.setItem('userInfo', JSON.stringify(userData))
         loading.value = false
         setTimeout(() => {
-          if (Number(userData.type) === 1) {
+          // 优先跳回会话失效前的来源页（仅允许站内路径，避免开放重定向）；
+          // 若来源页与当前角色权限不符，路由守卫会再兜底纠正。
+          const redirect = route.query.redirect
+          if (typeof redirect === 'string' && redirect.startsWith('/') && !redirect.startsWith('//')) {
+            router.replace(redirect)
+          } else if (Number(userData.type) === 1) {
             router.push('/admin')
           } else {
             router.push('/user')
