@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, onBeforeUnmount } from 'vue'
+import { computed, reactive, ref, onBeforeUnmount } from 'vue'
 import { gsap } from 'gsap'
 import { notifyStore } from '@/stores/notifyStore'
 
@@ -22,10 +22,38 @@ function elapsed(ts) {
   return Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒'
 }
 
-// 知识导入任务带真实百分比时显示确定进度条；其余任务（如任务生成）保持不确定进度
-function hasPercent(job) {
-  return typeof job.percent === 'number' && job.percent > 0
+// 后端进度是离散档位（解析20/构建35/向量化60…），直接显示会「停在固定数字上跳变」。
+// 这里对知识导入任务做涓流动画：档位之间持续小步前进，真实档位到达时对齐（只增不减），
+// 让进度条始终在动、不卡死。本质是展示层的时间估算，关键节点仍由后端真实档位校正。
+const displayMap = reactive({})
+
+function displayPercent(job) {
+  const v = displayMap[job.key]
+  return Math.round(v == null ? (job.percent || 0) : v)
 }
+
+function tickProgress() {
+  const list = jobs.value
+  for (const job of list) {
+    if (job.kind !== 'knowledge' || job.status !== 'running') continue
+    const target = typeof job.percent === 'number' ? job.percent : 0
+    let cur = displayMap[job.key]
+    if (cur == null) cur = Math.max(target, 3)
+    if (cur < target) {
+      cur = target                                   // 真实档位到达：直接对齐，不倒退
+    } else {
+      const ceiling = Math.min(target + 14, 97)      // 档位间隙：朝下一档涓流，封顶留给真实档位
+      if (cur < ceiling) cur = Math.min(ceiling, cur + Math.max(0.15, (ceiling - cur) * 0.04))
+    }
+    displayMap[job.key] = cur
+  }
+  for (const key of Object.keys(displayMap)) {
+    if (!list.some(j => j.key === key)) delete displayMap[key]   // 任务结束后清理，防泄漏
+  }
+}
+
+const progressTicker = setInterval(tickProgress, 220)
+onBeforeUnmount(() => clearInterval(progressTicker))
 
 /* ---------- GSAP：仅用于入场/离场这类「高光时刻」，连续动效交给 CSS ---------- */
 function trayEnter(el, done) {
@@ -78,10 +106,10 @@ function itemLeave(el, done) {
               <template v-if="job.status === 'failed'">
                 <span class="ti-failtext">生成失败，请稍后重试</span>
               </template>
-              <template v-else-if="hasPercent(job)">
+              <template v-else-if="job.kind === 'knowledge'">
                 <span class="ti-stage">{{ job.stage || '处理中' }}</span>
-                <span class="ti-progress"><i :style="{ width: job.percent + '%' }" /></span>
-                <span class="ti-pct">{{ job.percent }}%</span>
+                <span class="ti-progress"><i :style="{ width: displayPercent(job) + '%' }" /></span>
+                <span class="ti-pct">{{ displayPercent(job) }}%</span>
               </template>
               <template v-else>
                 <span class="ti-time">已运行 {{ elapsed(job.startedAt) }}</span>
