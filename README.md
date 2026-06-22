@@ -34,3 +34,4 @@ cp FixAgent/.env.example FixAgent/.env
 | Python `FixAgent` | 建虚拟环境 → `pip install -r requirements.txt` → 启动 API |
 
 **3. 依赖中间件**：需本地或容器中运行 MySQL、Neo4j、Redis、RabbitMQ、MinIO（可用各目录下的 `Dockerfile` / 部署文件）。
+"test commit from cwt" 
