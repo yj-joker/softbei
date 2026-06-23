@@ -98,6 +98,10 @@ public class MemoryResultListener {
     private void processConsolidationResult(Map<String, Object> data, String sessionId, Long userId) {
         JSONObject summaryData = JSONUtil.parseObj(data);
 
+        // 整合写入的 turn_ts = 本窗口最后一条消息时间（毫秒），供同轮写仲裁（漏洞#1 1b）；
+        // 取不到则置 null（保守：不覆盖任何带真实 turn_ts 的实时写）。
+        Long windowTurnTs = computeWindowTurnTs(data);
+
         // 1. 保存newFacts —— 按 (user_id, name) upsert，与对话内 save_memory 收敛到同一 name 键空间，避免重复 active 事实。
         //    · 同名已存在(active/superseded) → 就地更新并重新激活；
         //    · 同名已被用户 delete_memory 软删 → 跳过，不因自动抽取而复活；
@@ -120,6 +124,9 @@ public class MemoryResultListener {
                 memoryFact.setImportance(fact.getInt("importance", 5));
                 memoryFact.setConfidence(fact.getDouble("confidence", 0.80));
                 memoryFact.setUsageCount(0);
+                // 同轮写仲裁（漏洞#1 1b）：整合写带来源 + 窗口 turn_ts
+                memoryFact.setSource("consolidation");
+                memoryFact.setTurnTs(windowTurnTs);
                 // 业务维度（Phase 4）
                 String deviceType = fact.getStr("deviceType", "");
                 if (!deviceType.isEmpty()) {
@@ -200,6 +207,8 @@ public class MemoryResultListener {
                 mf.setStatus("active");
                 mf.setImportance(5);
                 mf.setUsageCount(0);
+                mf.setSource("consolidation");
+                mf.setTurnTs(windowTurnTs);
                 String name = u.getStr("name");
                 if (name == null || name.isBlank()) {
                     name = "todo-" + mf.getFactId();
@@ -330,12 +339,71 @@ public class MemoryResultListener {
         } else if ("deleted".equals(existing.getStatus())) {
             return "skipped";
         } else {
+            // 同轮写仲裁（漏洞#1 1b）：整合较低优先级，若不应覆盖既有(更新的实时写/同轮更高优先级)则跳过
+            if (!shouldOverwrite(existing, mf.getTurnTs(), mf.getSource())) {
+                return "skipped";
+            }
             mf.setId(existing.getId());
             mf.setFactId(existing.getFactId());   // 保留原 factId，维持引用一致
             mf.setCreatedAt(existing.getCreatedAt());
             memoryFactService.updateById(mf);
             return "updated";
         }
+    }
+
+    /**
+     * 计算本次整合窗口的 turn_ts（毫秒）= 被整合消息中最后一条的创建时间。
+     * 取不到（无 consolidatedMessageIds / 查询失败）→ 返回 null；仲裁里 null 视为"最旧"，
+     * 即整合不会覆盖任何带真实 turn_ts 的实时写，保守安全。
+     */
+    private Long computeWindowTurnTs(Map<String, Object> data) {
+        try {
+            @SuppressWarnings("unchecked")
+            List<Number> ids = (List<Number>) data.get("consolidatedMessageIds");
+            if (ids == null || ids.isEmpty()) {
+                return null;
+            }
+            List<Long> msgIds = ids.stream().map(Number::longValue).collect(Collectors.toList());
+            LambdaQueryWrapper<AiMessage> q = new LambdaQueryWrapper<>();
+            q.in(AiMessage::getId, msgIds)
+                    .orderByDesc(AiMessage::getCreatedAt)
+                    .last("LIMIT 1");
+            AiMessage last = aiMessageService.getOne(q);
+            if (last == null || last.getCreatedAt() == null) {
+                return null;
+            }
+            return last.getCreatedAt().atZone(java.time.ZoneId.systemDefault()).toInstant().toEpochMilli();
+        } catch (Exception e) {
+            log.warn("[MQ结果] 计算整合 turn_ts 失败，置空(保守不覆盖实时写): {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 同轮写仲裁（漏洞#1）：时间为主裁判、来源仅作同轮 tie-break。
+     * turn_ts 更新→覆盖；相同→来源优先级 >= 既有才覆盖；更旧→跳过。
+     * （与 MemoryStoreImpl 的实时/兜底仲裁同规则；整合走 MQ 不经 saveMemory，故此处内联一份。）
+     */
+    private boolean shouldOverwrite(MemoryFact existing, Long incomingTurnTs, String incomingSource) {
+        long existingTs = existing.getTurnTs() == null ? Long.MIN_VALUE : existing.getTurnTs();
+        long incomingTs = incomingTurnTs == null ? Long.MIN_VALUE : incomingTurnTs;
+        if (incomingTs != existingTs) {
+            return incomingTs > existingTs;
+        }
+        return sourcePriority(incomingSource) >= sourcePriority(existing.getSource());
+    }
+
+    /** 来源优先级：用户实时 > 整合 > 兜底；未知/老调用方视为最高（保持旧覆盖行为）。 */
+    private static int sourcePriority(String source) {
+        if (source == null) {
+            return Integer.MAX_VALUE;
+        }
+        return switch (source) {
+            case "agent_explicit" -> 3;
+            case "consolidation" -> 2;
+            case "capture_fallback" -> 1;
+            default -> Integer.MAX_VALUE;
+        };
     }
 
     /**

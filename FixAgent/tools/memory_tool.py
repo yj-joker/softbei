@@ -161,6 +161,8 @@ class SaveMemoryTool(BaseTool):
         why: str = "",
         how_to_apply: str = "",
         user_id: str = "",
+        source: str = "agent_explicit",
+        turn_ts: Optional[int] = None,
         **kwargs,
     ) -> dict:
         if not user_id:
@@ -181,6 +183,10 @@ class SaveMemoryTool(BaseTool):
             "content": content,
             "why": why,
             "howToApply": how_to_apply,
+            # 同轮写仲裁（漏洞#1）：主 Agent 实时写 = 高优先级 agent_explicit；
+            # turn_ts 由 FixAgent 从 run_context 注入，与偏好兜底共用同值。
+            "source": source,
+            "turnTs": turn_ts,
         }
 
         try:

@@ -354,6 +354,9 @@ class FixAgent(BaseAgent):
         )
         if tool_name in ("recall_conversation_detail", "read_memory", "save_memory", "delete_memory"):
             kwargs["user_id"] = run_context.user_id or ""
+        if tool_name == "save_memory" and run_context.turn_ts is not None:
+            # 同轮写仲裁：注入本轮 turn_ts，与偏好兜底共用同值（漏洞#1）
+            kwargs["turn_ts"] = run_context.turn_ts
         if tool_name in ("knowledge_retrieval", "java_graph_diagnosis_path"):
             if run_context.images and not kwargs.get("image_urls"):
                 kwargs["image_urls"] = run_context.images

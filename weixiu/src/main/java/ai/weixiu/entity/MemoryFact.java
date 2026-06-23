@@ -146,4 +146,12 @@ public class MemoryFact implements Serializable {
     @TableField("how_to_apply")
     private String howToApply;
 
+    /** 触发该写入的用户消息毫秒时间戳 —— 同轮写仲裁主裁判（漏洞#1）。null 视为最旧 */
+    @TableField("turn_ts")
+    private Long turnTs;
+
+    /** 写入来源 —— 同轮 tie-break：agent_explicit/consolidation/capture_fallback。null 视为最高优先级（兼容老调用方） */
+    @TableField("source")
+    private String source;
+
 }

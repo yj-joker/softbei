@@ -287,6 +287,10 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     raw_message = request.message or ""
     effective_message = raw_message.strip() or IMAGE_ONLY_DEFAULT_MESSAGE
     context = dict(request.context or {})
+    # 同轮记忆写仲裁：为本轮生成唯一 turn_ts（毫秒），同时传给偏好兜底与主 Agent 的 save_memory；
+    # 两路带同一个值，Java saveMemory 才能在"同一句话"上按来源优先级仲裁（漏洞#1修复）。
+    turn_ts = int(time.time() * 1000)
+    context["turn_ts"] = turn_ts
     # 检索范围强制隔离：把会话绑定的设备/手册透传给检索工具（注入钩子里覆盖 LLM，LLM 不可放宽）
     context["retrieval_scope"] = {
         "device_type": request.device_type,
@@ -303,7 +307,7 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
 
     # 用户画像确定性兜底：偏好/身份不再只靠主 Agent 自觉调 save_memory，
     # 命中门控即后台抽取并按规范 name upsert 到 memory_fact(type=user)，下一轮即生效。
-    schedule_capture(raw_message, context.get("user_id"))
+    schedule_capture(raw_message, context.get("user_id"), turn_ts)
 
     if request.images and intent_decision.requires_image_understanding:
         image_understanding = await _build_image_understanding(request.images, effective_message)

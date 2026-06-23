@@ -97,6 +97,11 @@ public class MemoryStoreImpl implements MemoryStore {
         MemoryFact existing = memoryFactService.getOne(wrapper);
 
         if (existing != null) {
+            // 同轮写仲裁（漏洞#1）：本次写不应覆盖既有行时直接跳过，
+            // 挡住"同一句话里低优先级兜底盖掉高优先级主Agent"与"过期写盖新写"。
+            if (!shouldOverwrite(existing, m.getTurnTs(), m.getSource())) {
+                return;
+            }
             // 就地更新并重新激活
             existing.setDescription(m.getDescription());
             existing.setType(type);
@@ -104,6 +109,8 @@ public class MemoryStoreImpl implements MemoryStore {
             existing.setWhy(m.getWhy());
             existing.setHowToApply(m.getHowToApply());
             existing.setStatus(STATUS_ACTIVE);
+            existing.setTurnTs(m.getTurnTs());
+            existing.setSource(m.getSource());
             memoryFactService.updateById(existing);
             return;
         }
@@ -122,7 +129,39 @@ public class MemoryStoreImpl implements MemoryStore {
         fact.setStatus(STATUS_ACTIVE);
         fact.setImportance(DEFAULT_IMPORTANCE);
         fact.setCreatedAt(LocalDateTime.now());
+        fact.setTurnTs(m.getTurnTs());
+        fact.setSource(m.getSource());
         memoryFactService.save(fact);
+    }
+
+    /**
+     * 同轮写仲裁：决定本次写入是否应覆盖既有行（时间为主裁判，来源仅为同轮 tie-break）。
+     *   1) 本次 turn_ts 更新 → 覆盖（跨轮新值赢，含"用户改主意"）；
+     *   2) turn_ts 相同 → 本次来源优先级 >= 既有才覆盖（挡同一句话里异步兜底盖同步主Agent）；
+     *   3) 本次 turn_ts 更旧 → 跳过（过期写不盖新写）。
+     * 缺失 turn_ts 视为"最旧"、缺失/未知来源视为最高优先级 ——
+     * 不带这两个元数据的老调用方行为与改前一致（仍是覆盖），爆炸半径仅限显式声明的低优先级写。
+     */
+    private boolean shouldOverwrite(MemoryFact existing, Long incomingTurnTs, String incomingSource) {
+        long existingTs = existing.getTurnTs() == null ? Long.MIN_VALUE : existing.getTurnTs();
+        long incomingTs = incomingTurnTs == null ? Long.MIN_VALUE : incomingTurnTs;
+        if (incomingTs != existingTs) {
+            return incomingTs > existingTs;
+        }
+        return sourcePriority(incomingSource) >= sourcePriority(existing.getSource());
+    }
+
+    /** 来源优先级：用户实时 > 整合 > 兜底；未知/老调用方视为最高（保持旧的覆盖行为）。 */
+    private static int sourcePriority(String source) {
+        if (source == null) {
+            return Integer.MAX_VALUE;
+        }
+        return switch (source) {
+            case "agent_explicit" -> 3;
+            case "consolidation" -> 2;
+            case "capture_fallback" -> 1;
+            default -> Integer.MAX_VALUE;
+        };
     }
 
     @Override

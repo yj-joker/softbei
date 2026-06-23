@@ -70,16 +70,17 @@ def should_capture(user_message: str) -> bool:
     return bool(_PREF_CAPTURE_RE.search(user_message))
 
 
-def schedule_capture(user_message: str, user_id) -> None:
-    """命中门控时调用：后台异步抽取+落库，不阻塞主对话。"""
+def schedule_capture(user_message: str, user_id, turn_ts: Optional[int] = None) -> None:
+    """命中门控时调用：后台异步抽取+落库，不阻塞主对话。
+    turn_ts: 本轮用户消息毫秒时间戳，与主 Agent save_memory 共用同值，供 Java 同轮写仲裁。"""
     if not user_id or not should_capture(user_message):
         return
-    task = asyncio.create_task(_capture_and_save(user_message, str(user_id)))
+    task = asyncio.create_task(_capture_and_save(user_message, str(user_id), turn_ts))
     _pending.add(task)
     task.add_done_callback(_pending.discard)
 
 
-async def _capture_and_save(user_message: str, user_id: str) -> None:
+async def _capture_and_save(user_message: str, user_id: str, turn_ts: Optional[int] = None) -> None:
     try:
         items = await _extract(user_message)
         if not items:
@@ -100,6 +101,8 @@ async def _capture_and_save(user_message: str, user_id: str) -> None:
                     "content": content,
                     "why": "",
                     "howToApply": "",
+                    "source": "capture_fallback",
+                    "turnTs": turn_ts,
                 }
                 try:
                     resp = await client.post(url, params={"userId": user_id}, json=body, headers=headers)

@@ -438,3 +438,6 @@ CREATE TABLE IF NOT EXISTS knowledge_mastery (
                                                  PRIMARY KEY (id),
                                                  UNIQUE KEY uk_user_topic (user_id, topic)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='知识掌握度';
+ALTER TABLE `memory_fact`
+    ADD COLUMN `turn_ts` BIGINT      NULL COMMENT '触发该写入的用户消息毫秒时间戳（同轮写仲裁主裁判）',
+    ADD COLUMN `source`  VARCHAR(32) NULL COMMENT '写入来源: agent_explicit/consolidation/capture_fallback 实时整合,定时整合,兜底写入';

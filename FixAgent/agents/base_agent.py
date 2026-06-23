@@ -132,6 +132,8 @@ class AgentRunContext(BaseModel):
     intent_decision: Dict[str, Any] = Field(default_factory=dict)
     allowed_tools: Optional[List[str]] = None
     retrieval_scope: Dict[str, Any] = Field(default_factory=dict)
+    # 本轮用户消息毫秒时间戳：注入 save_memory 工具，供 Java 同轮写仲裁（漏洞#1）
+    turn_ts: Optional[int] = None
 
 
 class AgentOutput(BaseModel):
@@ -245,6 +247,7 @@ class BaseAgent(ABC):
             intent_decision=dict(intent_decision),
             allowed_tools=[str(name) for name in allowed_tools] if isinstance(allowed_tools, list) else None,
             retrieval_scope=dict(context.get("retrieval_scope") or {}),
+            turn_ts=context.get("turn_ts"),
         )
 
     def get_system_prompt_for_run(self, run_context: AgentRunContext) -> str:
