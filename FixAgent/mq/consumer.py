@@ -163,14 +163,16 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
         # ===== 删除动作：只清理向量，不解析文档 =====
         if action == "delete":
             document_id = body.get("documentId", "unknown")
-            logger.info("[MQ消费] 向量删除开始, documentId=%s", document_id)
+            logger.info("[MQ消费] 文档删除开始, documentId=%s", document_id)
             try:
-                from services.vector_service import get_vector_service
-                vector_svc = get_vector_service()
-                deleted_count = vector_svc.delete_by_document(document_id)
-                logger.info("[MQ消费] 向量删除完成, documentId=%s, 删除数量=%d", document_id, deleted_count)
+                from services.knowledge_service import get_knowledge_service
+                result = get_knowledge_service().delete_document(document_id)
+                logger.info(
+                    "[MQ消费] 文档删除完成, documentId=%s, 向量=%d, 图片=%d, manifest=%s",
+                    document_id, result["vectors_deleted"], result["images_deleted"], result["manifest_deleted"],
+                )
             except Exception as e:
-                logger.error("[MQ消费] 向量删除失败, documentId=%s, 错误:%s", document_id, e, exc_info=True)
+                logger.error("[MQ消费] 文档删除失败, documentId=%s, 错误:%s", document_id, e, exc_info=True)
             return
 
         # ===== 导入动作：解析文档 → 向量化 → 存入 Redis 向量库 =====

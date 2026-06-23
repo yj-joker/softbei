@@ -886,6 +886,57 @@ class VectorService:
             logger.error(f"get_document_manifest failed: {e}")
             return {}
 
+    def delete_document_manifest(self, document_id: str) -> bool:
+        """删除文档的导入状态 manifest（document:{id}）。"""
+        if not document_id:
+            return False
+        try:
+            return bool(self.redis.delete(f"{self.DOCUMENT_KEY_PREFIX}{document_id}"))
+        except Exception as e:
+            logger.error(f"delete_document_manifest failed: {e}")
+            return False
+
+    def get_document_image_urls(self, document_id: str) -> List[str]:
+        """查出某文档所有图片记录的 image_url（删除时用于清理 MinIO）。
+
+        image_url 存在 metadata JSON 里而非顶层字段，需取 metadata 解析。
+        """
+        if not document_id:
+            return []
+        try:
+            self._ensure_index()
+            urls: List[str] = []
+            seen = set()
+            query = build_redis_filter(document_id=document_id, chunk_type="image")
+            results = self.redis.execute_command(
+                "FT.SEARCH", self.INDEX_NAME, query,
+                "RETURN", "1", "metadata",
+                "LIMIT", "0", "10000",
+                "DIALECT", "2",
+            )
+            for i in range(2, len(results), 2):
+                fields = results[i]
+                meta_raw = None
+                for j in range(0, len(fields), 2):
+                    name = fields[j].decode() if isinstance(fields[j], bytes) else fields[j]
+                    if name == "metadata":
+                        meta_raw = fields[j + 1]
+                        break
+                if not meta_raw:
+                    continue
+                try:
+                    meta = json.loads(meta_raw.decode() if isinstance(meta_raw, bytes) else meta_raw)
+                except Exception:
+                    continue
+                url = (meta.get("image_url") or "").strip()
+                if url and url not in seen:
+                    seen.add(url)
+                    urls.append(url)
+            return urls
+        except Exception as e:
+            logger.error(f"get_document_image_urls failed: {e}")
+            return []
+
     def list_documents_by_kg_status(self, status: str) -> List[str]:
         """扫描 document:* manifest，返回 kg_status 命中的 document_id 列表。"""
         ids = []

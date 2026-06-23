@@ -139,6 +139,32 @@ class KnowledgeService:
                     })
             raise
 
+    def delete_document(self, document_id: str) -> dict:
+        """级联删除一个文档的全部痕迹：向量 chunk + MinIO 图片 + 状态 manifest。
+
+        顺序关键：先查图片 URL（趁向量还在）→ 删向量 → 删 MinIO → 删 manifest。
+        MinIO 删除失败仅记警告，不影响向量已清除的结果。
+        """
+        if not document_id:
+            return {"vectors_deleted": 0, "images_deleted": 0, "manifest_deleted": False}
+        image_urls = self.vector_svc.get_document_image_urls(document_id)
+        vectors_deleted = self.vector_svc.delete_by_document(document_id)
+        images_deleted = 0
+        try:
+            images_deleted = self.file_storage.delete_images(image_urls)
+        except Exception as exc:
+            logger.warning("[删除] MinIO 图片清理失败, documentId=%s, error=%s", document_id, exc)
+        manifest_deleted = self.vector_svc.delete_document_manifest(document_id)
+        logger.info(
+            "[删除] documentId=%s 完成: 向量=%d, 图片=%d, manifest=%s",
+            document_id, vectors_deleted, images_deleted, manifest_deleted,
+        )
+        return {
+            "vectors_deleted": vectors_deleted,
+            "images_deleted": images_deleted,
+            "manifest_deleted": manifest_deleted,
+        }
+
     async def _import_document_impl(
         self,
         file_url: str,

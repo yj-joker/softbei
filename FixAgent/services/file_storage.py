@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 import shutil
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from config.settings import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 class FileStorage:
@@ -17,6 +20,13 @@ class FileStorage:
 
     def ensure_document_url(self, file_url: str) -> str:
         return file_url
+
+    def delete_images(self, image_urls: List[str]) -> int:
+        """按图片 public URL 删除已存储的图片对象，返回删除数量。
+
+        基类默认空实现；持有图片对象的后端（MinIO）覆盖它。
+        """
+        return 0
 
 
 class LocalFileStorage(FileStorage):
@@ -115,25 +125,77 @@ class MinioStorage(FileStorage):
         except Exception:
             return file_url
 
+    def _ensure_client(self):
+        """懒加载 MinIO 客户端。连接池上限调大(默认10→24,覆盖图片并发)，消除 "pool is full"。"""
+        if self._client is None:
+            if not (self.endpoint and self.access_key and self.secret_key):
+                return None
+            from minio import Minio
+            import urllib3
+
+            self._client = Minio(
+                self.endpoint,
+                access_key=self.access_key,
+                secret_key=self.secret_key,
+                secure=self.secure,
+                http_client=urllib3.PoolManager(
+                    num_pools=10,
+                    maxsize=24,
+                    timeout=urllib3.Timeout(connect=10, read=60),
+                    retries=urllib3.Retry(
+                        total=3, backoff_factor=0.2,
+                        status_forcelist=[500, 502, 503, 504],
+                    ),
+                ),
+            )
+        return self._client
+
     def _upload(self, path: Path, object_key: str, bucket: str) -> bool:
-        if not (self.endpoint and self.access_key and self.secret_key):
+        client = self._ensure_client()
+        if client is None:
             return False
         try:
-            if self._client is None:
-                from minio import Minio
-
-                self._client = Minio(
-                    self.endpoint,
-                    access_key=self.access_key,
-                    secret_key=self.secret_key,
-                    secure=self.secure,
-                )
-            if not self._client.bucket_exists(bucket):
-                self._client.make_bucket(bucket)
-            self._client.fput_object(bucket, object_key, str(path))
+            if not client.bucket_exists(bucket):
+                client.make_bucket(bucket)
+            client.fput_object(bucket, object_key, str(path))
             return True
         except Exception:
             return False
+
+    def _object_key_from_url(self, url: str) -> str:
+        """从图片 public URL 反解出 MinIO object_key。"""
+        url = (url or "").strip()
+        if not url:
+            return ""
+        base = self.public_base_url + "/"
+        if url.startswith(base):
+            return url[len(base):]
+        # 兜底：解析 URL path，去掉可能的 bucket 段
+        from urllib.parse import urlparse, unquote
+        path = unquote(urlparse(url).path).lstrip("/")
+        parts = path.split("/", 1)
+        if len(parts) == 2 and parts[0] == self.public_image_bucket:
+            return parts[1]
+        return path
+
+    def delete_images(self, image_urls: List[str]) -> int:
+        """按图片 public URL 删除 MinIO 图片对象。单张失败仅记日志，不中断。"""
+        if not image_urls:
+            return 0
+        client = self._ensure_client()
+        if client is None:
+            return 0
+        deleted = 0
+        for url in image_urls:
+            key = self._object_key_from_url(url)
+            if not key:
+                continue
+            try:
+                client.remove_object(self.public_image_bucket, key)
+                deleted += 1
+            except Exception as exc:
+                logger.warning("删除 MinIO 图片失败 key=%s: %s", key, exc)
+        return deleted
 
 
 _file_storage: Optional[FileStorage] = None
