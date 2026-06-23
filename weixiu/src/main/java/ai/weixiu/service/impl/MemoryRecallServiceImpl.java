@@ -68,7 +68,8 @@ public class MemoryRecallServiceImpl implements MemoryRecallService {
         // 事实改由「索引常驻 + LLM 按需 read_memory 懒加载」承载，注入记忆目录；
         // relevantFacts 不再走向量召回，恒为空。偏好/未决/画像仍并行查询。
         long factStart = System.currentTimeMillis();
-        ctx.setMemoryIndex(memoryStore.loadIndex(userId));
+        // 漏洞#3-B1：带当前轮维度做相关性预筛注入（维度全空时退化为全量按重要度）
+        ctx.setMemoryIndex(memoryStore.loadIndex(userId, deviceType, equipmentId, siteId, taskId));
         List<JSONObject> relevantFacts = new ArrayList<>();
 
         long prefStart = System.currentTimeMillis();

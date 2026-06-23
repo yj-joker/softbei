@@ -179,7 +179,10 @@ public class AiServiceImpl implements AiService {
         String originalUserMessage = aiChatRequest.getUserMessage();
 
         // ========== 统一召回（含 trace 记录） ==========
-        RecallContext recallCtx = memoryRecallService.recall(sessionId, userId, originalUserMessage, roundNo);
+        // 漏洞#3-B1：把会话绑定的设备型号透传给召回，触发记忆索引的维度预筛；
+        // equipmentId/siteId/taskId 当前请求体未携带，留 null（B1 维度全空时自动退化为全量按重要度）。
+        RecallContext recallCtx = memoryRecallService.recall(sessionId, userId, originalUserMessage, roundNo,
+                aiChatRequest.getDeviceType(), null, null, null);
 
         // ========== 转换偏好为 VO ==========
         List<MemoryPreferenceVO> userPrefVOs = new ArrayList<>();

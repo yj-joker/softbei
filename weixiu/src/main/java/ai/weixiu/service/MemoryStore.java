@@ -16,6 +16,14 @@ public interface MemoryStore {
     String loadIndex(Long userId);
 
     /**
+     * 维度感知的记忆索引（漏洞#3-B1）：在 {@link #loadIndex(Long)} 基础上，按当前轮上下文维度
+     * （设备类型/设备/场地/检修任务）做相关性预筛——命中当前维度或无维度绑定（通用）的事实优先注入，
+     * 绑定到其它上下文的弱相关事实降权并截断，减少老用户上百条全量注入对注意力的稀释。
+     * 维度全空时退化为 {@link #loadIndex(Long)}（与旧行为一致）。
+     */
+    String loadIndex(Long userId, String deviceType, String equipmentId, String siteId, String taskId);
+
+    /**
      * 按 name 读取一条 active 记忆，命中不到抛 {@link ai.weixiu.exceprion.MemoryNotFoundException}。
      */
     MemoryEntry readMemory(Long userId, String name);

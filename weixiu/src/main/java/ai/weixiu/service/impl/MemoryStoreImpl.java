@@ -12,7 +12,10 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.CompletableFuture;
 
 /**
  * 文件式记忆协议四函数的 MySQL 实现。
@@ -30,11 +33,18 @@ public class MemoryStoreImpl implements MemoryStore {
     private static final String DEFAULT_TYPE = "project";
     private static final int DEFAULT_IMPORTANCE = 5;
     private static final int INDEX_LIMIT = 200;
+    /** 维度预筛后，绑定到"其它上下文"的弱相关事实最多保留多少条（漏洞#3-B1，防淹没注意力）。 */
+    private static final int OTHER_CONTEXT_LIMIT = 30;
 
     private final MemoryFactService memoryFactService;
 
     @Override
     public String loadIndex(Long userId) {
+        return loadIndex(userId, null, null, null, null);
+    }
+
+    @Override
+    public String loadIndex(Long userId, String deviceType, String equipmentId, String siteId, String taskId) {
         LambdaQueryWrapper<MemoryFact> wrapper = new LambdaQueryWrapper<>();
         wrapper.eq(MemoryFact::getUserId, userId)
                 .eq(MemoryFact::getStatus, STATUS_ACTIVE)
@@ -51,14 +61,80 @@ public class MemoryStoreImpl implements MemoryStore {
             return "";
         }
 
+        // 漏洞#3-B1：有上下文维度时按相关性预筛重排+截断弱相关；维度全空则保持纯重要度序（旧行为）。
+        Long eqId = parseLongOrNull(equipmentId);
+        Long stId = parseLongOrNull(siteId);
+        Long tkId = parseLongOrNull(taskId);
+        boolean hasContext = (deviceType != null && !deviceType.isBlank())
+                || eqId != null || stId != null || tkId != null;
+        List<MemoryFact> ordered = hasContext
+                ? rerankByRelevance(facts, deviceType, eqId, stId, tkId)
+                : facts;
+
         StringBuilder sb = new StringBuilder();
-        for (MemoryFact f : facts) {
+        for (MemoryFact f : ordered) {
             sb.append("- [").append(f.getName()).append("] (")
                     .append(f.getType() == null ? "" : f.getType()).append(") — ")
                     .append(f.getDescription() == null ? "" : f.getDescription())
                     .append("\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * 维度相关性重排（漏洞#3-B1）：相关(档位&gt;0)与通用全部保留并排前，按档位降序；
+     * 绑定到其它上下文的弱相关(档位0)降到最后，且最多保留 {@link #OTHER_CONTEXT_LIMIT} 条。
+     * 入参 facts 已按 importance/createdAt 倒序，{@link List#sort} 稳定，故同档位内仍保重要度序。
+     */
+    private List<MemoryFact> rerankByRelevance(List<MemoryFact> facts, String deviceType,
+                                               Long eqId, Long stId, Long tkId) {
+        List<MemoryFact> relevant = new ArrayList<>();
+        List<MemoryFact> other = new ArrayList<>();
+        for (MemoryFact f : facts) {
+            if (relevanceRank(f, deviceType, eqId, stId, tkId) > 0) {
+                relevant.add(f);
+            } else {
+                other.add(f);
+            }
+        }
+        relevant.sort(Comparator.comparingInt(
+                (MemoryFact f) -> relevanceRank(f, deviceType, eqId, stId, tkId)).reversed());
+
+        List<MemoryFact> result = new ArrayList<>(relevant);
+        for (int i = 0; i < other.size() && i < OTHER_CONTEXT_LIMIT; i++) {
+            result.add(other.get(i));
+        }
+        return result;
+    }
+
+    /**
+     * 相关性档位（越大越相关）：3=命中具体设备/检修任务；2=命中设备类型/场地；
+     * 1=通用(无维度绑定，处处适用)；0=绑定到其它上下文(本轮弱相关)。
+     */
+    private static int relevanceRank(MemoryFact f, String deviceType, Long eqId, Long stId, Long tkId) {
+        if ((eqId != null && eqId.equals(f.getEquipmentId()))
+                || (tkId != null && tkId.equals(f.getTaskId()))) {
+            return 3;
+        }
+        if ((stId != null && stId.equals(f.getSiteId()))
+                || (deviceType != null && !deviceType.isBlank()
+                        && deviceType.equalsIgnoreCase(f.getDeviceType()))) {
+            return 2;
+        }
+        boolean general = f.getEquipmentId() == null && f.getSiteId() == null && f.getTaskId() == null
+                && (f.getDeviceType() == null || f.getDeviceType().isBlank());
+        return general ? 1 : 0;
+    }
+
+    private static Long parseLongOrNull(String s) {
+        if (s == null || s.isBlank()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     @Override
@@ -74,6 +150,12 @@ public class MemoryStoreImpl implements MemoryStore {
             throw new MemoryNotFoundException("记忆不存在: " + name);
         }
 
+        // 漏洞#3-A1：LLM 懒加载读取全文 = 真正"命中"该事实，回写使用信号。
+        // 仅在 read 全文时计命中（注入目录只是摆出 name/描述、未必真用）——否则每轮全量注入会把
+        // last_used_at 永远刷成 now、usage_count 虚高，归档调度器的"久未使用"维度永不触发。
+        // 异步 fire-and-forget，不给 ReAct 读取加延迟；失败不影响读取主流程。
+        bumpUsage(fact.getId());
+
         MemoryEntry entry = new MemoryEntry();
         entry.setName(fact.getName());
         entry.setDescription(fact.getDescription());
@@ -82,6 +164,24 @@ public class MemoryStoreImpl implements MemoryStore {
         entry.setWhy(fact.getWhy());
         entry.setHowToApply(fact.getHowToApply());
         return entry;
+    }
+
+    /** 异步回写命中事实的使用信号：last_used_at=now、usage_count++（COALESCE 容忍历史 NULL）。 */
+    private void bumpUsage(Long id) {
+        if (id == null) {
+            return;
+        }
+        CompletableFuture.runAsync(() -> {
+            try {
+                LambdaUpdateWrapper<MemoryFact> uw = new LambdaUpdateWrapper<>();
+                uw.eq(MemoryFact::getId, id)
+                        .set(MemoryFact::getLastUsedAt, LocalDateTime.now())
+                        .setSql("usage_count = COALESCE(usage_count, 0) + 1");
+                memoryFactService.update(uw);
+            } catch (Exception e) {
+                log.warn("[记忆] 回写使用信号失败 id={}: {}", id, e.getMessage());
+            }
+        });
     }
 
     @Override
