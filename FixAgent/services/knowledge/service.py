@@ -25,9 +25,9 @@ from tools.document_tool import get_document_parser
 from embeddings.text_embedding import get_text_embedding
 from embeddings.image_embedding import get_image_embedding
 from services.file_storage import get_file_storage
-from services.image_summary_service import get_image_summary_service
-from services.chunking_policy import build_section_index_chunks
-from services.vector_service import get_vector_service
+from services.knowledge.image_summary_service import get_image_summary_service
+from services.knowledge.chunking_policy import build_section_index_chunks
+from services.knowledge.vector_service import get_vector_service
 
 logger = logging.getLogger(__name__)
 

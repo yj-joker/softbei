@@ -10,7 +10,7 @@ import os
 from typing import Optional
 
 from config.settings import get_settings
-from services.llm_service import get_llm_service
+from services.llm.service import get_llm_service
 
 # 固定 seed + temperature=0，让 VLM 生成尽量可复现（解法 A）
 VLM_SUMMARY_SEED = 42

@@ -4,7 +4,7 @@ import logging
 import httpx
 from typing import AsyncIterator, Optional, List, Dict, Any, Callable, Awaitable
 from config.settings import get_settings
-from services.react_loop import _json_compatible
+from services.llm.react_loop import _json_compatible
 
 logger = logging.getLogger(__name__)
 

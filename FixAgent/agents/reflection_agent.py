@@ -207,6 +207,6 @@ _reflection_agent: Optional[MemoryReflectionAgent] = None
 def get_reflection_agent() -> MemoryReflectionAgent:
     global _reflection_agent
     if _reflection_agent is None:
-        from services.llm_service import get_llm_service
+        from services.llm.service import get_llm_service
         _reflection_agent = MemoryReflectionAgent(llm_service=get_llm_service())
     return _reflection_agent

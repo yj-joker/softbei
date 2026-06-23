@@ -7,7 +7,7 @@ from typing import Optional
 
 from schemas.request import TemporaryPlanGenerateRequest
 from schemas.response import TemporaryPlanDraftResponse, TemporaryPlanEvidence, TemporaryPlanStep
-from services.llm_service import get_llm_service
+from services.llm.service import get_llm_service
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 
 

@@ -39,14 +39,14 @@ from schemas.response import (
     CaseComplianceResponse,
     CaseExtractResponse,
 )
-from agents.case_agent import draft_case, check_compliance, extract_material, validate_task_text, validate_graph_entities
+from services.case.case_agent import draft_case, check_compliance, extract_material, validate_task_text, validate_graph_entities
 from agents.fix_agent import get_fix_agent
-from agents.review_agent import get_review_agent
+from guardrails import get_review_agent
 from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput, AgentOutput
-from services.vector_service import build_redis_filter, get_vector_service
-from services.llm_service import get_llm_service
-from services.image_summary_service import get_image_summary_service
+from services.knowledge.vector_service import build_redis_filter, get_vector_service
+from services.llm.service import get_llm_service
+from services.knowledge.image_summary_service import get_image_summary_service
 from services.intent_router import get_intent_router
 from services.preference_capture import schedule_capture
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
@@ -911,7 +911,7 @@ async def knowledge_import(request: KnowledgeImportRequest) -> KnowledgeImportRe
     """
     文档导入并入库：解析 PDF → 向量化 → 存入 Redis 向量库
     """
-    from services.knowledge_service import get_knowledge_service
+    from services.knowledge.service import get_knowledge_service
 
     try:
         svc = get_knowledge_service()

@@ -152,6 +152,6 @@ _step_verify_agent: Optional[StepVerifyAgent] = None
 def get_step_verify_agent() -> StepVerifyAgent:
     global _step_verify_agent
     if _step_verify_agent is None:
-        from services.llm_service import get_llm_service
+        from services.llm.service import get_llm_service
         _step_verify_agent = StepVerifyAgent(get_llm_service())
     return _step_verify_agent

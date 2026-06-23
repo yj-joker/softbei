@@ -12,7 +12,7 @@ import json
 import logging
 
 from config.settings import get_settings
-from services.llm_service import get_llm_service
+from services.llm.service import get_llm_service
 
 logger = logging.getLogger(__name__)
 

@@ -3,7 +3,7 @@ import logging
 import inspect
 import time
 from typing import Any, Awaitable, Callable, Dict, List, Optional
-from services.evidence import build_evidence_items
+from services.llm.evidence import build_evidence_items
 
 logger = logging.getLogger(__name__)
 

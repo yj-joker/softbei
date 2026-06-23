@@ -458,7 +458,7 @@ class VectorService:
                         "doc_id": _decode(b"id"),
                         "score": float(field_dict.get(b"score", 0))
                     }
-                    from services.retrieval_policy import cosine_distance_to_relevance
+                    from services.retrieval.policy import cosine_distance_to_relevance
 
                     doc["raw_score"] = doc["score"]
                     doc["raw_score_type"] = "cosine_distance"

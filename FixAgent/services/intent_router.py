@@ -535,6 +535,6 @@ _intent_router = None
 def get_intent_router() -> IntentRouter:
     global _intent_router
     if _intent_router is None:
-        from services.llm_service import get_llm_service
+        from services.llm.service import get_llm_service
         _intent_router = IntentRouter(get_llm_service())
     return _intent_router

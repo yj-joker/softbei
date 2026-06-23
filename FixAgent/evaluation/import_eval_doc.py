@@ -14,7 +14,7 @@ ROOT = os.path.dirname(HERE)  # fix-py，切到这里使 load_dotenv() 能读到
 os.chdir(ROOT)
 sys.path.insert(0, ROOT)
 
-from services.knowledge_service import get_knowledge_service  # noqa: E402
+from services.knowledge.service import get_knowledge_service  # noqa: E402
 
 FILE = r"C:\Users\27202\Desktop\摩托车发动机维修手册.pdf"
 DOC_ID = "rag_eval_motorcycle_manual_v14_image_locator"

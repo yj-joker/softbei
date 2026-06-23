@@ -521,7 +521,7 @@ def build_rag_answer_messages(case: EvalCase, evidence_items: Sequence[Retrieved
 
 
 async def run_rag_answer_case(case: EvalCase, top_k: int, max_tokens: int) -> AnswerRunResult:
-    from services.llm_service import get_llm_service
+    from services.llm.service import get_llm_service
     from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 
     total_t0 = time.perf_counter()

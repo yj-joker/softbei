@@ -11,16 +11,16 @@ from typing import Any, Callable, Dict, List, Optional
 from embeddings.multimodal_embedding import get_multimodal_embedding
 from embeddings.text_embedding import get_text_embedding
 from schemas.models import VectorSearchResult
-from services.retrieval_planner import build_retrieval_plan, confidence_intent
-from services.retrieval_ranker import rank_candidates
-from services.retrieval_context_expander import expand_retrieval_context
-from services.retrieval_fusion import DEFAULT_RRF_CONSTANT, reciprocal_rank_fusion
-from services.retrieval_quality import evaluate_retrieval_quality
-from services.retrieval_policy import (
+from services.retrieval.planner import build_retrieval_plan, confidence_intent
+from services.retrieval.ranker import rank_candidates
+from services.retrieval.context_expander import expand_retrieval_context
+from services.retrieval.fusion import DEFAULT_RRF_CONSTANT, reciprocal_rank_fusion
+from services.retrieval.quality import evaluate_retrieval_quality
+from services.retrieval.policy import (
     diversify_candidates,
     summarize_confidence,
 )
-from services.vector_service import build_redis_filter, escape_redis_tag_value, get_vector_service
+from services.knowledge.vector_service import build_redis_filter, escape_redis_tag_value, get_vector_service
 from tools.base_tool import BaseTool, ToolException
 
 logger = logging.getLogger(__name__)

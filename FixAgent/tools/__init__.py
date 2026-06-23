@@ -6,7 +6,6 @@ Agent 可调用的工具集合，每个工具封装一种外部能力。
 基类：BaseTool — 模板方法模式，统一异常处理
 已实现：
 - KnowledgeRetrievalTool — 向量知识库检索
-- FactRetrievalTool      — 历史事实批量检索（MemoryAgent 专用）
 - GraphSearchDeviceTool  — 图谱设备搜索
 - DocumentParserTool     — PDF/Word 文档解析
 - ConversationDetailTool — 对话细节召回（FixAgent 按需调用）
@@ -15,7 +14,6 @@ Agent 可调用的工具集合，每个工具封装一种外部能力。
 
 from .base_tool import BaseTool, ToolResult, ToolError, ToolException
 from .knowledge_retrieval_tool import KnowledgeRetrievalTool, get_knowledge_retrieval_tool
-from .fact_retrieval_tool import FactRetrievalTool, get_fact_retrieval_tool
 from .graph_java_tool import (
     JavaGraphDeviceSearchTool,
     JavaGraphDiagnosisPathTool,
@@ -35,9 +33,6 @@ __all__ = [
     # 知识检索
     "KnowledgeRetrievalTool",
     "get_knowledge_retrieval_tool",
-    # 事实检索
-    "FactRetrievalTool",
-    "get_fact_retrieval_tool",
     # 图查询
     "JavaGraphDiagnosisPathTool",
     "JavaGraphDeviceSearchTool",

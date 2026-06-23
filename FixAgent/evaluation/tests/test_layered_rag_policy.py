@@ -1,6 +1,6 @@
-from services.chunking_policy import build_section_index_chunks
-from services.retrieval_planner import build_retrieval_plan
-from services.retrieval_ranker import rank_candidates
+from services.knowledge.chunking_policy import build_section_index_chunks
+from services.retrieval.planner import build_retrieval_plan
+from services.retrieval.ranker import rank_candidates
 from tools.document_tool import DocumentParserTool
 from tools.knowledge_retrieval_tool import KnowledgeRetrievalTool
 
@@ -177,7 +177,7 @@ def test_image_chunks_include_nearby_text_context_for_retrieval():
 
 
 def test_image_import_text_uses_caption_or_default_text():
-    from services.knowledge_service import build_image_retrieval_text
+    from services.knowledge.service import build_image_retrieval_text
 
     policy_text = "Section: Transmission installation\nVisual context: gear set installation\nContent: page 35 image"
 

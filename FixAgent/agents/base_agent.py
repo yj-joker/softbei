@@ -25,8 +25,8 @@ from datetime import datetime
 
 from pydantic import BaseModel, Field
 
-from services.llm_service import LLMService
-from services.react_loop import ReActLoop
+from services.llm.service import LLMService
+from services.llm.react_loop import ReActLoop
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)

@@ -29,7 +29,7 @@ import time
 from typing import List, Any, Optional, Dict, Callable
 
 from agents.base_agent import BaseAgent, AgentInput, AgentOutput, AgentRunContext
-from services.output_style import USER_VISIBLE_PLAIN_TEXT_RULES
+from services.llm.output_style import USER_VISIBLE_PLAIN_TEXT_RULES
 from services.visual_query_context import build_visual_query_context
 
 logger = logging.getLogger(__name__)
@@ -649,6 +649,6 @@ _fix_agent = None
 def get_fix_agent() -> FixAgent:
     global _fix_agent
     if _fix_agent is None:
-        from services.llm_service import get_llm_service
+        from services.llm.service import get_llm_service
         _fix_agent = FixAgent(get_llm_service())
     return _fix_agent

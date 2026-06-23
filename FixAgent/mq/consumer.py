@@ -165,7 +165,7 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
             document_id = body.get("documentId", "unknown")
             logger.info("[MQ消费] 文档删除开始, documentId=%s", document_id)
             try:
-                from services.knowledge_service import get_knowledge_service
+                from services.knowledge.service import get_knowledge_service
                 result = get_knowledge_service().delete_document(document_id)
                 logger.info(
                     "[MQ消费] 文档删除完成, documentId=%s, 向量=%d, 图片=%d, manifest=%s",
@@ -191,7 +191,7 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
                     document_id, old_document_id, document_version)
 
         try:
-            from services.knowledge_service import get_knowledge_service
+            from services.knowledge.service import get_knowledge_service
 
             service = get_knowledge_service()
 

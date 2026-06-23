@@ -15,7 +15,7 @@ import logging
 import re
 from typing import List, Dict, Any, Optional
 
-from services.llm_service import LLMService
+from services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +211,6 @@ _quiz_agent: Optional[QuizAgent] = None
 def get_quiz_agent() -> QuizAgent:
     global _quiz_agent
     if _quiz_agent is None:
-        from services.llm_service import get_llm_service
+        from services.llm.service import get_llm_service
         _quiz_agent = QuizAgent(get_llm_service())
     return _quiz_agent

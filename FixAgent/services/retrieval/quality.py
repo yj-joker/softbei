@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List
 
-from services.retrieval_planner import RetrievalPlan
+from services.retrieval.planner import RetrievalPlan
 
 
 @dataclass(frozen=True)

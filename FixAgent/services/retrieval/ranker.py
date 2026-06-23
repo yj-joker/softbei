@@ -6,7 +6,7 @@ import re
 import unicodedata
 from typing import Any, Dict, Iterable, List, Sequence
 
-from services.retrieval_planner import RetrievalPlan
+from services.retrieval.planner import RetrievalPlan
 
 
 NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")

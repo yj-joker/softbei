@@ -11,8 +11,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from embeddings.text_embedding import get_text_embedding
-from services.image_summary_service import get_image_summary_service
-from services.vector_service import get_vector_service
+from services.knowledge.image_summary_service import get_image_summary_service
+from services.knowledge.vector_service import get_vector_service
 
 
 def _load_image_chunks(vs):

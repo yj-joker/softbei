@@ -10,9 +10,9 @@
 Agent 通过 tools/graph_java_tool.py 调用 Java HTTP 接口。
 """
 
-from .llm_service import LLMService, get_llm_service
-from .vector_service import VectorService, get_vector_service
-from .knowledge_service import KnowledgeService, get_knowledge_service
+from .llm.service import LLMService, get_llm_service
+from .knowledge.vector_service import VectorService, get_vector_service
+from .knowledge.service import KnowledgeService, get_knowledge_service
 
 __all__ = [
     "LLMService",

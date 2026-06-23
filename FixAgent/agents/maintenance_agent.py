@@ -29,7 +29,7 @@ import re
 from typing import List, Dict, Any, Optional
 
 from agents.base_agent import BaseAgent, AgentInput, AgentOutput
-from services.llm_service import LLMService
+from services.llm.service import LLMService
 
 logger = logging.getLogger(__name__)
 
@@ -554,6 +554,6 @@ _maintenance_agent = None
 def get_maintenance_agent() -> MaintenanceAgent:
     global _maintenance_agent
     if _maintenance_agent is None:
-        from services.llm_service import get_llm_service
+        from services.llm.service import get_llm_service
         _maintenance_agent = MaintenanceAgent(get_llm_service())
     return _maintenance_agent
