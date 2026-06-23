@@ -1098,6 +1098,29 @@ async def memory_consolidate(request: MemoryConsolidateRequest) -> MemoryConsoli
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class MemoryDedupRequest(BaseModel):
+    user_id: str | None = None
+    facts: list[dict] = []
+
+
+@app.post("/ai/memory/dedup")
+async def memory_dedup(request: MemoryDedupRequest):
+    """语义去重（漏洞#2 离线 pass）：对某用户的活跃事实找出"真正重复"的分组，
+    返回合并方案 {keep, drop[]}；Java 据此把非代表条 supersede（保守只并真重复，
+    详见 services/memory_dedup_service）。"""
+    from services.memory_dedup_service import dedup_facts
+    try:
+        groups = await dedup_facts(request.facts or [])
+        logger.info(
+            "[memory_dedup] user=%s facts=%d groups=%d",
+            request.user_id, len(request.facts or []), len(groups),
+        )
+        return {"success": True, "groups": groups}
+    except Exception as e:
+        logger.exception("[memory_dedup] error")
+        return {"success": False, "groups": [], "error": str(e)}
+
+
 class DeleteFactsRequest(BaseModel):
     fact_ids: list[str]
 

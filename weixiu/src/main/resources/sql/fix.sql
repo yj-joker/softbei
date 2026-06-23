@@ -441,3 +441,18 @@ CREATE TABLE IF NOT EXISTS knowledge_mastery (
 ALTER TABLE `memory_fact`
     ADD COLUMN `turn_ts` BIGINT      NULL COMMENT '触发该写入的用户消息毫秒时间戳（同轮写仲裁主裁判）',
     ADD COLUMN `source`  VARCHAR(32) NULL COMMENT '写入来源: agent_explicit/consolidation/capture_fallback 实时整合,定时整合,兜底写入';
+
+-- ---------------------------------------------
+-- 漏洞#2：记忆语义去重的每用户进度（门槛用：自 last_dedup_at 起新增事实 > 20 才跑）
+-- ---------------------------------------------
+CREATE TABLE IF NOT EXISTS `memory_dedup_state` (
+    `user_id`       BIGINT   NOT NULL COMMENT '用户ID',
+    `last_dedup_at` DATETIME NULL     COMMENT '上次语义去重时间',
+    PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='记忆语义去重进度';
+
+CREATE TABLE IF NOT EXISTS `memory_dedup_state` (
+                                                    `user_id`       BIGINT   NOT NULL COMMENT '用户ID',
+                                                    `last_dedup_at` DATETIME NULL     COMMENT '上次语义去重时间',
+                                                    PRIMARY KEY (`user_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='记忆语义去重进度';
