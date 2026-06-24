@@ -12,7 +12,7 @@ import {
   Tickets,
   Timer,
 } from '@element-plus/icons-vue'
-import { listTasks } from '@/api/maintenanceTask'
+import { getTaskDetail, listTasks } from '@/api/maintenanceTask'
 import { notifyStore } from '@/stores/notifyStore'
 import { taskStatus, TASK_STATUS, urgency } from '@/constants/taskStatus'
 import TaskCreateDialog from '@/components/task/TaskCreateDialog.vue'
@@ -55,16 +55,34 @@ const resultRange = computed(() => {
   return `${start}-${end}`
 })
 
-function flowStage(status) {
-  const stages = {
-    CREATED: { percent: 10, label: '等待生成规程' },
-    GENERATING: { percent: 28, label: 'AI 生成步骤' },
-    GENERATED: { percent: 48, label: '等待开始执行' },
-    EXECUTING: { percent: 74, label: '现场执行阶段' },
-    CLOSED: { percent: 100, label: '任务已闭环' },
-    GENERATE_FAILED: { percent: 28, label: '生成异常待重试' },
+const DONE_STEP_STATUSES = new Set(['AI_PASSED', 'COMPLETED', 'SKIPPED'])
+
+function flowStage(task) {
+  const total = Number(task.stepCount || 0)
+  const completed = Number(task.completedStepCount || 0)
+
+  if (task.status === 'CLOSED') {
+    return {
+      percent: 100,
+      label: total ? `已完成 ${total} / ${total} 步` : '任务已闭环',
+    }
   }
-  return stages[status] || { percent: 8, label: '等待状态同步' }
+
+  if (task.status === 'EXECUTING') {
+    const percent = total ? Math.round((completed / total) * 100) : 0
+    return {
+      percent: Math.min(100, Math.max(0, percent)),
+      label: total ? `已完成 ${completed} / ${total} 步` : '等待步骤同步',
+    }
+  }
+
+  const labels = {
+    CREATED: '等待生成规程',
+    GENERATING: 'AI 生成步骤',
+    GENERATED: total ? `等待执行 · 0 / ${total} 步` : '等待开始执行',
+    GENERATE_FAILED: '生成异常待重试',
+  }
+  return { percent: 0, label: labels[task.status] || '等待状态同步' }
 }
 
 function formatDate(value) {
@@ -94,7 +112,23 @@ async function load() {
       deviceName: query.deviceName || undefined,
     })
     const d = res?.data || {}
-    tasks.value = d.records || []
+    const records = d.records || []
+    const detailResults = await Promise.all(records.map(async (task) => {
+      if (task.status !== 'EXECUTING') return task
+      try {
+        const detail = await getTaskDetail(task.id)
+        const steps = detail?.data?.steps || []
+        const completedStepCount = steps.filter((step) => DONE_STEP_STATUSES.has(step.status)).length
+        return {
+          ...task,
+          stepCount: Number(task.stepCount || steps.length),
+          completedStepCount,
+        }
+      } catch {
+        return task
+      }
+    }))
+    tasks.value = detailResults
     total.value = Number(d.total || 0)
     loaded = true
   } catch (err) {
@@ -268,10 +302,10 @@ onUnmounted(() => taskMotionContext?.revert())
         <div class="stage-block">
           <div class="stage-copy">
             <span>流程阶段</span>
-            <b>{{ flowStage(t.status).label }}</b>
+            <b>{{ flowStage(t).label }}</b>
           </div>
           <div class="stage-track">
-            <i :style="{ width: flowStage(t.status).percent + '%' }" />
+            <i :style="{ width: flowStage(t).percent + '%' }" />
           </div>
         </div>
 

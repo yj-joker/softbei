@@ -340,7 +340,7 @@ watch(generating, (g) => {
           <div class="mc-icon ai js-ai-icon">AI</div>
           <h3>AI 出题</h3>
           <p>实时按你的画像弱点 + 知识库证据生成可溯源客观题（无源不出题）。</p>
-          <el-button type="primary" :loading="generating" round @click="startGenerate">
+          <el-button :loading="generating" round @click="startGenerate">
             {{ generating ? '正在生成题目…' : '来一套题' }}
           </el-button>
           <template v-if="generating">
@@ -535,6 +535,7 @@ watch(generating, (g) => {
 .mc-icon.bank { background: linear-gradient(150deg, #e0982f, #b9791b); }
 .mode-card h3 { margin: 4px 0 0; font-size: 18px; color: var(--plaza-heading, #1a1a1a); }
 .mode-card p { margin: 0 0 8px; font-size: 13px; color: var(--plaza-text-muted, #777); line-height: 1.6; }
+.mode-card > .el-button { margin-top: auto; }
 .mc-hint { font-size: 12px; color: var(--plaza-text-muted, #999); }
 
 /* 取消出题：贴合暖陶色，次要操作，hover 转暖红警示 */
