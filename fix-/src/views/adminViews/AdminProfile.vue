@@ -435,7 +435,7 @@ onBeforeUnmount(() => {
                     :disabled="emailCountdown > 0 || emailSending"
                     @click="sendBindCode"
                   >
-                    {{ emailCountdown > 0 ? emailCountdown + 's' : '发送验证码' }}
+                    {{ emailSending ? '发送中…' : emailCountdown > 0 ? emailCountdown + 's' : '发送验证码' }}
                   </button>
                 </div>
               </el-form-item>
@@ -479,7 +479,7 @@ onBeforeUnmount(() => {
                     :disabled="pwdCountdown > 0 || pwdSending"
                     @click="sendPwdCode"
                   >
-                    {{ pwdCountdown > 0 ? pwdCountdown + 's' : '发送验证码' }}
+                    {{ pwdSending ? '发送中…' : pwdCountdown > 0 ? pwdCountdown + 's' : '发送验证码' }}
                   </button>
                 </div>
               </el-form-item>
@@ -1058,6 +1058,7 @@ onBeforeUnmount(() => {
 .code-row { display: flex; gap: 8px; width: 100%; }
 .code-row :deep(.el-input) { flex: 1; }
 .code-btn { flex: 0 0 auto; min-height: 40px; padding: 0 12px; white-space: nowrap; }
+.code-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .pwd-need-email {
   margin-top: 16px;
   padding: 14px 12px;
