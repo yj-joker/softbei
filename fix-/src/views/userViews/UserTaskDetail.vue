@@ -92,8 +92,12 @@ const readAlong = useStepReadAlong(steps, {
   onFinish: () => ElMessage.success('跟读完成'),
 })
 
-// 「从此步跟读」：定位该步在已排序数组中的下标，从这一步开始跟读
+// 「从此步跟读」开关：再次点正在跟读的那一步 = 停止；否则从该步开始（在别处跟读时点别的步=切换过去）
 function startReadAlongFrom(step) {
+  if (readAlong.active.value && readAlong.currentStepId.value === step.id) {
+    readAlong.exit()
+    return
+  }
   const i = steps.value.findIndex((x) => x.id === step.id)
   if (i >= 0) readAlong.start(i)
 }

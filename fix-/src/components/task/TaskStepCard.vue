@@ -11,6 +11,7 @@ import {
   Headset,
   Picture,
   UploadFilled,
+  VideoPause,
   Warning,
 } from '@element-plus/icons-vue'
 import { executeStep, forceCompleteStep } from '@/api/maintenanceTask'
@@ -132,8 +133,9 @@ async function forceComplete() {
         <span v-if="!requirementCount && !step.estimatedMinutes">标准作业步骤</span>
 
         <div class="step-tools">
-          <button type="button" class="ask-button" @click="emit('read-along', step)">
-            <el-icon><Headset /></el-icon> 从此步跟读
+          <button type="button" class="ask-button" :class="{ reading }" @click="emit('read-along', step)">
+            <el-icon><VideoPause v-if="reading" /><Headset v-else /></el-icon>
+            {{ reading ? '停止跟读' : '从此步跟读' }}
           </button>
           <button type="button" class="ask-button" @click="emit('chat', step)">
             <el-icon><ChatDotRound /></el-icon> 问 AI
@@ -429,6 +431,7 @@ async function forceComplete() {
 .detail-toggle { border: 1px solid var(--plaza-border); color: var(--plaza-text-muted); }
 .ask-button:hover,
 .detail-toggle:hover { border-color: var(--plaza-accent); color: var(--plaza-accent); background: var(--plaza-accent-soft); }
+.ask-button.reading { border-color: var(--plaza-accent); color: #fff; background: var(--plaza-accent); }
 
 .step-body { padding: 14px 15px 15px; border-top: 1px solid var(--plaza-border); }
 .step-content { margin: 0 0 11px; color: var(--plaza-text); font-size: 12px; line-height: 1.75; white-space: pre-wrap; }
