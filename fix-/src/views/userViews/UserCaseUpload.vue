@@ -252,7 +252,7 @@ function onSubmitted() {
   margin-right: 10px;
   font-weight: 600;
   font-size: 12px;
-  color: var(--plaza-accent, #c4602f);
+  color: var(--plaza-accent, var(--plaza-accent));
   max-width: 320px;
   overflow: hidden;
   white-space: nowrap;
@@ -263,7 +263,7 @@ function onSubmitted() {
   height: 7px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--plaza-accent, #c4602f);
+  background: var(--plaza-accent, var(--plaza-accent));
   animation: asr-pulse 1s ease-in-out infinite;
 }
 @keyframes asr-pulse { 50% { opacity: 0.25; transform: scale(0.7); } }

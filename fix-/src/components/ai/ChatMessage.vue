@@ -262,8 +262,8 @@ async function copyMessage() {
   border-radius: 8px;
   display: grid;
   place-items: center;
-  background: #19120d;
-  color: #f8efe3;
+  background: var(--plaza-heading);
+  color: var(--plaza-panel-bg);
   box-shadow: var(--plaza-shadow-organic);
   font-weight: 700;
 }
@@ -366,7 +366,7 @@ async function copyMessage() {
   overflow: hidden;
   border: 1px solid rgba(168, 150, 124, 0.24);
   border-radius: 8px;
-  background: rgba(246, 240, 229, 0.72);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .evidence-image {
@@ -415,7 +415,7 @@ async function copyMessage() {
   padding: 5px 12px;
   border: 1px solid var(--plaza-border);
   border-radius: 9px;
-  color: #a65b2c;
+  color: var(--plaza-accent-hover);
   background: var(--plaza-accent-soft);
   font-size: 12px;
 }
@@ -467,7 +467,7 @@ async function copyMessage() {
   place-items: center;
   border-radius: 7px;
   color: #fff;
-  background: linear-gradient(145deg, #db8556, #c4602f);
+  background: linear-gradient(145deg, var(--plaza-accent), var(--plaza-accent));
   font-size: 13px;
 }
 

@@ -286,7 +286,7 @@ async function forceComplete() {
   align-self: start;
   justify-self: center;
   margin-top: 15px;
-  border: 4px solid #f4ecdd;
+  border: 4px solid var(--plaza-bg);
   border-radius: 10px;
   color: var(--plaza-text-muted);
   background: var(--plaza-bg-card);
@@ -330,15 +330,15 @@ async function forceComplete() {
 }
 .step-card-shell.active .step-card {
   border-color: var(--plaza-accent);
-  box-shadow: 0 10px 28px rgba(196, 96, 47, 0.14);
+  box-shadow: 0 10px 28px var(--plaza-accent-soft-strong);
 }
 .step-card-shell.active .step-card::before {
   display: block;
   height: 3px;
-  background: linear-gradient(90deg, #c4602f, #db8556 48%, transparent);
+  background: linear-gradient(90deg, var(--plaza-accent), var(--plaza-accent) 48%, transparent);
   content: '';
 }
-.step-card-shell.done .step-card { background: linear-gradient(180deg, #fbfdf6, var(--plaza-bg-card)); }
+.step-card-shell.done .step-card { background: linear-gradient(180deg, var(--plaza-bg-card), var(--plaza-bg-card)); }
 
 /* 跟读模式：正在念的步骤——左侧高亮边 + 柔光，区别于"当前执行"态 */
 .step-card-shell.reading .step-card {
@@ -495,8 +495,8 @@ async function forceComplete() {
   border: 1px solid var(--plaza-accent-soft-strong);
   border-radius: 10px;
   background:
-    linear-gradient(rgba(196, 96, 47, 0.024) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(196, 96, 47, 0.024) 1px, transparent 1px),
+    linear-gradient(var(--plaza-accent-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--plaza-accent-soft) 1px, transparent 1px),
     var(--plaza-bg-input);
   background-size: 22px 22px;
 }
@@ -511,7 +511,7 @@ async function forceComplete() {
 .upload-button { position: relative; width: 74px; height: 74px; overflow: hidden; border-radius: 8px; }
 .upload-preview { border: 1px solid var(--plaza-border-strong); }
 .upload-preview img { width: 100%; height: 100%; object-fit: cover; }
-.upload-preview button { position: absolute; top: 3px; right: 3px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 50%; color: #fff; background: rgba(42, 32, 24, 0.72); cursor: pointer; }
+.upload-preview button { position: absolute; top: 3px; right: 3px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 50%; color: #fff; background: rgba(0, 0, 0, 0.72); cursor: pointer; }
 .upload-button { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 4px; border: 1px dashed var(--plaza-border-strong); color: var(--plaza-accent); background: rgba(255, 255, 255, 0.6); font-size: 9px; font-weight: 750; cursor: pointer; }
 .upload-button .el-icon { font-size: 19px; }
 .upload-button:hover { background: var(--plaza-accent-soft); }
@@ -538,7 +538,7 @@ async function forceComplete() {
 .execution-actions > span { margin-right: auto; color: var(--plaza-text-muted); font-size: 8px; }
 .submit-button,
 .force-button { min-height: 39px; padding: 0 15px; border-radius: 8px; font-size: 10px; font-weight: 800; cursor: pointer; }
-.submit-button { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 7px 18px rgba(196, 96, 47, 0.22); }
+.submit-button { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 7px 18px var(--plaza-accent-soft-strong); }
 .submit-button:hover { filter: brightness(1.05); }
 .force-button { border: 1px solid #f3d3a0; color: var(--plaza-warning); background: var(--plaza-bg-card); }
 .submit-button:disabled,

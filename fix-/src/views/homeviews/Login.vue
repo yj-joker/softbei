@@ -235,8 +235,8 @@ const goToForgotPassword = () => {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(196, 96, 47, 0.04) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(196, 96, 47, 0.04) 1px, transparent 1px);
+    linear-gradient(var(--plaza-accent-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--plaza-accent-soft) 1px, transparent 1px);
   background-size: 48px 48px;
   -webkit-mask-image: radial-gradient(circle at 50% 40%, #000 30%, transparent 78%);
   mask-image: radial-gradient(circle at 50% 40%, #000 30%, transparent 78%);
@@ -246,7 +246,7 @@ const goToForgotPassword = () => {
   position: absolute;
   border-radius: 50%;
   filter: blur(8px);
-  background: radial-gradient(circle at 30% 30%, rgba(219, 133, 86, 0.22) 0%, rgba(224, 152, 47, 0.10) 45%, transparent 70%);
+  background: radial-gradient(circle at 30% 30%, var(--plaza-accent-soft-strong) 0%, rgba(224, 152, 47, 0.10) 45%, transparent 70%);
 }
 
 .circle-1 {
@@ -473,7 +473,7 @@ const goToForgotPassword = () => {
 
 .login-input :deep(.el-input.is-focus .el-input__wrapper) {
   border-color: var(--plaza-accent) !important;
-  box-shadow: 0 0 0 3px rgba(196, 96, 47, 0.12) !important;
+  box-shadow: 0 0 0 3px var(--plaza-accent-soft) !important;
 }
 
 .login-input :deep(.el-input__inner) {
@@ -515,14 +515,14 @@ const goToForgotPassword = () => {
   align-items: center;
   justify-content: center;
   gap: 0.5rem;
-  box-shadow: 0 8px 22px rgba(196, 96, 47, 0.28);
+  box-shadow: 0 8px 22px var(--plaza-accent-soft-strong);
   transition: box-shadow 0.2s ease, transform 0.12s ease, filter 0.2s ease;
 }
 
 .btn-login:hover:not(.is-success) {
   filter: brightness(1.05);
   transform: translateY(-2px);
-  box-shadow: 0 12px 28px rgba(196, 96, 47, 0.36);
+  box-shadow: 0 12px 28px var(--plaza-accent);
 }
 
 .btn-arrow {

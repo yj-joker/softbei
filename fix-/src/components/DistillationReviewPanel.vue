@@ -278,7 +278,7 @@ function extractionSummary(extraction) {
 const urgencyLabels = { 0: '低', 1: '普通', 2: '紧急' }
 const urgencyStyles = {
   0: { bg: '#eef3e6', color: '#4d7530', border: '#cad9b3' },
-  1: { bg: '#f4ece0', color: '#8a7a64', border: '#e0d3bf' },
+  1: { bg: 'var(--plaza-panel-bg)', color: 'var(--plaza-text-muted)', border: 'var(--plaza-border)' },
   2: { bg: '#fbeae6', color: '#c5402c', border: '#f0c4b8' },
 }
 
@@ -621,7 +621,7 @@ watch(
   display: flex;
   flex-direction: column;
   background:
-    radial-gradient(680px 380px at 85% -6%, rgba(196, 96, 47, 0.05), transparent 60%),
+    radial-gradient(680px 380px at 85% -6%, var(--plaza-accent-soft), transparent 60%),
     radial-gradient(560px 340px at 10% 105%, rgba(255, 166, 43, 0.05), transparent 60%),
     var(--plaza-bg);
   color: var(--plaza-text);
@@ -672,7 +672,7 @@ watch(
 .drp-title-sub {
   font-family: var(--font-mono);
   font-size: 10px;
-  color: #b3a692;
+  color: var(--plaza-text-muted);
   letter-spacing: 2px;
 }
 .drp-refresh {
@@ -758,7 +758,7 @@ watch(
   width: 44px;
   height: 44px;
   border-radius: 50%;
-  border: 3px solid rgba(196, 96, 47, 0.14);
+  border: 3px solid var(--plaza-accent-soft-strong);
   border-top-color: var(--plaza-accent);
   animation: spin 0.9s linear infinite;
 }
@@ -833,7 +833,7 @@ watch(
   transition: opacity 0.25s ease;
 }
 .task-card:hover {
-  border-color: #d6c8b2;
+  border-color: var(--plaza-border-strong);
   box-shadow: var(--drp-shadow-lg);
 }
 .task-card.card-expanded::before {
@@ -909,16 +909,16 @@ watch(
   border-color: #bbf7d0;
 }
 .pb-skip {
-  background: #f4f0e8;
-  color: #b3a692;
-  border-color: #e7dcc9;
+  background: var(--plaza-panel-bg);
+  color: var(--plaza-text-muted);
+  border-color: var(--plaza-border);
 }
 .expand-toggle {
   width: 28px;
   height: 28px;
   border-radius: 6px;
   border: 1px solid var(--drp-line);
-  background: #faf6ef;
+  background: var(--plaza-bg-card);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -970,18 +970,18 @@ watch(
 /* 展开的 AI 线索 */
 .card-extraction {
   margin: 0 18px 14px;
-  border: 1px solid #e7dcc9;
+  border: 1px solid var(--plaza-border);
   border-radius: 10px;
   overflow: hidden;
-  background: #faf6ef;
+  background: var(--plaza-bg-card);
 }
 .ext-head {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  background: #f6efe3;
-  border-bottom: 1px solid #ece3d4;
+  background: var(--plaza-bg);
+  border-bottom: 1px solid var(--plaza-border);
 }
 .ext-led {
   width: 6px;
@@ -1022,7 +1022,7 @@ watch(
   margin: 0;
   font-size: 11px;
   color: var(--drp-mut);
-  border-top: 1px solid #ece3d4;
+  border-top: 1px solid var(--plaza-border);
   background: var(--plaza-bg-card);
 }
 
@@ -1045,7 +1045,7 @@ watch(
   min-width: 64px;
 }
 .ee-section {
-  border: 1px solid #ece3d4;
+  border: 1px solid var(--plaza-border);
   border-radius: 8px;
   padding: 10px 12px;
   background: var(--plaza-bg-card);
@@ -1091,7 +1091,7 @@ watch(
   align-items: stretch;
   gap: 6px;
   padding: 8px;
-  border: 1px dashed #e7dcc9;
+  border: 1px dashed var(--plaza-border);
   border-radius: 8px;
 }
 .ee-grow { flex: 1; min-width: 0; }
@@ -1102,7 +1102,7 @@ watch(
   border-radius: 6px;
   border: 1px solid var(--drp-line);
   background: #fff;
-  color: #b3a692;
+  color: var(--plaza-text-muted);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1116,7 +1116,7 @@ watch(
 }
 .ee-empty {
   font-size: 12px;
-  color: #c0b4a0;
+  color: var(--plaza-border-strong);
   margin: 2px 0 0;
 }
 
@@ -1132,7 +1132,7 @@ watch(
   white-space: nowrap;
 }
 .tag-device { background: #eef3e6; color: #4d7530; border-color: #cad9b3; }
-.tag-comp { background: var(--plaza-info-soft); color: var(--plaza-accent); border-color: #e3c4ad; }
+.tag-comp { background: var(--plaza-info-soft); color: var(--plaza-accent); border-color: var(--plaza-border-strong); }
 .tag-fault { background: #f5ece8; color: #8f4f4e; border-color: #e6cfcc; }
 .tag-sol { background: #fdf2e2; color: #b06b14; border-color: #f0d2a0; }
 
@@ -1151,7 +1151,7 @@ watch(
 
 /* 部件：一条线索的根枝 */
 .chain-comp {
-  border: 1px solid #e7dcc9;
+  border: 1px solid var(--plaza-border);
   border-left: 3px solid var(--plaza-accent);
   border-radius: 8px;
   padding: 10px 12px;
@@ -1170,14 +1170,14 @@ watch(
 .chain-faults {
   margin: 8px 0 0 10px;
   padding-left: 12px;
-  border-left: 1.5px dashed #e0d3bf;
+  border-left: 1.5px dashed var(--plaza-border);
   display: flex;
   flex-direction: column;
   gap: 8px;
 }
 .chain-fault {
   background: #fff;
-  border: 1px solid #ece3d4;
+  border: 1px solid var(--plaza-border);
   border-radius: 7px;
   padding: 8px 10px;
 }
@@ -1352,7 +1352,7 @@ watch(
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  border: 2.5px solid rgba(196, 96, 47, 0.16);
+  border: 2.5px solid var(--plaza-accent-soft-strong);
   border-top-color: var(--plaza-accent);
   animation: spin 0.8s linear infinite;
 }

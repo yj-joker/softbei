@@ -589,10 +589,10 @@ const resultItems = computed(() => [
   gap: 12px;
   padding: 14px 15px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  color: #2c2117;
+  color: var(--plaza-heading);
   background:
-    radial-gradient(circle at 82% 20%, rgba(219, 111, 42, 0.08), transparent 26%),
-    linear-gradient(145deg, #ffffff, #fbf6ef);
+    radial-gradient(circle at 82% 20%, var(--signal-soft), transparent 26%),
+    linear-gradient(145deg, #ffffff, var(--plaza-bg-card));
 }
 
 .agent-kicker,
@@ -604,12 +604,12 @@ const resultItems = computed(() => [
 }
 
 .agent-kicker {
-  color: #db8556;
+  color: var(--plaza-accent);
 }
 
 .agent-head h2 {
   margin-top: 3px;
-  color: #2c2117;
+  color: var(--plaza-heading);
   font-family: var(--font-display);
   font-size: 16px;
   font-weight: 800;
@@ -627,7 +627,7 @@ const resultItems = computed(() => [
 
 .agent-state {
   gap: 6px;
-  color: #6b5f4f;
+  color: var(--plaza-text);
   font-size: 9px;
 }
 
@@ -640,8 +640,8 @@ const resultItems = computed(() => [
 }
 
 .agent-state.running i {
-  background: #db8556;
-  box-shadow: 0 0 0 3px rgba(219, 133, 86, 0.14);
+  background: var(--plaza-accent);
+  box-shadow: 0 0 0 3px var(--plaza-accent-soft-strong);
   animation: agent-pulse 1.2s ease-in-out infinite;
 }
 
@@ -652,14 +652,14 @@ const resultItems = computed(() => [
   place-items: center;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 8px;
-  color: #6b5f4f;
-  background: rgba(44, 33, 23, 0.04);
+  color: var(--plaza-text);
+  background: rgba(0, 0, 0, 0.04);
   cursor: pointer;
 }
 
 .agent-head button:hover {
-  color: #db8556;
-  border-color: rgba(219, 133, 86, 0.4);
+  color: var(--plaza-accent);
+  border-color: var(--plaza-accent);
 }
 
 .agent-body {
@@ -779,7 +779,7 @@ const resultItems = computed(() => [
   overflow: auto;
   border: 1px solid var(--plaza-border);
   border-radius: 6px;
-  color: #4a3a2c;
+  color: var(--plaza-heading);
   background: var(--plaza-bg);
   font-family: var(--font-mono);
   font-size: 9px;
@@ -795,7 +795,7 @@ const resultItems = computed(() => [
   padding: 9px 10px;
   overflow: auto;
   border: 1px solid var(--plaza-border);
-  border-left: 2px solid #c4602f;
+  border-left: 2px solid var(--plaza-accent);
   border-radius: 6px;
   color: var(--plaza-text);
   background: var(--plaza-bg-card);
@@ -816,7 +816,7 @@ const resultItems = computed(() => [
 .evidence-doc {
   padding: 8px 9px;
   border: 1px solid var(--plaza-border);
-  border-left: 2px solid #c4602f;
+  border-left: 2px solid var(--plaza-accent);
   border-radius: 6px;
   background: var(--plaza-bg-card);
 }
@@ -846,7 +846,7 @@ const resultItems = computed(() => [
 .ev-tag {
   padding: 1px 5px;
   border-radius: 4px;
-  color: #a65b2c;
+  color: var(--plaza-accent-hover);
   background: var(--plaza-accent-soft);
   font-weight: 800;
 }
@@ -880,14 +880,14 @@ const resultItems = computed(() => [
 }
 
 .ev-toggle:hover {
-  color: #c4602f;
+  color: var(--plaza-accent);
   text-decoration: underline;
 }
 
 /* 相关度分档高亮 */
-.evidence-doc.sc-hi { border-left-color: #c4602f; }
-.evidence-doc.sc-mid { border-left-color: #db8556; }
-.evidence-doc.sc-lo { border-left-color: #cdbba4; }
+.evidence-doc.sc-hi { border-left-color: var(--plaza-accent); }
+.evidence-doc.sc-mid { border-left-color: var(--plaza-accent); }
+.evidence-doc.sc-lo { border-left-color: var(--plaza-border-strong); }
 
 .ev-score {
   flex: 0 0 auto;
@@ -898,9 +898,9 @@ const resultItems = computed(() => [
   font-weight: 800;
 }
 
-.ev-score.sc-hi { color: #8a3d12; background: rgba(196, 96, 47, 0.16); }
-.ev-score.sc-mid { color: #a65b2c; background: var(--plaza-accent-soft); }
-.ev-score.sc-lo { color: #8a7d6c; background: rgba(44, 33, 23, 0.06); }
+.ev-score.sc-hi { color: #8a3d12; background: var(--plaza-accent-soft-strong); }
+.ev-score.sc-mid { color: var(--plaza-accent-hover); background: var(--plaza-accent-soft); }
+.ev-score.sc-lo { color: var(--plaza-text-muted); background: rgba(0, 0, 0, 0.06); }
 
 
 /* ===== 执行轨迹 ===== */
@@ -1022,7 +1022,7 @@ const resultItems = computed(() => [
   padding: 9px;
   border: 1px solid transparent;
   border-radius: 8px;
-  color: #a65b2c;
+  color: var(--plaza-accent-hover);
   background: var(--plaza-accent-soft);
   cursor: pointer;
   text-align: left;
@@ -1032,7 +1032,7 @@ const resultItems = computed(() => [
 
 .summary-card:hover,
 .summary-card.is-open {
-  border-color: rgba(196, 96, 47, 0.4);
+  border-color: var(--plaza-accent);
 }
 
 .summary-card > .el-icon {
@@ -1046,7 +1046,7 @@ const resultItems = computed(() => [
 }
 
 .summary-card b {
-  color: #4a3a2c;
+  color: var(--plaza-heading);
   font-family: var(--font-mono);
   font-size: 11px;
   font-weight: 800;
@@ -1054,7 +1054,7 @@ const resultItems = computed(() => [
 
 .summary-card small {
   overflow: hidden;
-  color: #a8967c;
+  color: var(--plaza-text-muted);
   font-size: 7px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1084,7 +1084,7 @@ const resultItems = computed(() => [
 
 .tool-chip:hover,
 .tool-chip.is-open {
-  border-color: rgba(196, 96, 47, 0.45);
+  border-color: var(--plaza-accent);
   background: var(--plaza-accent-soft);
 }
 
@@ -1092,7 +1092,7 @@ const resultItems = computed(() => [
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: #c4602f;
+  background: var(--plaza-accent);
 }
 
 /* ===== 证据图片 ===== */
@@ -1147,7 +1147,7 @@ const resultItems = computed(() => [
   flex-direction: column;
   padding: 8px;
   border: 0;
-  border-left: 2px solid #c4602f;
+  border-left: 2px solid var(--plaza-accent);
   background: var(--plaza-accent-soft);
   cursor: pointer;
   text-align: left;
@@ -1161,14 +1161,14 @@ const resultItems = computed(() => [
 }
 
 .result-card small {
-  color: #a8967c;
+  color: var(--plaza-text-muted);
   font-size: 7px;
 }
 
 .result-card b {
   margin-top: 2px;
   overflow: hidden;
-  color: #4a3a2c;
+  color: var(--plaza-heading);
   font-size: 10px;
   font-weight: 800;
   text-overflow: ellipsis;

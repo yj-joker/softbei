@@ -449,7 +449,7 @@ onUnmounted(() => {
 
 <style scoped>
 .task-console {
-  --c-accent-light: #db8556;
+  --c-accent-light: var(--plaza-accent);
   max-width: 1320px;
   margin: 0 auto;
   min-height: 100%;
@@ -489,16 +489,16 @@ onUnmounted(() => {
   position: relative; display: grid; min-height: 280px;
   grid-template-columns: minmax(0, 1fr) 390px; gap: 32px;
   padding: 28px 30px; overflow: hidden; border-radius: var(--plaza-radius-lg);
-  border: 1px solid rgba(219, 133, 86, 0.2);
+  border: 1px solid var(--plaza-accent-soft-strong);
   background:
-    radial-gradient(120% 120% at 86% -12%, rgba(219, 111, 42, 0.24), transparent 54%),
-    linear-gradient(160deg, #2c2117 0%, #1b140d 74%);
-  box-shadow: 0 26px 60px -22px rgba(60, 30, 10, 0.5);
+    radial-gradient(120% 120% at 86% -12%, var(--signal-line), transparent 54%),
+    linear-gradient(160deg, var(--plaza-heading) 0%, var(--plaza-heading) 74%);
+  box-shadow: 0 26px 60px -22px rgba(0, 0, 0, 0.5);
 }
 .task-command::after {
   position: absolute; top: -150px; right: -85px; width: 390px; height: 390px;
-  border: 1px solid rgba(219, 133, 86, 0.16); border-radius: 50%;
-  box-shadow: 0 0 0 48px rgba(219, 133, 86, 0.03), 0 0 0 96px rgba(219, 133, 86, 0.018);
+  border: 1px solid var(--plaza-accent-soft-strong); border-radius: 50%;
+  box-shadow: 0 0 0 48px var(--plaza-accent-soft), 0 0 0 96px var(--plaza-accent-soft);
   content: '';
 }
 .command-grid {
@@ -517,15 +517,15 @@ onUnmounted(() => {
   padding: 0 9px; border-radius: 999px; font-family: var(--font-mono);
   font-size: 9.5px; font-weight: 800;
 }
-.task-number { color: #d8cdbf; border: 1px solid rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.06); }
+.task-number { color: var(--plaza-border); border: 1px solid rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.06); }
 .command-eyebrow { color: var(--c-accent-light); font-size: 9px; }
 .command-copy h1 {
   margin: 8px 0 8px; color: #fff; font-family: var(--font-display);
   font-size: clamp(28px, 3vw, 42px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.08;
 }
-.command-copy > p { max-width: 720px; margin: 0; color: #c6bcae; font-size: 13px; line-height: 1.75; }
+.command-copy > p { max-width: 720px; margin: 0; color: var(--plaza-border-strong); font-size: 13px; line-height: 1.75; }
 .command-meta { flex-wrap: wrap; gap: 9px 16px; margin-top: 21px; }
-.command-meta span { display: inline-flex; align-items: center; gap: 6px; color: #a79a89; font-size: 11px; }
+.command-meta span { display: inline-flex; align-items: center; gap: 6px; color: var(--plaza-text-muted); font-size: 11px; }
 .command-meta .el-icon { color: var(--c-accent-light); }
 .report-images { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
 .report-images img { width: 58px; height: 58px; object-fit: cover; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; }
@@ -539,13 +539,13 @@ onUnmounted(() => {
   position: relative; display: grid; width: 88px; height: 88px; place-items: center; border-radius: 50%;
   background: conic-gradient(var(--c-accent-light) var(--task-progress, 0deg), rgba(255, 255, 255, 0.08) 0);
 }
-.progress-dial::before { position: absolute; width: 72px; height: 72px; border-radius: 50%; background: #221913; content: ''; }
-.progress-dial span { position: relative; z-index: 1; color: #c9bdae; font-family: var(--font-mono); font-size: 10px; }
+.progress-dial::before { position: absolute; width: 72px; height: 72px; border-radius: 50%; background: var(--plaza-heading); content: ''; }
+.progress-dial span { position: relative; z-index: 1; color: var(--plaza-border-strong); font-family: var(--font-mono); font-size: 10px; }
 .progress-dial b { color: #fff; font-size: 21px; }
 .progress-copy { display: flex; min-width: 0; flex-direction: column; justify-content: center; }
-.progress-copy > span { color: #9a8d7c; font-size: 8px; }
+.progress-copy > span { color: var(--plaza-text-muted); font-size: 8px; }
 .progress-copy strong { margin-top: 3px; color: #fff; font-family: var(--font-display); font-size: 26px; font-weight: 800; }
-.progress-copy small { color: #b0a493; font-size: 10px; }
+.progress-copy small { color: var(--plaza-text-muted); font-size: 10px; }
 .readout-grid { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .readout-grid > span {
   display: grid; min-width: 0; grid-template-columns: 20px minmax(0, 1fr); grid-template-rows: auto auto;
@@ -553,16 +553,16 @@ onUnmounted(() => {
   border-radius: 9px; background: rgba(255, 255, 255, 0.025);
 }
 .readout-grid .el-icon { grid-row: 1 / 3; color: var(--c-accent-light); font-size: 16px; }
-.readout-grid b { overflow: hidden; color: #efe7da; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.readout-grid small { color: #97897a; font-size: 8px; }
+.readout-grid b { overflow: hidden; color: var(--plaza-panel-bg); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.readout-grid small { color: var(--plaza-text-muted); font-size: 8px; }
 .command-actions { grid-column: 1 / -1; gap: 8px; }
 .command-primary, .command-secondary {
   display: inline-flex; min-height: 42px; align-items: center; justify-content: center; gap: 7px;
   padding: 0 18px; border-radius: 9px; font-size: 12px; font-weight: 800; cursor: pointer;
 }
-.command-primary { border: 1px solid transparent; color: #fff; background: linear-gradient(145deg, #db8556, #c4602f); box-shadow: 0 8px 20px rgba(196, 96, 47, 0.3); }
+.command-primary { border: 1px solid transparent; color: #fff; background: linear-gradient(145deg, var(--plaza-accent), var(--plaza-accent)); box-shadow: 0 8px 20px var(--plaza-accent); }
 .command-primary:hover { filter: brightness(1.05); }
-.command-secondary { border: 1px solid rgba(255, 255, 255, 0.14); color: #d8cec1; background: rgba(255, 255, 255, 0.05); }
+.command-secondary { border: 1px solid rgba(255, 255, 255, 0.14); color: var(--plaza-border); background: rgba(255, 255, 255, 0.05); }
 .command-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* ===== 状态条 ===== */
@@ -612,7 +612,7 @@ onUnmounted(() => {
 @keyframes ra-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 .ra-actions { display: inline-flex; align-items: center; gap: 8px; }
 .ra-next, .ra-exit { display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 0 13px; border-radius: 8px; font-size: 11px; font-weight: 800; cursor: pointer; }
-.ra-next { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 6px 16px rgba(196, 96, 47, 0.22); }
+.ra-next { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 6px 16px var(--plaza-accent-soft-strong); }
 .ra-next:hover { filter: brightness(1.05); }
 .ra-exit { border: 1px solid var(--plaza-border-strong); color: var(--plaza-text-muted); background: var(--plaza-bg-card); }
 .ra-exit:hover { border-color: var(--plaza-accent); color: var(--plaza-accent); }

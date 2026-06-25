@@ -330,7 +330,7 @@ onUnmounted(() => taskMotionContext?.revert())
   display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0;
   border: none; border-radius: 10px; padding: 11px 20px; cursor: pointer;
   color: var(--home-btn-text); font-weight: 600; font-size: 14px;
-  background: var(--plaza-accent-grad); box-shadow: 0 8px 20px rgba(196,96,47,.26);
+  background: var(--plaza-accent-grad); box-shadow: 0 8px 20px var(--plaza-accent-soft-strong);
   transition: transform .12s ease, filter .2s ease;
 }
 .new-btn:hover { filter: brightness(1.05); transform: translateY(-2px); }
@@ -342,18 +342,18 @@ onUnmounted(() => taskMotionContext?.revert())
   gap: 28px; align-items: center;
   min-height: 176px; padding: 24px 26px;
   border-radius: var(--plaza-radius-lg);
-  color: #f4e6d2;
+  color: var(--plaza-panel-bg);
   background:
-    radial-gradient(120% 120% at 8% -10%, rgba(219,111,42,0.22), transparent 55%),
-    linear-gradient(160deg, #2c2117 0%, #1d160f 70%);
-  border: 1px solid rgba(240,151,74,0.18);
-  box-shadow: 0 26px 60px -22px rgba(60,30,10,.5);
+    radial-gradient(120% 120% at 8% -10%, var(--signal-line), transparent 55%),
+    linear-gradient(160deg, var(--plaza-heading) 0%, var(--plaza-heading) 70%);
+  border: 1px solid var(--signal-soft);
+  box-shadow: 0 26px 60px -22px rgba(0, 0, 0, .5);
 }
 .overview-grid {
   position: absolute; inset: 0; pointer-events: none;
   background-image:
-    linear-gradient(rgba(240,151,74,0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(240,151,74,0.06) 1px, transparent 1px);
+    linear-gradient(var(--signal-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--signal-soft) 1px, transparent 1px);
   background-size: 26px 26px;
   -webkit-mask-image: linear-gradient(90deg, #000, transparent 72%);
   mask-image: linear-gradient(90deg, #000, transparent 72%);
@@ -361,22 +361,22 @@ onUnmounted(() => taskMotionContext?.revert())
 .overview-copy, .overview-metrics { position: relative; z-index: 1; }
 .overview-eyebrow { font-family: var(--font-mono); font-size: 9px; font-weight: 800; letter-spacing: 0.16em; color: var(--signal); }
 .overview-copy h2 { margin: 8px 0 6px; font-family: var(--font-display); font-size: 24px; line-height: 1.15; color: #fbeede; }
-.overview-copy p { max-width: 430px; color: #c2ab8e; font-size: 12px; line-height: 1.7; }
-.overview-sync { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: #cdb796; font-size: 10px; }
+.overview-copy p { max-width: 430px; color: var(--plaza-text-muted); font-size: 12px; line-height: 1.7; }
+.overview-sync { display: flex; align-items: center; gap: 8px; margin-top: 18px; color: var(--plaza-border-strong); font-size: 10px; }
 .overview-sync i { width: 7px; height: 7px; border-radius: 50%; background: #7bbf5a; box-shadow: 0 0 0 4px rgba(123,191,90,0.14); }
-.overview-sync b { margin-left: auto; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.12em; color: #9a8166; }
+.overview-sync b { margin-left: auto; font-family: var(--font-mono); font-size: 9px; letter-spacing: 0.12em; color: var(--plaza-text-muted); }
 .overview-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
 .overview-metric {
   position: relative; min-width: 0; overflow: hidden;
   padding: 16px 14px 14px; border-radius: 11px;
-  border: 1px solid rgba(240,151,74,0.12); background: rgba(255,255,255,0.045);
+  border: 1px solid var(--signal-soft); background: rgba(255,255,255,0.045);
 }
-.overview-metric::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: #6b5742; }
+.overview-metric::before { content: ''; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--plaza-text); }
 .overview-metric.is-total::before, .overview-metric.is-executing::before { background: var(--signal); }
 .overview-metric.is-completed::before { background: #7bbf5a; }
-.overview-metric span { display: block; color: #c2ab8e; font-size: 9px; }
+.overview-metric span { display: block; color: var(--plaza-text-muted); font-size: 9px; }
 .overview-metric strong { display: block; margin: 7px 0 4px; font-family: var(--font-mono); font-size: 27px; line-height: 1; color: #fbeede; font-variant-numeric: tabular-nums; }
-.overview-metric small { display: block; overflow: hidden; color: #9a8166; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.overview-metric small { display: block; overflow: hidden; color: var(--plaza-text-muted); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 
 /* —— 筛选卡片 —— */
 .filter-card {

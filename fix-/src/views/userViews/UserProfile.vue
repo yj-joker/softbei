@@ -594,10 +594,10 @@ onBeforeUnmount(() => {
   padding: 28px;
   overflow: hidden;
   border-radius: 15px;
-  color: #f4ece0;
+  color: var(--plaza-panel-bg);
   border: 1px solid var(--plaza-accent-soft-strong);
   background: var(--plaza-console-grad);
-  box-shadow: 0 26px 60px -24px rgba(20, 14, 8, 0.5);
+  box-shadow: 0 26px 60px -24px rgba(0, 0, 0, 0.5);
 }
 .console-grid {
   position: absolute;
@@ -646,7 +646,7 @@ onBeforeUnmount(() => {
   bottom: -3px;
   width: 15px;
   height: 15px;
-  border: 3px solid #1b140d;
+  border: 3px solid var(--plaza-heading);
   border-radius: 50%;
   background: #4fae74;
 }
@@ -672,14 +672,14 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 9px;
   margin-top: 7px;
-  color: #b3a692;
+  color: var(--plaza-text-muted);
   font-size: 11px;
 }
 .identity-meta i {
   width: 4px;
   height: 4px;
   border-radius: 50%;
-  background: #7a6b58;
+  background: var(--plaza-text);
 }
 .identity-status {
   display: flex;
@@ -693,14 +693,14 @@ onBeforeUnmount(() => {
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.13em;
-  color: #8a7c68;
+  color: var(--plaza-text-muted);
 }
 .identity-status strong {
   display: flex;
   align-items: center;
   gap: 8px;
   margin-top: 8px;
-  color: #ece2d4;
+  color: var(--plaza-border);
   font-size: 12px;
   font-weight: 700;
 }
@@ -719,7 +719,7 @@ onBeforeUnmount(() => {
 }
 .identity-status small {
   margin-top: 6px;
-  color: #8a7c68;
+  color: var(--plaza-text-muted);
   font-size: 9px;
 }
 .identity-readouts {
@@ -758,13 +758,13 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 .readout-copy small {
-  color: #8a7c68;
+  color: var(--plaza-text-muted);
   font-size: 8px;
 }
 .readout-copy b {
   margin-top: 3px;
   overflow: hidden;
-  color: #d9cebd;
+  color: var(--plaza-border);
   font-size: 10px;
   font-weight: 700;
   text-overflow: ellipsis;
@@ -836,7 +836,7 @@ onBeforeUnmount(() => {
   border: none;
   color: var(--home-btn-text, #fff);
   background: var(--plaza-accent-grad);
-  box-shadow: 0 10px 22px -10px rgba(196, 96, 47, 0.7);
+  box-shadow: 0 10px 22px -10px var(--plaza-accent);
 }
 .primary-button:hover:not(:disabled) { transform: translateY(-2px); }
 .primary-button:disabled { opacity: 0.55; cursor: not-allowed; box-shadow: none; }
@@ -1072,7 +1072,7 @@ onBeforeUnmount(() => {
   flex: 1;
   flex-direction: column;
   background:
-    radial-gradient(circle at 100% 0%, rgba(196, 96, 47, 0.09), transparent 36%),
+    radial-gradient(circle at 100% 0%, var(--plaza-accent-soft), transparent 36%),
     var(--plaza-bg-card);
 }
 .sync-code { color: var(--plaza-accent); }

@@ -34,21 +34,21 @@ const expandedRows = ref(new Set())
 
 /* ========== 状态枚举 ========== */
 const STATUS_MAP = {
-  CREATED:         { label: '已创建',   color: '#c4602f', bg: '#f8ece2' },
+  CREATED:         { label: '已创建',   color: 'var(--plaza-accent)', bg: 'var(--plaza-accent-soft)' },
   GENERATING:      { label: '生成中',   color: '#df9226', bg: '#fdf2e0' },
   GENERATED:       { label: '已生成',   color: '#5e8c3e', bg: '#f1f5e6' },
   GENERATE_FAILED: { label: '生成失败', color: '#c5402c', bg: '#fbeae4' },
   EXECUTING:       { label: '执行中',   color: '#a8605f', bg: '#f5ece8' },
-  CLOSED:          { label: '已关闭',   color: '#8a7c6c', bg: '#f1eadd' },
+  CLOSED:          { label: '已关闭',   color: 'var(--plaza-text-muted)', bg: 'var(--plaza-panel-bg)' },
 }
 const PROMO_MAP = {
   PENDING:  { label: '待沉淀', color: '#df9226', bg: '#fdf2e0' },
   PROMOTED: { label: '已沉淀', color: '#5e8c3e', bg: '#f1f5e6' },
-  SKIPPED:  { label: '已跳过', color: '#b3a692', bg: '#f1eadd' },
+  SKIPPED:  { label: '已跳过', color: 'var(--plaza-text-muted)', bg: 'var(--plaza-panel-bg)' },
 }
 const URGENCY_MAP = {
   0: { label: '低',   color: '#5e8c3e', bg: '#f1f5e6' },
-  1: { label: '普通', color: '#c4602f', bg: '#f8ece2' },
+  1: { label: '普通', color: 'var(--plaza-accent)', bg: 'var(--plaza-accent-soft)' },
   2: { label: '紧急', color: '#c5402c', bg: '#fbeae4' },
 }
 const LEVEL_MAP = { ROUTINE: '日常保养', MINOR: '小修', MAJOR: '大修' }
@@ -315,7 +315,7 @@ onMounted(() => loadTasks(1))
             row-key="id"
             stripe
             style="width: 100%"
-            :header-cell-style="{ background: '#f6f0e5', color: '#6b5d4c', fontWeight: 600, fontSize: '12px', letterSpacing: '0.4px' }"
+            :header-cell-style="{ background: 'var(--plaza-panel-bg)', color: 'var(--plaza-text)', fontWeight: 600, fontSize: '12px', letterSpacing: '0.4px' }"
             :cell-style="{ fontSize: '13.5px' }"
             @row-click="(row) => toggleExpand(row.id)"
           >
@@ -432,7 +432,7 @@ onMounted(() => loadTasks(1))
                 >
                   {{ (PROMO_MAP[row.promotedProcedure] || {}).label || row.promotedProcedure }}
                 </span>
-                <span v-else class="tag-sm" style="background:#f1eadd;color:#b3a692">-</span>
+                <span v-else class="tag-sm" style="background:var(--plaza-panel-bg);color:var(--plaza-text-muted)">-</span>
               </template>
             </el-table-column>
 
@@ -448,7 +448,7 @@ onMounted(() => loadTasks(1))
                 >
                   {{ (PROMO_MAP[row.promotedGraph] || {}).label || row.promotedGraph }}
                 </span>
-                <span v-else class="tag-sm" style="background:#f1eadd;color:#b3a692">-</span>
+                <span v-else class="tag-sm" style="background:var(--plaza-panel-bg);color:var(--plaza-text-muted)">-</span>
               </template>
             </el-table-column>
 
@@ -502,7 +502,7 @@ onMounted(() => loadTasks(1))
                   </el-button>
                   <span
                     v-if="!canPromote(row) || (row.promotedProcedure !== 'PENDING' && row.promotedGraph !== 'PENDING')"
-                    style="color:#b3a692;font-size:12px"
+                    style="color:var(--plaza-text-muted);font-size:12px"
                   >-</span>
                 </div>
               </template>
@@ -592,7 +592,7 @@ onMounted(() => loadTasks(1))
 }
 .at-tabs :deep(.el-tabs__item:hover) {
   color: var(--plaza-text);
-  background: rgba(196,96,47,.05);
+  background: var(--plaza-accent-soft);
 }
 .at-tabs :deep(.el-tabs__item.is-active) {
   color: var(--plaza-accent);
@@ -645,7 +645,7 @@ onMounted(() => loadTasks(1))
   font-family: var(--font-display); font-size: 22px; font-weight: 700; color: var(--plaza-heading); margin: 0; letter-spacing: 0.2px;
 }
 .at-title-sub {
-  font-family: var(--font-mono); font-size: 10px; color: #b3a692; letter-spacing: 2px;
+  font-family: var(--font-mono); font-size: 10px; color: var(--plaza-text-muted); letter-spacing: 2px;
 }
 
 /* ── 筛选卡片 ── */
@@ -716,8 +716,8 @@ onMounted(() => loadTasks(1))
 /* ── 展开行 ── */
 .expand-panel {
   padding: 14px 20px;
-  background: #faf4ea;
-  border-top: 1px solid #ece3d4;
+  background: var(--plaza-bg-card);
+  border-top: 1px solid var(--plaza-border);
 }
 .exp-grid {
   display: grid;
@@ -748,7 +748,7 @@ onMounted(() => loadTasks(1))
 .exp-extraction {
   margin-top: 12px;
   padding-top: 12px;
-  border-top: 1px solid #ece3d4;
+  border-top: 1px solid var(--plaza-border);
 }
 .exp-clue-list {
   display: flex;
@@ -757,7 +757,7 @@ onMounted(() => loadTasks(1))
   margin-top: 8px;
   padding: 10px 12px;
   background: var(--plaza-bg-card);
-  border: 1px solid #ece3d4;
+  border: 1px solid var(--plaza-border);
   border-radius: 8px;
 }
 .exp-clue-section {
@@ -787,7 +787,7 @@ onMounted(() => loadTasks(1))
   padding: 4px 8px;
   border-radius: 7px;
   background: var(--plaza-bg-input);
-  border: 1px solid #ece3d4;
+  border: 1px solid var(--plaza-border);
   color: var(--plaza-text);
   font-size: 12px;
   line-height: 1.5;

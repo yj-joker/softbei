@@ -145,18 +145,18 @@ async function submit() {
 </template>
 
 <style scoped>
-.hint { font-size: 12px; color: #b3a692; margin-left: 10px; }
+.hint { font-size: 12px; color: var(--plaza-text-muted); margin-left: 10px; }
 .imgs { display: flex; flex-wrap: wrap; gap: 10px; }
 .img-item { position: relative; width: 72px; height: 72px; border-radius: 8px; overflow: hidden; border: 1px solid var(--plaza-border); }
 .img-item img { width: 100%; height: 100%; object-fit: cover; }
 .img-x { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border: none; border-radius: 50%;
   background: rgba(25,18,13,.6); color: #fff; font-size: 11px; cursor: pointer; line-height: 1; }
 .img-add { width: 72px; height: 72px; border: 1px dashed var(--plaza-border); border-radius: 8px; display: flex; align-items: center;
-  justify-content: center; font-size: 13px; color: var(--plaza-accent); cursor: pointer; background: #faf6ef; }
-.img-add.busy { color: #b3a692; cursor: default; }
-.img-add:hover { background: #f3e7d9; }
+  justify-content: center; font-size: 13px; color: var(--plaza-accent); cursor: pointer; background: var(--plaza-bg-card); }
+.img-add.busy { color: var(--plaza-text-muted); cursor: default; }
+.img-add:hover { background: var(--plaza-panel-bg); }
 .dlg-btn { padding: 8px 18px; border-radius: 8px; font-weight: 600; font-size: 13px; cursor: pointer; border: 1px solid; transition: .15s; }
-.dlg-btn.cancel { background: var(--plaza-bg-card); color: #6b5d4c; border-color: var(--plaza-border); margin-right: 8px; }
+.dlg-btn.cancel { background: var(--plaza-bg-card); color: var(--plaza-text); border-color: var(--plaza-border); margin-right: 8px; }
 .dlg-btn.cancel:hover { color: var(--plaza-text); }
 .dlg-btn.ok { background: var(--plaza-accent-grad); color: #fff; border-color: var(--plaza-accent); }
 .dlg-btn.ok:hover { background: var(--plaza-accent-hover); }
