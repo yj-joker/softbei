@@ -251,8 +251,8 @@ onBeforeUnmount(() => {
                   <svg viewBox="0 0 160 160" class="bench">
                     <defs>
                       <linearGradient id="bg1" x1="0" y1="0" x2="1" y2="1">
-                        <stop offset="0" stop-color="#f6b072" />
-                        <stop offset="1" stop-color="#db6f2a" />
+                        <stop offset="0" style="stop-color: var(--plaza-accent)" />
+                        <stop offset="1" style="stop-color: var(--plaza-accent-hover)" />
                       </linearGradient>
                     </defs>
                     <!-- 显示器机身 -->
@@ -479,18 +479,18 @@ onBeforeUnmount(() => {
   margin-top: 14px;            /* 与上方三个指标卡拉开距离，不贴在一起 */
   border-radius: var(--plaza-radius-lg);
   padding: 20px 22px 22px;
-  color: #f4e6d2;
+  color: var(--plaza-panel-bg);
   background:
-    radial-gradient(120% 120% at 10% -10%, rgba(219,111,42,0.22), transparent 55%),
-    linear-gradient(160deg, #2c2117 0%, #1d160f 70%);
-  border: 1px solid rgba(240,151,74,0.18);
-  box-shadow: 0 26px 60px -22px rgba(60,30,10,.55), inset 0 0 0 1px rgba(255,255,255,.02);
+    radial-gradient(120% 120% at 10% -10%, var(--signal-line), transparent 55%),
+    linear-gradient(160deg, var(--plaza-heading) 0%, var(--plaza-heading) 70%);
+  border: 1px solid var(--signal-soft);
+  box-shadow: 0 26px 60px -22px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(255,255,255,.02);
 }
 .hero::before {
   content: ''; position: absolute; inset: 0; pointer-events: none;
   background-image:
-    linear-gradient(rgba(240,151,74,0.06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(240,151,74,0.06) 1px, transparent 1px);
+    linear-gradient(var(--signal-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--signal-soft) 1px, transparent 1px);
   background-size: 26px 26px;
   -webkit-mask-image: radial-gradient(circle at 70% 50%, #000, transparent 75%);
   mask-image: radial-gradient(circle at 70% 50%, #000, transparent 75%);
@@ -502,12 +502,12 @@ onBeforeUnmount(() => {
 
 /* 表单 */
 .form { display: flex; flex-direction: column; }
-.f-label { font-size: 12.5px; color: #d9c2a4; margin: 12px 0 6px; }
+.f-label { font-size: 12.5px; color: var(--plaza-border-strong); margin: 12px 0 6px; }
 .f-label:first-child { margin-top: 0; }
 .f-select, .f-area {
   position: relative;
   background: rgba(255,255,255,.045);
-  border: 1px solid rgba(240,151,74,.20);
+  border: 1px solid var(--signal-line);
   border-radius: 10px;
   transition: border-color .2s ease;
 }
@@ -520,16 +520,16 @@ onBeforeUnmount(() => {
 .f-select .el-icon { color: var(--signal); transform: rotate(90deg); }
 .f-area { padding: 10px 12px 22px; }
 .f-area textarea { resize: none; height: 64px; line-height: 1.5; }
-.f-area textarea::placeholder { color: #9a8169; }
-.f-count { position: absolute; right: 10px; bottom: 6px; font-size: 11px; font-family: var(--font-mono); color: #9a8169; }
+.f-area textarea::placeholder { color: var(--plaza-text-muted); }
+.f-count { position: absolute; right: 10px; bottom: 6px; font-size: 11px; font-family: var(--font-mono); color: var(--plaza-text-muted); }
 .f-go {
   margin-top: 16px; height: 44px; border: none; cursor: pointer;
-  border-radius: 11px; color: #1c1206; font-weight: 700; font-size: 14.5px; letter-spacing: .5px;
-  background: linear-gradient(135deg, #f6b072, var(--signal-strong));
-  box-shadow: 0 10px 24px -8px rgba(219,111,42,.7);
+  border-radius: 11px; color: var(--plaza-heading); font-weight: 700; font-size: 14.5px; letter-spacing: .5px;
+  background: linear-gradient(135deg, var(--plaza-accent), var(--signal-strong));
+  box-shadow: 0 10px 24px -8px var(--signal-strong);
   transition: transform .18s ease, box-shadow .18s ease;
 }
-.f-go:hover { transform: translateY(-2px); box-shadow: 0 16px 30px -8px rgba(219,111,42,.8); }
+.f-go:hover { transform: translateY(-2px); box-shadow: 0 16px 30px -8px var(--signal-strong); }
 .f-go .tri { font-size: 11px; }
 
 /* 全息检修台图区 */
@@ -553,15 +553,15 @@ onBeforeUnmount(() => {
   transform-origin: 50% 50%;
 }
 .ring { position: absolute; inset: 0; margin: auto; border-radius: 50%; }
-.ring.r1 { width: 200px; height: 200px; border: 1px dashed rgba(240,151,74,.5); }
-.ring.r2 { width: 150px; height: 150px; border: 1.5px solid rgba(240,151,74,.4); box-shadow: 0 0 18px rgba(240,151,74,.18) inset; }
+.ring.r1 { width: 200px; height: 200px; border: 1px dashed var(--signal); }
+.ring.r2 { width: 150px; height: 150px; border: 1.5px solid var(--signal); box-shadow: 0 0 18px var(--signal-soft) inset; }
 .ring.r3 {
   width: 96px; height: 96px;
   border: 2px solid transparent;
   border-top-color: var(--signal); border-right-color: var(--signal-strong);
-  box-shadow: 0 0 22px rgba(240,151,74,.3);
+  box-shadow: 0 0 22px var(--signal-line);
 }
-.hub { position: absolute; inset: 0; margin: auto; width: 30px; height: 30px; border-radius: 50%; background: radial-gradient(circle, rgba(246,176,114,.9), rgba(219,111,42,.2) 70%, transparent); }
+.hub { position: absolute; inset: 0; margin: auto; width: 30px; height: 30px; border-radius: 50%; background: radial-gradient(circle, rgba(246,176,114,.9), var(--signal-line) 70%, transparent); }
 .holo-core {
   position: relative; z-index: 2; width: 150px; height: 150px;
   display: grid; place-items: center; cursor: grab; touch-action: none;
@@ -569,17 +569,17 @@ onBeforeUnmount(() => {
 .holo-core:active { cursor: grabbing; }
 .bench { width: 132px; height: 132px; overflow: visible; }
 .bn-line { fill: none; stroke: url(#bg1); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
-.bn-fill { fill: rgba(240,151,74,.10); }
+.bn-fill { fill: var(--signal-soft); }
 .bn-fill2 { fill: var(--signal); }
 .bn-wave { fill: none; stroke: #ffd9a8; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .core-glow {
   position: absolute; width: 150px; height: 150px; border-radius: 50%; z-index: -1;
-  background: radial-gradient(circle, rgba(240,151,74,.28), transparent 65%);
+  background: radial-gradient(circle, var(--signal-line), transparent 65%);
   filter: blur(6px);
 }
 .holo-hint {
   position: absolute; bottom: -2px; left: 50%; transform: translateX(-50%);
-  font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; color: #b89372;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px; color: var(--plaza-text-muted);
   opacity: .8;
 }
 
@@ -588,23 +588,23 @@ onBeforeUnmount(() => {
   position: absolute; z-index: 3;
   display: flex; align-items: center; gap: 9px;
   padding: 8px 12px; border-radius: 11px;
-  background: rgba(46,34,24,.78);
-  border: 1px solid rgba(240,151,74,.24);
+  background: rgba(0, 0, 0, .78);
+  border: 1px solid var(--signal-line);
   box-shadow: 0 8px 20px -10px rgba(0,0,0,.6);
   backdrop-filter: blur(4px);
   transition: transform .2s ease, border-color .2s ease, background .2s ease;
 }
-.diag-node:hover { transform: scale(1.05); border-color: var(--signal); background: rgba(60,42,28,.9); }
+.diag-node:hover { transform: scale(1.05); border-color: var(--signal); background: rgba(0, 0, 0, .9); }
 .diag-node.left { left: 2px; flex-direction: row; }
 .diag-node.right { right: 2px; flex-direction: row-reverse; text-align: right; }
 .diag-node.s0 { top: 8%; }
 .diag-node.s1 { top: 50%; transform: translateY(-50%); }
 .diag-node.s1:hover { transform: translateY(-50%) scale(1.05); }
 .diag-node.s2 { bottom: 8%; }
-.dn-ico { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: grid; place-items: center; font-size: 16px; color: var(--signal); background: rgba(240,151,74,.14); }
+.dn-ico { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: grid; place-items: center; font-size: 16px; color: var(--signal); background: var(--signal-soft); }
 .dn-text { display: flex; flex-direction: column; }
 .dn-label { font-size: 13px; font-weight: 600; color: #fbeede; }
-.dn-sub { font-family: var(--font-mono); font-size: 9px; letter-spacing: 1px; color: #b89372; }
+.dn-sub { font-family: var(--font-mono); font-size: 9px; letter-spacing: 1px; color: var(--plaza-text-muted); }
 
 /* —— 检修任务流转 —— */
 .flow { position: relative; padding-top: 6px; }
@@ -646,7 +646,7 @@ onBeforeUnmount(() => {
 .quiz-go {
   width: 100%; height: 42px; border: none; border-radius: 11px; font-weight: 700; font-size: 14px;
   color: var(--home-btn-text); background: var(--plaza-accent-grad);
-  box-shadow: 0 10px 22px -10px rgba(196,96,47,.7); transition: transform .18s ease;
+  box-shadow: 0 10px 22px -10px var(--plaza-accent); transition: transform .18s ease;
 }
 .quiz-go:hover { transform: translateY(-2px); }
 

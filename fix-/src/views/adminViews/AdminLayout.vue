@@ -2,6 +2,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import RunningTasksTray from '@/components/RunningTasksTray.vue'
+import ThemeSwitcher from '@/components/ThemeSwitcher.vue'
 import { notifyStore } from '@/stores/notifyStore'
 import { enterShell, enterMain } from '@/utils/motion'
 import {
@@ -167,6 +168,7 @@ function handleHeaderSearch() {
           <span class="loc-cur">{{ currentSection }}</span>
         </div>
         <div class="top-right">
+          <ThemeSwitcher />
           <div class="status-pill">
             <span class="status-dot" />
             <span class="status-text">系统在线</span>

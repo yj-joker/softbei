@@ -8,8 +8,10 @@ import {
   Check,
   Clock,
   Document,
+  Headset,
   Picture,
   UploadFilled,
+  VideoPause,
   Warning,
 } from '@element-plus/icons-vue'
 import { executeStep, forceCompleteStep } from '@/api/maintenanceTask'
@@ -22,8 +24,9 @@ const props = defineProps({
   taskId: { required: true },
   active: { type: Boolean, default: false },   // 是否当前应执行的步骤
   executing: { type: Boolean, default: false },// 任务是否处于 EXECUTING
+  reading: { type: Boolean, default: false },  // 跟读模式下：是否正在念这一步（高亮）
 })
-const emit = defineEmits(['submitted', 'chat'])
+const emit = defineEmits(['submitted', 'chat', 'read-along'])
 
 const exec = reactive({ note: '', images: [], confirmed: false })
 const uploading = ref(false)
@@ -76,7 +79,7 @@ async function submit() {
     await executeStep(props.taskId, s.id, {
       images: exec.images, note: exec.note.trim(), checkpointConfirmed: exec.confirmed,
     })
-    notifyStore.trackJob({ key: 'step:' + s.id, kind: 'step', refId: s.id, title: '步骤AI验证：' + (s.title || '') })
+    notifyStore.trackJob({ key: 'step:' + s.id, kind: 'step', refId: s.id, taskId: props.taskId, title: '步骤AI验证：' + (s.title || '') })
     ElMessage.success('已提交，AI 验证中…')
     emit('submitted')
   } catch (err) { ElMessage.error('提交失败：' + (err.message || '')) }
@@ -97,7 +100,7 @@ async function forceComplete() {
 <template>
   <article
     class="step-card-shell"
-    :class="{ active: canAct, done, rejected }"
+    :class="{ active: canAct, done, rejected, reading }"
     :data-step-id="String(step.id)"
   >
     <span class="timeline-node" aria-hidden="true">
@@ -130,6 +133,10 @@ async function forceComplete() {
         <span v-if="!requirementCount && !step.estimatedMinutes">标准作业步骤</span>
 
         <div class="step-tools">
+          <button type="button" class="ask-button" :class="{ reading }" @click="emit('read-along', step)">
+            <el-icon><VideoPause v-if="reading" /><Headset v-else /></el-icon>
+            {{ reading ? '停止跟读' : '从此步跟读' }}
+          </button>
           <button type="button" class="ask-button" @click="emit('chat', step)">
             <el-icon><ChatDotRound /></el-icon> 问 AI
           </button>
@@ -279,7 +286,7 @@ async function forceComplete() {
   align-self: start;
   justify-self: center;
   margin-top: 15px;
-  border: 4px solid #f4ecdd;
+  border: 4px solid var(--plaza-bg);
   border-radius: 10px;
   color: var(--plaza-text-muted);
   background: var(--plaza-bg-card);
@@ -323,15 +330,27 @@ async function forceComplete() {
 }
 .step-card-shell.active .step-card {
   border-color: var(--plaza-accent);
-  box-shadow: 0 10px 28px rgba(196, 96, 47, 0.14);
+  box-shadow: 0 10px 28px var(--plaza-accent-soft-strong);
 }
 .step-card-shell.active .step-card::before {
   display: block;
   height: 3px;
-  background: linear-gradient(90deg, #c4602f, #db8556 48%, transparent);
+  background: linear-gradient(90deg, var(--plaza-accent), var(--plaza-accent) 48%, transparent);
   content: '';
 }
-.step-card-shell.done .step-card { background: linear-gradient(180deg, #fbfdf6, var(--plaza-bg-card)); }
+.step-card-shell.done .step-card { background: linear-gradient(180deg, var(--plaza-bg-card), var(--plaza-bg-card)); }
+
+/* 跟读模式：正在念的步骤——左侧高亮边 + 柔光，区别于"当前执行"态 */
+.step-card-shell.reading .step-card {
+  border-color: var(--plaza-accent);
+  border-left: 3px solid var(--plaza-accent);
+  box-shadow: 0 0 0 3px var(--plaza-accent-soft), var(--plaza-shadow-organic);
+}
+.step-card-shell.reading .timeline-node {
+  color: #fff;
+  background: var(--plaza-accent);
+  box-shadow: 0 0 0 1px var(--plaza-accent), 0 0 0 6px var(--plaza-accent-soft);
+}
 
 .step-header {
   display: flex;
@@ -412,6 +431,7 @@ async function forceComplete() {
 .detail-toggle { border: 1px solid var(--plaza-border); color: var(--plaza-text-muted); }
 .ask-button:hover,
 .detail-toggle:hover { border-color: var(--plaza-accent); color: var(--plaza-accent); background: var(--plaza-accent-soft); }
+.ask-button.reading { border-color: var(--plaza-accent); color: #fff; background: var(--plaza-accent); }
 
 .step-body { padding: 14px 15px 15px; border-top: 1px solid var(--plaza-border); }
 .step-content { margin: 0 0 11px; color: var(--plaza-text); font-size: 12px; line-height: 1.75; white-space: pre-wrap; }
@@ -475,8 +495,8 @@ async function forceComplete() {
   border: 1px solid var(--plaza-accent-soft-strong);
   border-radius: 10px;
   background:
-    linear-gradient(rgba(196, 96, 47, 0.024) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(196, 96, 47, 0.024) 1px, transparent 1px),
+    linear-gradient(var(--plaza-accent-soft) 1px, transparent 1px),
+    linear-gradient(90deg, var(--plaza-accent-soft) 1px, transparent 1px),
     var(--plaza-bg-input);
   background-size: 22px 22px;
 }
@@ -491,7 +511,7 @@ async function forceComplete() {
 .upload-button { position: relative; width: 74px; height: 74px; overflow: hidden; border-radius: 8px; }
 .upload-preview { border: 1px solid var(--plaza-border-strong); }
 .upload-preview img { width: 100%; height: 100%; object-fit: cover; }
-.upload-preview button { position: absolute; top: 3px; right: 3px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 50%; color: #fff; background: rgba(42, 32, 24, 0.72); cursor: pointer; }
+.upload-preview button { position: absolute; top: 3px; right: 3px; display: grid; width: 20px; height: 20px; place-items: center; border: 0; border-radius: 50%; color: #fff; background: rgba(0, 0, 0, 0.72); cursor: pointer; }
 .upload-button { display: flex; align-items: center; justify-content: center; flex-direction: column; gap: 4px; border: 1px dashed var(--plaza-border-strong); color: var(--plaza-accent); background: rgba(255, 255, 255, 0.6); font-size: 9px; font-weight: 750; cursor: pointer; }
 .upload-button .el-icon { font-size: 19px; }
 .upload-button:hover { background: var(--plaza-accent-soft); }
@@ -518,7 +538,7 @@ async function forceComplete() {
 .execution-actions > span { margin-right: auto; color: var(--plaza-text-muted); font-size: 8px; }
 .submit-button,
 .force-button { min-height: 39px; padding: 0 15px; border-radius: 8px; font-size: 10px; font-weight: 800; cursor: pointer; }
-.submit-button { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 7px 18px rgba(196, 96, 47, 0.22); }
+.submit-button { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 7px 18px var(--plaza-accent-soft-strong); }
 .submit-button:hover { filter: brightness(1.05); }
 .force-button { border: 1px solid #f3d3a0; color: var(--plaza-warning); background: var(--plaza-bg-card); }
 .submit-button:disabled,

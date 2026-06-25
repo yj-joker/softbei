@@ -165,6 +165,202 @@
   --signal-strong: #db6f2a;
   --signal-soft: rgba(240, 151, 74, 0.16);
   --signal-line: rgba(240, 151, 74, 0.36);
+
+  /* —— 深色装饰面板（身份控制台/深色头部等），随主题换 —— */
+  --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(219, 111, 42, 0.20), transparent 55%), linear-gradient(150deg, #2c2117 0%, #1b140d 76%);
+  --plaza-console-accent: #db8556;
+}
+
+/* ============================================================
+   主题切换：覆盖一套色彩变量即可全局换肤（组件零改动）。
+   语义状态色(success/warning/danger)跨主题保持一致，故不覆盖。
+   默认(无 data-theme)= 暖陶土，见上方 :root。
+   ============================================================ */
+
+/* —— 青灰墨：钢蓝冷色 —— */
+:root[data-theme="cool"] {
+  --atmospheric-bg-from: #f1f4f6;
+  --atmospheric-bg-to: #e8eef2;
+  --plaza-bg: #eef1f4;
+  --plaza-bg-card: #ffffff;
+  --plaza-bg-input: #f1f4f6;
+  --plaza-accent: #2f7488;
+  --plaza-accent-hover: #245d6e;
+  --plaza-tag-bg: #2f7488;
+  --plaza-accent-soft: rgba(47, 116, 136, 0.11);
+  --plaza-accent-soft-strong: rgba(47, 116, 136, 0.20);
+  --plaza-accent-grad: linear-gradient(135deg, #4a93a6 0%, #2f7488 55%, #245d6e 100%);
+  --plaza-heading: #1f2a32;
+  --plaza-text: #33424c;
+  --plaza-text-muted: #76828c;
+  --plaza-border: #dbe2e8;
+  --plaza-border-strong: #c4cfd7;
+  --plaza-panel-bg: #f1f4f6;
+  --plaza-link: #2f7488;
+  --plaza-grid-light: #ffffff;
+  --plaza-grid-dark: #eef1f4;
+  --plaza-info: #2f7488;
+  --plaza-info-soft: rgba(47, 116, 136, 0.10);
+  --plaza-shadow-organic: 0 1px 2px rgba(30, 45, 60, 0.05), 0 3px 12px rgba(30, 50, 70, 0.08);
+  --plaza-shadow-organic-hover: 0 14px 34px rgba(30, 50, 70, 0.16), 0 3px 8px rgba(30, 50, 70, 0.06);
+  --home-btn-sage: #2f7488;
+  --home-btn-sage-hover: #245d6e;
+  --home-btn-text: #ffffff;
+  --dialog-dark-bg: #ffffff;
+  --dialog-dark-header: rgba(241, 244, 246, 0.98);
+  --dialog-dark-border: #dbe2e8;
+  --dialog-dark-text: #1f2a32;
+  --dialog-dark-muted: #76828c;
+  --el-bg-color: #ffffff;
+  --el-bg-color-overlay: #ffffff;
+  --el-bg-color-page: #eef1f4;
+  --el-fill-color: #f1f4f6;
+  --el-fill-color-light: #f3f6f8;
+  --el-fill-color-lighter: #f1f4f6;
+  --el-fill-color-blank: #ffffff;
+  --el-text-color-primary: #1f2a32;
+  --el-text-color-regular: #33424c;
+  --el-text-color-secondary: #76828c;
+  --el-text-color-placeholder: #9aa6ae;
+  --el-border-color: #dbe2e8;
+  --el-border-color-light: #e3e9ee;
+  --el-border-color-lighter: #eaeff2;
+  --el-border-color-extra-light: #f1f4f6;
+  --el-border-color-dark: #c4cfd7;
+  --el-border-color-hover: #87b0bd;
+  --el-fill-color-dark: #e3e9ee;
+  --el-color-white: #ffffff;
+  --el-color-primary: #2f7488;
+  --el-color-primary-light-3: #5c93a3;
+  --el-color-primary-light-5: #82aab6;
+  --el-color-primary-light-7: #a9c4cc;
+  --el-color-primary-light-8: #c4d5db;
+  --el-color-primary-light-9: #e3edf0;
+  --el-color-primary-dark-2: #245d6e;
+  --el-color-info: #76828c;
+  --el-svg-icon-color: #76828c;
+  --el-box-shadow-light: 0 1px 2px rgba(30, 50, 70, 0.07);
+  --step-num-bg: #c4d5db;
+  --step-num-text: #245d6e;
+  --primary-blue: #2f7488;
+  --light-blue: #c4d5db;
+  --text-dark: #1f2a32;
+  --text-gray: #76828c;
+  --bg-light: #eef1f4;
+  --hover-blue: rgba(47, 116, 136, 0.09);
+  --border-color: #dbe2e8;
+  --shell-ink: #dde6ea;
+  --shell-ink-soft: #e9eef1;
+  --shell-ink-raised: #d2dde3;
+  --shell-ink-tail: #d8e1e6;
+  --shell-ink-line: rgba(40, 70, 90, 0.12);
+  --shell-ink-text: #3e5763;
+  --shell-ink-text-dim: #6f8089;
+  --shell-ink-strong: #20323b;
+  --shell-hover-bg: rgba(47, 116, 136, 0.10);
+  --shell-glow: radial-gradient(130% 55% at 50% -8%, rgba(74, 147, 166, 0.14), transparent 62%);
+  --shell-active-bg: linear-gradient(90deg, rgba(47, 116, 136, 0.16), rgba(47, 116, 136, 0.035));
+  --shell-active-text: #245d6e;
+  --shell-rail-shadow: 8px 0 30px rgba(40, 70, 90, 0.10);
+  --signal: #3f93a8;
+  --signal-strong: #2f7488;
+  --signal-soft: rgba(47, 116, 136, 0.16);
+  --signal-line: rgba(47, 116, 136, 0.36);
+  --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(47, 116, 136, 0.28), transparent 55%), linear-gradient(150deg, #243038 0%, #161e24 76%);
+  --plaza-console-accent: #5fa3b5;
+}
+
+/* —— 松石绿：清新自然 —— */
+:root[data-theme="sage"] {
+  --atmospheric-bg-from: #f1f4ea;
+  --atmospheric-bg-to: #e8efdf;
+  --plaza-bg: #eef2e8;
+  --plaza-bg-card: #fffef9;
+  --plaza-bg-input: #eef2e6;
+  --plaza-accent: #4f7d3a;
+  --plaza-accent-hover: #3e6630;
+  --plaza-tag-bg: #4f7d3a;
+  --plaza-accent-soft: rgba(79, 125, 58, 0.12);
+  --plaza-accent-soft-strong: rgba(79, 125, 58, 0.20);
+  --plaza-accent-grad: linear-gradient(135deg, #6fa14f 0%, #4f7d3a 55%, #3e6630 100%);
+  --plaza-heading: #27331d;
+  --plaza-text: #34402c;
+  --plaza-text-muted: #7c876c;
+  --plaza-border: #dce3d1;
+  --plaza-border-strong: #c9d3b9;
+  --plaza-panel-bg: #eef2e6;
+  --plaza-link: #4f7d3a;
+  --plaza-grid-light: #fffef9;
+  --plaza-grid-dark: #eef2e8;
+  --plaza-info: #4f7d3a;
+  --plaza-info-soft: rgba(79, 125, 58, 0.10);
+  --plaza-shadow-organic: 0 1px 2px rgba(45, 60, 30, 0.05), 0 3px 12px rgba(50, 70, 30, 0.08);
+  --plaza-shadow-organic-hover: 0 14px 34px rgba(50, 70, 30, 0.16), 0 3px 8px rgba(50, 70, 30, 0.06);
+  --home-btn-sage: #4f7d3a;
+  --home-btn-sage-hover: #3e6630;
+  --home-btn-text: #fffef9;
+  --dialog-dark-bg: #fffef9;
+  --dialog-dark-header: rgba(240, 243, 233, 0.98);
+  --dialog-dark-border: #dce3d1;
+  --dialog-dark-text: #27331d;
+  --dialog-dark-muted: #7c876c;
+  --el-bg-color: #fffef9;
+  --el-bg-color-overlay: #fffef9;
+  --el-bg-color-page: #eef2e8;
+  --el-fill-color: #eef2e6;
+  --el-fill-color-light: #f1f5ea;
+  --el-fill-color-lighter: #eef2e6;
+  --el-fill-color-blank: #fffef9;
+  --el-text-color-primary: #27331d;
+  --el-text-color-regular: #34402c;
+  --el-text-color-secondary: #7c876c;
+  --el-text-color-placeholder: #a4ad96;
+  --el-border-color: #dce3d1;
+  --el-border-color-light: #e4eada;
+  --el-border-color-lighter: #ebf0e2;
+  --el-border-color-extra-light: #eef2e6;
+  --el-border-color-dark: #c9d3b9;
+  --el-border-color-hover: #9bb583;
+  --el-fill-color-dark: #e4eada;
+  --el-color-white: #fffef9;
+  --el-color-primary: #4f7d3a;
+  --el-color-primary-light-3: #769e62;
+  --el-color-primary-light-5: #97b889;
+  --el-color-primary-light-7: #bcd0b2;
+  --el-color-primary-light-8: #d2e0cb;
+  --el-color-primary-light-9: #ecf2e6;
+  --el-color-primary-dark-2: #3e6630;
+  --el-color-info: #7c876c;
+  --el-svg-icon-color: #7c876c;
+  --el-box-shadow-light: 0 1px 2px rgba(50, 70, 30, 0.07);
+  --step-num-bg: #d2e0cb;
+  --step-num-text: #3e6630;
+  --primary-blue: #4f7d3a;
+  --light-blue: #d2e0cb;
+  --text-dark: #27331d;
+  --text-gray: #7c876c;
+  --bg-light: #eef2e8;
+  --hover-blue: rgba(79, 125, 58, 0.09);
+  --border-color: #dce3d1;
+  --shell-ink: #dfe7d4;
+  --shell-ink-soft: #e9efdf;
+  --shell-ink-raised: #d4ddc5;
+  --shell-ink-tail: #dae2cd;
+  --shell-ink-line: rgba(60, 80, 35, 0.12);
+  --shell-ink-text: #4a5740;
+  --shell-ink-text-dim: #79866a;
+  --shell-ink-strong: #2a3320;
+  --shell-hover-bg: rgba(79, 125, 58, 0.10);
+  --shell-glow: radial-gradient(130% 55% at 50% -8%, rgba(111, 161, 79, 0.14), transparent 62%);
+  --shell-active-bg: linear-gradient(90deg, rgba(79, 125, 58, 0.16), rgba(79, 125, 58, 0.035));
+  --shell-active-text: #3e6630;
+  --shell-rail-shadow: 8px 0 30px rgba(60, 80, 35, 0.10);
+  --signal: #6fa14f;
+  --signal-strong: #4f7d3a;
+  --signal-soft: rgba(79, 125, 58, 0.16);
+  --signal-line: rgba(79, 125, 58, 0.36);
+  --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(79, 125, 58, 0.28), transparent 55%), linear-gradient(150deg, #28301f 0%, #171d12 76%);
+  --plaza-console-accent: #84b566;
 }
 
 *,

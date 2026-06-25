@@ -372,7 +372,7 @@ textarea {
 }
 
 textarea::placeholder {
-  color: #b3a692;
+  color: var(--plaza-text-muted);
 }
 
 .round-btn {

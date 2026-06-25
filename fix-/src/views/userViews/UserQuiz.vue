@@ -531,7 +531,7 @@ watch(generating, (g) => {
   width: 46px; height: 46px; border-radius: 12px; display: grid; place-items: center;
   font-weight: 800; font-size: 17px; color: #fff;
 }
-.mc-icon.ai { background: linear-gradient(150deg, #ef9244, #db6f2a); }
+.mc-icon.ai { background: linear-gradient(150deg, var(--plaza-accent), var(--plaza-accent)); }
 .mc-icon.bank { background: linear-gradient(150deg, #e0982f, #b9791b); }
 .mode-card h3 { margin: 4px 0 0; font-size: 18px; color: var(--plaza-heading, #1a1a1a); }
 .mode-card p { margin: 0 0 8px; font-size: 13px; color: var(--plaza-text-muted, #777); line-height: 1.6; }
@@ -544,10 +544,10 @@ watch(generating, (g) => {
   align-self: flex-start;
   display: inline-flex; align-items: center; gap: 6px;
   height: 32px; padding: 0 16px;
-  border: 1px solid var(--plaza-border, #e0d3bf);
+  border: 1px solid var(--plaza-border, var(--plaza-border));
   border-radius: 999px;
   background: var(--plaza-bg-card, #fff);
-  color: var(--plaza-text-muted, #8a7d6c);
+  color: var(--plaza-text-muted, var(--plaza-text-muted));
   font-size: 13px; font-weight: 600; letter-spacing: .2px;
   cursor: pointer;
   transition: border-color .18s ease, color .18s ease, background .18s ease, transform .12s ease;
@@ -558,7 +558,7 @@ watch(generating, (g) => {
 .cancel-btn:active { transform: scale(.97); }
 .cancel-btn .cx { font-size: 12px; line-height: 1; }
 .stay-hint {
-  margin-top: 2px; font-size: 11.5px; color: #c08a4a;
+  margin-top: 2px; font-size: 11.5px; color: var(--plaza-accent);
   display: inline-flex; align-items: center;
 }
 

@@ -16,7 +16,7 @@ export function login(username, password) {
 /**
  * 发送邮箱验证码
  * @param {string} email
- * @param {number} mode - 0: 修改密码, 1: 绑定邮箱
+ * @param {number} mode - 1: 绑定邮箱, 2: 重置/修改密码（后端 EmailEnum；mode=2 要求 email==已绑邮箱）
  */
 export function sendEmail(email, mode) {
   return request({

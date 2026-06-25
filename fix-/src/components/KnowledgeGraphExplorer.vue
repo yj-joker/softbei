@@ -14,13 +14,13 @@ const props = defineProps({
 
 /* ---------- 节点类型视觉编码（暖色大地色系，5 类仍可区分） ---------- */
 const TYPE = {
-  device:    { label: '设备', fill: '#f8ece2', stroke: '#c4602f', size: 48 },
+  device:    { label: '设备', fill: 'var(--plaza-accent-soft)', stroke: 'var(--plaza-accent)', size: 48 },
   component: { label: '部件', fill: '#eef4e2', stroke: '#5e8c3e', size: 34 },
   fault:     { label: '故障', fill: '#fdf2e0', stroke: '#df9226', size: 31 },
   solution:  { label: '方案', fill: '#f5ece8', stroke: '#a8605f', size: 27 },
   case:      { label: '案例', fill: '#e8f1ee', stroke: '#3f8c7c', size: 29 },
 }
-const SEVERITY = { 轻微: '#c9a23a', 一般: '#df9226', 严重: '#db6f2a', 致命: '#c5402c' }
+const SEVERITY = { 轻微: '#c9a23a', 一般: '#df9226', 严重: 'var(--plaza-accent)', 致命: '#c5402c' }
 const REL = { OWNS: '拥有', CAUSES: '引发', HAS_SOLUTION: '方案', RECORDED: '案例' }
 const LABEL_FONT = "'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace"
 
@@ -63,16 +63,16 @@ function nodeStyle() {
     shadowBlur: 8,
     shadowOffsetY: 2,
     labelText: (d) => d.data.label,
-    labelFill: '#4a3f34',
+    labelFill: 'var(--plaza-text)',
     labelFontSize: 11,
     labelFontFamily: LABEL_FONT,
     labelPlacement: 'bottom',
     labelOffsetY: 4,
     labelBackground: true,
-    labelBackgroundFill: 'rgba(255,253,248,0.92)',
+    labelBackgroundFill: 'rgba(255, 255, 255, 0.92)',
     labelBackgroundRadius: 4,
     labelBackgroundLineWidth: 1,
-    labelBackgroundStroke: '#e6dccb',
+    labelBackgroundStroke: 'var(--plaza-border)',
     labelPadding: [2, 6],
   }
 }
@@ -86,8 +86,8 @@ function buildGraph() {
     node: {
       style: nodeStyle(),
       state: {
-        active:   { lineWidth: 2.6, halo: true, haloStroke: '#c4602f', haloOpacity: 0.16 },
-        selected: { lineWidth: 3, halo: true, haloStroke: '#c4602f', haloOpacity: 0.22 },
+        active:   { lineWidth: 2.6, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.16 },
+        selected: { lineWidth: 3, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.22 },
       },
     },
     edge: {
@@ -98,14 +98,14 @@ function buildGraph() {
         endArrowType: 'vee',
         endArrowSize: 7,
         labelText: (d) => d.data.relLabel || '',
-        labelFill: '#8a7c6c',
+        labelFill: 'var(--plaza-text-muted)',
         labelFontSize: 9,
         labelFontFamily: LABEL_FONT,
         labelBackground: true,
-        labelBackgroundFill: 'rgba(255,253,248,0.9)',
+        labelBackgroundFill: 'rgba(255, 255, 255, 0.9)',
         labelBackgroundRadius: 2,
       },
-      state: { active: { stroke: '#c4602f', lineWidth: 2 } },
+      state: { active: { stroke: 'var(--plaza-accent)', lineWidth: 2 } },
     },
     layout: {
       type: 'd3-force',
@@ -460,7 +460,7 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
               </g>
               <!-- 中心设备节点 -->
               <g class="eg-node eg-core" style="--d:0s">
-                <circle cx="140" cy="104" r="24" fill="#f8ece2" stroke="#c4602f" />
+                <circle cx="140" cy="104" r="24" style="fill: var(--plaza-accent-soft); stroke: var(--plaza-accent)" />
                 <text x="140" y="108" class="eg-core-t">设备</text>
               </g>
             </svg>
@@ -521,13 +521,13 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 
 <style scoped>
 .kg-root{
-  --bg:#f4ecdf; --card:#fffdf8; --line:#e6dccb; --line-soft:#efe4d2;
-  --primary:#c4602f; --slate:#3a3026; --mut:#8a7c6c; --amber:#df9226;
+  --bg:var(--plaza-bg); --card:var(--plaza-bg-card); --line:var(--plaza-border); --line-soft:var(--plaza-panel-bg);
+  --primary:var(--plaza-accent); --slate:var(--plaza-heading); --mut:var(--plaza-text-muted); --amber:#df9226;
   --shadow:0 2px 12px rgba(120,70,30,.07),0 1px 3px rgba(120,70,30,.04);
   --shadow-lg:0 10px 32px rgba(120,70,30,.14);
   position:absolute; inset:0; display:flex; flex-direction:column;
   background:
-    radial-gradient(900px 500px at 78% -8%, rgba(219,133,86,.12), transparent 60%),
+    radial-gradient(900px 500px at 78% -8%, var(--plaza-accent-soft), transparent 60%),
     radial-gradient(700px 460px at 6% 112%, rgba(224,152,47,.09), transparent 60%),
     var(--bg);
   color:var(--slate);
@@ -540,12 +540,12 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 .kg-head{display:flex;align-items:center;justify-content:space-between;padding:13px 22px;
   border-bottom:1px solid var(--line); background:rgba(255,255,255,.85); backdrop-filter:blur(6px)}
 .kg-title{display:flex;align-items:center;gap:10px}
-.led{width:8px;height:8px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 3px rgba(196,96,47,.16);animation:pulse 2.4s infinite}
+.led{width:8px;height:8px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 3px var(--plaza-accent-soft-strong);animation:pulse 2.4s infinite}
 @keyframes pulse{50%{opacity:.45}}
 .t-main{font-family:var(--font-display);font-size:19px;font-weight:700;letter-spacing:.3px;color:var(--slate)}
-.t-sub{font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:10px;color:#9d8c78;letter-spacing:2px}
+.t-sub{font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:10px;color:var(--plaza-text-muted);letter-spacing:2px}
 .t-mode{margin-left:8px;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px;border:1px solid}
-.m-ro{color:var(--primary);border-color:rgba(196,96,47,.35);background:rgba(196,96,47,.08)}
+.m-ro{color:var(--primary);border-color:var(--plaza-accent);background:var(--plaza-accent-soft)}
 .m-rw{color:#d97706;border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.1)}
 .kg-readout{display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:12px;color:var(--mut)}
 .kg-readout b{color:var(--primary);font-size:14px;font-weight:700}
@@ -560,13 +560,13 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 .panel-h{font-size:12px;font-weight:700;color:var(--slate);letter-spacing:.5px}
 .panel-h::before{content:'';display:inline-block;width:3px;height:12px;background:var(--primary);border-radius:2px;margin-right:7px;vertical-align:-1px}
 .ops{flex-direction:row;gap:8px}
-.hud-btn{background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:8px;padding:9px;font-weight:600;font-size:13px;letter-spacing:.5px;cursor:pointer;transition:.18s;box-shadow:0 2px 8px rgba(196,96,47,.25)}
-.hud-btn:hover{background:#a54d22;box-shadow:0 4px 14px rgba(196,96,47,.32)}
+.hud-btn{background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:8px;padding:9px;font-weight:600;font-size:13px;letter-spacing:.5px;cursor:pointer;transition:.18s;box-shadow:0 2px 8px var(--plaza-accent-soft-strong)}
+.hud-btn:hover{background:var(--plaza-accent-hover);box-shadow:0 4px 14px var(--plaza-accent)}
 .hud-btn:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .b-amber{background:#fff;color:#d97706;border-color:#fcd9a6;box-shadow:none} .b-amber:hover{background:#fff7ed}
 .b-warn{background:#fff;color:#d97706;border-color:#fcd9a6;box-shadow:none} .b-warn:hover{background:#fff7ed}
 .mini{flex:1;background:#fff;color:var(--slate);border:1px solid var(--line);border-radius:8px;padding:8px;font-weight:600;font-size:12px;cursor:pointer;transition:.15s}
-.mini:hover{border-color:var(--primary);color:var(--primary);background:#f8efe3}
+.mini:hover{border-color:var(--primary);color:var(--primary);background:var(--plaza-panel-bg)}
 .mini.danger:hover{border-color:#ef4444;color:#ef4444;background:#fef2f2}
 .legend{margin-top:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px;box-shadow:var(--shadow)}
 .lg-h{font-size:12px;font-weight:700;color:var(--mut);margin-bottom:9px}
@@ -578,7 +578,7 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 .kg-canvas-wrap{flex:1;position:relative;min-width:0;background:
   linear-gradient(180deg,rgba(255,255,255,.4),rgba(248,249,255,.2))}
 .grid-overlay{position:absolute;inset:0;pointer-events:none;opacity:.7;
-  background-image:linear-gradient(rgba(196,96,47,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(196,96,47,.05) 1px,transparent 1px);
+  background-image:linear-gradient(var(--plaza-accent-soft) 1px,transparent 1px),linear-gradient(90deg,var(--plaza-accent-soft) 1px,transparent 1px);
   background-size:40px 40px;mask-image:radial-gradient(circle at 50% 45%,#000 60%,transparent 100%)}
 .kg-canvas{position:absolute;inset:0}
 .kg-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;pointer-events:none;text-align:center}
@@ -586,14 +586,14 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 /* —— 待探索引导插画 —— */
 .eg-art{position:relative;width:280px;height:214px}
 .eg-aura{position:absolute;left:50%;top:50%;width:170px;height:170px;transform:translate(-50%,-48%);border-radius:50%;
-  background:radial-gradient(circle,rgba(196,96,47,.16),transparent 68%);filter:blur(4px);animation:eg-breathe 4.5s ease-in-out infinite}
+  background:radial-gradient(circle,var(--plaza-accent-soft-strong),transparent 68%);filter:blur(4px);animation:eg-breathe 4.5s ease-in-out infinite}
 .eg-svg{position:relative;width:280px;height:214px;overflow:visible}
-.eg-links path{fill:none;stroke:rgba(196,96,47,.4);stroke-width:1.4;stroke-dasharray:4 6;stroke-linecap:round;
+.eg-links path{fill:none;stroke:var(--plaza-accent);stroke-width:1.4;stroke-dasharray:4 6;stroke-linecap:round;
   animation:eg-flow 6s linear infinite,eg-fade-in .8s .1s both}
 .eg-node{transform-box:fill-box;transform-origin:center;animation:eg-pop .6s var(--d,0s) both cubic-bezier(.22,1,.36,1)}
 .eg-node circle{stroke-width:2;filter:drop-shadow(0 3px 6px rgba(120,70,30,.14))}
 .eg-node text{font-family:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:600;fill:var(--slate);text-anchor:middle}
-.eg-core-t{font-size:13px;font-weight:700;fill:#c4602f}
+.eg-core-t{font-size:13px;font-weight:700;fill:var(--plaza-accent)}
 /* 卫星节点轻微浮动（入场后） */
 .eg-node:not(.eg-core){animation:eg-pop .6s var(--d,0s) both cubic-bezier(.22,1,.36,1),eg-float 5s var(--d,0s) ease-in-out infinite 1s}
 @keyframes eg-pop{from{opacity:0;transform:scale(.4)}to{opacity:1;transform:scale(1)}}
@@ -606,7 +606,7 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 .eg-copy h3{font-family:var(--font-display,inherit);font-size:19px;font-weight:700;color:var(--slate);letter-spacing:.5px}
 .eg-copy p{color:var(--mut);font-size:14px;line-height:1.7} .eg-copy b{color:var(--primary);font-weight:700}
 .eg-hints{display:flex;gap:16px;margin-top:4px;flex-wrap:wrap;justify-content:center}
-.eg-hints span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#9d8c78}
+.eg-hints span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--plaza-text-muted)}
 .eg-hints i{width:5px;height:5px;border-radius:50%;background:var(--primary);opacity:.7}
 @keyframes eg-rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 
@@ -620,8 +620,8 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 .pager-layer{position:absolute;inset:0;pointer-events:none;z-index:5}
 .pager{position:absolute;transform:translate(-50%,0);display:flex;align-items:center;gap:2px;padding:2px;background:#fff;border:1px solid var(--line);border-radius:20px;box-shadow:0 3px 10px rgba(120,80,50,.16);pointer-events:auto;user-select:none}
 .pg-btn{width:20px;height:20px;border:none;background:transparent;color:var(--primary);font-size:15px;font-weight:700;line-height:1;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:.12s}
-.pg-btn:hover:not(:disabled){background:#f3e7d9}
-.pg-btn:disabled{color:#d6c8b2;cursor:not-allowed}
+.pg-btn:hover:not(:disabled){background:var(--plaza-panel-bg)}
+.pg-btn:disabled{color:var(--plaza-border-strong);cursor:not-allowed}
 .pg-num{font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:11px;color:var(--mut);min-width:30px;text-align:center}
 
 /* 详情抽屉 */

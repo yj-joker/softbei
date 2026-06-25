@@ -9,12 +9,12 @@ import {
 
 /* ---------- 视觉编码（与浏览页一致：浅色圆形节点） ---------- */
 const TYPE = {
-  device:    { label: '设备', fill: '#f8ece2', stroke: '#c4602f', size: 50 },
+  device:    { label: '设备', fill: 'var(--plaza-accent-soft)', stroke: 'var(--plaza-accent)', size: 50 },
   component: { label: '部件', fill: '#eef3e6', stroke: '#5e8c3e', size: 36 },
-  fault:     { label: '故障', fill: '#fdeede', stroke: '#df7e2a', size: 33 },
+  fault:     { label: '故障', fill: '#fdeede', stroke: 'var(--plaza-accent)', size: 33 },
   solution:  { label: '方案', fill: '#f5ece8', stroke: '#a8605f', size: 29 },
 }
-const SEVERITY = { 轻微: '#c9a23a', 一般: '#df9226', 严重: '#df7e2a', 致命: '#c5402c' }
+const SEVERITY = { 轻微: '#c9a23a', 一般: '#df9226', 严重: 'var(--plaza-accent)', 致命: '#c5402c' }
 const REL = { OWNS: '拥有', CAUSES: '引发', HAS_SOLUTION: '方案' }
 const LABEL_FONT = "'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace"
 
@@ -77,15 +77,15 @@ function buildGraph() {
         lineDash: (d) => (d.data.unverified ? [5, 4] : 0),
         shadowColor: 'rgba(120,80,50,0.16)', shadowBlur: 8, shadowOffsetY: 2,
         labelText: (d) => d.data.label,
-        labelFill: '#3a2c20', labelFontSize: 11, labelFontFamily: LABEL_FONT,
+        labelFill: 'var(--plaza-heading)', labelFontSize: 11, labelFontFamily: LABEL_FONT,
         labelPlacement: 'bottom', labelOffsetY: 4,
-        labelBackground: true, labelBackgroundFill: 'rgba(255,253,248,0.92)',
+        labelBackground: true, labelBackgroundFill: 'rgba(255, 255, 255, 0.92)',
         labelBackgroundRadius: 4, labelBackgroundLineWidth: 1,
-        labelBackgroundStroke: '#e7dcc9', labelPadding: [2, 6],
+        labelBackgroundStroke: 'var(--plaza-border)', labelPadding: [2, 6],
       },
       state: {
-        active:   { lineWidth: 2.6, halo: true, haloStroke: '#c4602f', haloOpacity: 0.14 },
-        selected: { lineWidth: 3, halo: true, haloStroke: '#c4602f', haloOpacity: 0.2 },
+        active:   { lineWidth: 2.6, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.14 },
+        selected: { lineWidth: 3, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.2 },
       },
     },
     edge: {
@@ -93,10 +93,10 @@ function buildGraph() {
         stroke: 'rgba(120,80,50,0.26)', lineWidth: 1.1,
         endArrow: true, endArrowType: 'vee', endArrowSize: 7,
         labelText: (d) => d.data.relLabel || '',
-        labelFill: '#6b5d4c', labelFontSize: 9, labelFontFamily: LABEL_FONT,
-        labelBackground: true, labelBackgroundFill: 'rgba(255,253,248,0.9)', labelBackgroundRadius: 2,
+        labelFill: 'var(--plaza-text)', labelFontSize: 9, labelFontFamily: LABEL_FONT,
+        labelBackground: true, labelBackgroundFill: 'rgba(255, 255, 255, 0.9)', labelBackgroundRadius: 2,
       },
-      state: { active: { stroke: '#c4602f', lineWidth: 2 } },
+      state: { active: { stroke: 'var(--plaza-accent)', lineWidth: 2 } },
     },
     layout: { type: 'd3-force', link: { distance: 120, strength: 0.5 }, collide: { radius: 44 }, manyBody: { strength: -200 } },
     behaviors: ['zoom-canvas', 'drag-canvas', 'drag-element', { type: 'hover-activate', degree: 1 }, { type: 'click-select' }],
@@ -455,7 +455,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
                 <text x="210" y="190">案例</text>
               </g>
               <g class="eg-node eg-core" style="--d:0s">
-                <circle cx="140" cy="104" r="24" fill="#f8ece2" stroke="#c4602f" />
+                <circle cx="140" cy="104" r="24" style="fill: var(--plaza-accent-soft); stroke: var(--plaza-accent)" />
                 <text x="140" y="108" class="eg-core-t">设备</text>
               </g>
             </svg>
@@ -542,12 +542,12 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 
 <style scoped>
 .kg-root{
-  --bg:#f4ecdf; --card:#fffdf8; --line:#e7dcc9; --primary:#c4602f; --slate:#3a2c20; --mut:#6b5d4c; --amber:#df9226;
+  --bg:var(--plaza-bg); --card:var(--plaza-bg-card); --line:var(--plaza-border); --primary:var(--plaza-accent); --slate:var(--plaza-heading); --mut:var(--plaza-text); --amber:#df9226;
   --shadow:0 2px 12px rgba(120,80,50,.07),0 1px 3px rgba(120,80,50,.04);
   --shadow-lg:0 8px 30px rgba(120,80,50,.12);
   position:absolute; inset:0; display:flex; flex-direction:column;
   background:
-    radial-gradient(900px 500px at 78% -8%, rgba(196,96,47,.07), transparent 60%),
+    radial-gradient(900px 500px at 78% -8%, var(--plaza-accent-soft), transparent 60%),
     radial-gradient(700px 460px at 6% 112%, rgba(168,96,95,.05), transparent 60%),
     var(--bg);
   color:var(--slate);
@@ -556,10 +556,10 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 }
 .kg-head{display:flex;align-items:center;justify-content:space-between;padding:13px 22px;border-bottom:1px solid var(--line);background:rgba(255,255,255,.85);backdrop-filter:blur(6px)}
 .kg-title{display:flex;align-items:center;gap:10px}
-.led{width:8px;height:8px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 3px rgba(196,96,47,.18);animation:pulse 2.4s infinite}
+.led{width:8px;height:8px;border-radius:50%;background:var(--primary);box-shadow:0 0 0 3px var(--plaza-accent-soft-strong);animation:pulse 2.4s infinite}
 @keyframes pulse{50%{opacity:.45}}
 .t-main{font-size:18px;font-weight:700;letter-spacing:.5px}
-.t-sub{font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:10px;color:#b3a692;letter-spacing:2px}
+.t-sub{font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:10px;color:var(--plaza-text-muted);letter-spacing:2px}
 .t-mode{margin-left:8px;font-size:11px;font-weight:600;padding:2px 10px;border-radius:20px;border:1px solid;color:#b06b14;border-color:rgba(223,146,38,.4);background:rgba(223,146,38,.12)}
 .kg-readout{display:flex;align-items:center;gap:14px;font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:12px;color:var(--mut)}
 .kg-readout b{color:var(--primary);font-size:14px;font-weight:700}
@@ -572,34 +572,34 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .panel-h{font-size:12px;font-weight:700;letter-spacing:.5px}
 .panel-h::before{content:'';display:inline-block;width:3px;height:12px;background:var(--primary);border-radius:2px;margin-right:7px;vertical-align:-1px}
 .ops{flex-direction:row;gap:8px}
-.hud-btn{background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:8px;padding:9px;font-weight:600;font-size:13px;letter-spacing:.5px;cursor:pointer;transition:.18s;box-shadow:0 2px 8px rgba(196,96,47,.28)}
-.hud-btn:hover{background:#a54d22}
+.hud-btn{background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:8px;padding:9px;font-weight:600;font-size:13px;letter-spacing:.5px;cursor:pointer;transition:.18s;box-shadow:0 2px 8px var(--plaza-accent-soft-strong)}
+.hud-btn:hover{background:var(--plaza-accent-hover)}
 .hud-btn:disabled{opacity:.5;cursor:not-allowed;box-shadow:none}
 .hud-btn.ghost{background:#fff;color:var(--primary);box-shadow:none}
-.hud-btn.ghost:hover{background:#f8efe3}
+.hud-btn.ghost:hover{background:var(--plaza-panel-bg)}
 .mini{flex:1;background:#fff;color:var(--slate);border:1px solid var(--line);border-radius:8px;padding:8px;font-weight:600;font-size:12px;cursor:pointer;transition:.15s}
-.mini:hover{border-color:var(--primary);color:var(--primary);background:#f8efe3}
+.mini:hover{border-color:var(--primary);color:var(--primary);background:var(--plaza-panel-bg)}
 .mini.danger:hover{border-color:#c5402c;color:#c5402c;background:#fbeae6}
 .legend{margin-top:auto;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px;box-shadow:var(--shadow)}
 .lg-h{font-size:12px;font-weight:700;color:var(--mut);margin-bottom:9px}
 .lg-row{display:flex;align-items:center;gap:9px;font-size:13px;padding:3px 0}
 .dot{width:13px;height:13px;border-radius:50%;border:2px solid}
 .dot-uv{background:#fdf2e2;border:2px dashed var(--amber)}
-.lg-tip{margin:8px 0 0;font-size:11px;color:#b3a692;line-height:1.6}
+.lg-tip{margin:8px 0 0;font-size:11px;color:var(--plaza-text-muted);line-height:1.6}
 .lg-tip b{color:var(--primary)}
 
-.kg-canvas-wrap{flex:1;position:relative;min-width:0;background:linear-gradient(180deg,rgba(255,253,248,.4),rgba(244,236,223,.2))}
-.grid-overlay{position:absolute;inset:0;pointer-events:none;opacity:.7;background-image:linear-gradient(rgba(196,96,47,.05) 1px,transparent 1px),linear-gradient(90deg,rgba(196,96,47,.05) 1px,transparent 1px);background-size:40px 40px;mask-image:radial-gradient(circle at 50% 45%,#000 60%,transparent 100%)}
+.kg-canvas-wrap{flex:1;position:relative;min-width:0;background:linear-gradient(180deg,rgba(255, 255, 255, .4),rgba(244,236,223,.2))}
+.grid-overlay{position:absolute;inset:0;pointer-events:none;opacity:.7;background-image:linear-gradient(var(--plaza-accent-soft) 1px,transparent 1px),linear-gradient(90deg,var(--plaza-accent-soft) 1px,transparent 1px);background-size:40px 40px;mask-image:radial-gradient(circle at 50% 45%,#000 60%,transparent 100%)}
 .kg-canvas{position:absolute;inset:0}
 .kg-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;pointer-events:none;text-align:center}
 .eg-art{position:relative;width:280px;height:214px}
-.eg-aura{position:absolute;left:50%;top:50%;width:170px;height:170px;transform:translate(-50%,-48%);border-radius:50%;background:radial-gradient(circle,rgba(196,96,47,.16),transparent 68%);filter:blur(4px);animation:eg-breathe 4.5s ease-in-out infinite}
+.eg-aura{position:absolute;left:50%;top:50%;width:170px;height:170px;transform:translate(-50%,-48%);border-radius:50%;background:radial-gradient(circle,var(--plaza-accent-soft-strong),transparent 68%);filter:blur(4px);animation:eg-breathe 4.5s ease-in-out infinite}
 .eg-svg{position:relative;width:280px;height:214px;overflow:visible}
-.eg-links path{fill:none;stroke:rgba(196,96,47,.4);stroke-width:1.4;stroke-dasharray:4 6;stroke-linecap:round;animation:eg-flow 6s linear infinite,eg-fade-in .8s .1s both}
+.eg-links path{fill:none;stroke:var(--plaza-accent);stroke-width:1.4;stroke-dasharray:4 6;stroke-linecap:round;animation:eg-flow 6s linear infinite,eg-fade-in .8s .1s both}
 .eg-node{transform-box:fill-box;transform-origin:center;animation:eg-pop .6s var(--d,0s) both cubic-bezier(.22,1,.36,1)}
 .eg-node circle{stroke-width:2;filter:drop-shadow(0 3px 6px rgba(120,70,30,.14))}
 .eg-node text{font-family:'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace;font-size:11px;font-weight:600;fill:var(--slate);text-anchor:middle}
-.eg-core-t{font-size:13px;font-weight:700;fill:#c4602f}
+.eg-core-t{font-size:13px;font-weight:700;fill:var(--plaza-accent)}
 .eg-node:not(.eg-core){animation:eg-pop .6s var(--d,0s) both cubic-bezier(.22,1,.36,1),eg-float 5s var(--d,0s) ease-in-out infinite 1s}
 @keyframes eg-pop{from{opacity:0;transform:scale(.4)}to{opacity:1;transform:scale(1)}}
 @keyframes eg-float{0%,100%{transform:translateY(0)}50%{transform:translateY(var(--fx,3px))}}
@@ -610,7 +610,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .eg-copy h3{font-family:var(--font-display,inherit);font-size:19px;font-weight:700;color:var(--slate);letter-spacing:.5px}
 .eg-copy p{color:var(--mut);font-size:14px;line-height:1.7}.eg-copy b{color:var(--primary);font-weight:700}
 .eg-hints{display:flex;gap:16px;margin-top:4px;flex-wrap:wrap;justify-content:center}
-.eg-hints span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#b3a692}
+.eg-hints span{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--plaza-text-muted)}
 .eg-hints i{width:5px;height:5px;border-radius:50%;background:var(--primary);opacity:.7}
 @keyframes eg-rise{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:translateY(0)}}
 @media (prefers-reduced-motion:reduce){.eg-aura,.eg-links path,.eg-node,.eg-node:not(.eg-core),.eg-copy{animation:none!important}}
@@ -621,8 +621,8 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .pager-layer{position:absolute;inset:0;pointer-events:none;z-index:5}
 .pager{position:absolute;transform:translate(-50%,0);display:flex;align-items:center;gap:2px;padding:2px;background:#fff;border:1px solid var(--line);border-radius:20px;box-shadow:0 3px 10px rgba(120,80,50,.16);pointer-events:auto;user-select:none}
 .pg-btn{width:20px;height:20px;border:none;background:transparent;color:var(--primary);font-size:15px;font-weight:700;line-height:1;cursor:pointer;border-radius:50%;display:flex;align-items:center;justify-content:center;transition:.12s}
-.pg-btn:hover:not(:disabled){background:#f3e7d9}
-.pg-btn:disabled{color:#d6c8b2;cursor:not-allowed}
+.pg-btn:hover:not(:disabled){background:var(--plaza-panel-bg)}
+.pg-btn:disabled{color:var(--plaza-border-strong);cursor:not-allowed}
 .pg-num{font-family:'JetBrains Mono','IBM Plex Mono',monospace;font-size:11px;color:var(--mut);min-width:30px;text-align:center}
 
 /* 详情 */
@@ -631,7 +631,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .corner.tl{top:9px;left:9px;border-right:0;border-bottom:0}.corner.br{bottom:9px;right:9px;border-left:0;border-top:0}
 .d-head{display:flex;justify-content:space-between;align-items:center}
 .d-type{font-size:12px;font-weight:700;letter-spacing:.5px}
-.d-close{background:#f6efe3;border:1px solid var(--line);color:var(--mut);border-radius:6px;width:24px;height:24px;cursor:pointer;line-height:1}
+.d-close{background:var(--plaza-bg);border:1px solid var(--line);color:var(--mut);border-radius:6px;width:24px;height:24px;cursor:pointer;line-height:1}
 .d-close:hover{color:var(--slate);border-color:var(--primary)}
 .d-name{font-size:18px;font-weight:700;margin:10px 0 8px}
 .badge-uv{display:inline-block;font-size:11px;color:#b06b14;background:#fdf2e2;border:1px solid #f0d2a0;padding:3px 9px;border-radius:6px;margin-bottom:8px}
@@ -643,7 +643,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .d-imgs img{width:72px;height:72px;object-fit:cover;border-radius:6px;border:1px solid var(--line)}
 .d-actions{display:flex;gap:8px;margin-top:18px}
 .act{flex:1;padding:9px;border-radius:8px;font-weight:700;font-size:13px;cursor:pointer;border:1px solid;transition:.15s}
-.act.edit{background:#f8ece2;color:#a54d22;border-color:#e8c9af}.act.edit:hover{background:#f1ddc8}
+.act.edit{background:var(--plaza-accent-soft);color:var(--plaza-accent-hover);border-color:var(--plaza-border-strong)}.act.edit:hover{background:var(--plaza-panel-bg)}
 .act.del{background:#fbeae6;color:#c5402c;border-color:#f0c4b8}.act.del:hover{background:#f6d8cf}
 .act.add{width:100%;margin-top:10px;background:#eef3e6;color:#4d7530;border-color:#cad9b3}.act.add:hover{background:#e2ecd2}
 
@@ -654,6 +654,6 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .dlg-btn.cancel{background:#fff;color:var(--mut);border-color:var(--line);margin-right:8px}
 .dlg-btn.cancel:hover{color:var(--slate)}
 .dlg-btn.ok{background:var(--primary);color:#fff;border-color:var(--primary)}
-.dlg-btn.ok:hover{background:#a54d22}
+.dlg-btn.ok:hover{background:var(--plaza-accent-hover)}
 .dlg-btn.ok:disabled{opacity:.6;cursor:not-allowed}
 </style>

@@ -75,7 +75,7 @@ const handleNext = async () => {
   }
   loading.value = true
   try {
-    await sendEmail(formData.email, 0) // mode=0 = 重置密码
+    await sendEmail(formData.email, 2) // mode=2 = 重置密码（后端 EmailEnum.RESET_PASSWORD_EMAIL；0 为非法值）
     ElMessage.success('验证码已发送至您的邮箱')
   } catch (e) {
     ElMessage.error(e.message || '发送失败，请稍后重试')

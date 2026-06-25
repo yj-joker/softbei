@@ -12,6 +12,7 @@ public class UserVO {
     private String number;
     private  Integer gender;
     private String phone;
+    private String email;
     private LocalDateTime hireDate;
     private Integer  type;
     private Integer status;

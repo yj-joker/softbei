@@ -30,14 +30,24 @@ public class RateLimitInterceptor implements HandlerInterceptor {
     private final RedisTemplate<String, Object> redisTemplate;
     private final ObjectMapper objectMapper;
 
-    /** 用户级限流：每分钟最多请求次数 */
+    /** 用户级限流：每分钟最多请求次数（聊天等 LLM 推理接口） */
     private static final int USER_MAX_REQUESTS = 10;
+
+    /**
+     * TTS 语音合成单独的、更高的限额。
+     * TTS 非 LLM 推理，且前端「按句边合成边播」会让单次朗读/跟读天然产生多个请求，
+     * 不应与聊天共用 10次/分钟 的桶；用独立 Redis 桶 + 更高上限，互不挤占。
+     */
+    private static final int TTS_MAX_REQUESTS = 100;
 
     /** 滑动窗口大小：60秒 */
     private static final long WINDOW_MS = 60_000L;
 
-    /** Redis key 前缀 */
+    /** Redis key 前缀（聊天等通用 AI 接口） */
     private static final String KEY_PREFIX = "rate_limit:ai:";
+
+    /** Redis key 前缀（TTS 独立桶） */
+    private static final String KEY_PREFIX_TTS = "rate_limit:ai:tts:";
 
     public RateLimitInterceptor(RedisTemplate<String, Object> redisTemplate, ObjectMapper objectMapper) {
         this.redisTemplate = redisTemplate;
@@ -59,7 +69,10 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        String key = KEY_PREFIX + userId;
+        // TTS 走独立桶 + 更高上限，避免「按句多请求」吃掉聊天额度 / 互相挤占
+        boolean isTts = request.getRequestURI().endsWith("/ai/tts");
+        int maxRequests = isTts ? TTS_MAX_REQUESTS : USER_MAX_REQUESTS;
+        String key = (isTts ? KEY_PREFIX_TTS : KEY_PREFIX) + userId;
         long now = System.currentTimeMillis();
 
         // 1. 移除窗口外的过期记录
@@ -68,9 +81,10 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         // 2. 统计窗口内请求数
         Long count = redisTemplate.opsForZSet().zCard(key);
 
-        if (count != null && count >= USER_MAX_REQUESTS) {
-            log.warn("用户 {} 触发限流，1分钟内已请求 {} 次，上限 {}", userId, count, USER_MAX_REQUESTS);
-            writeRateLimitResponse(response);
+        if (count != null && count >= maxRequests) {
+            log.warn("用户 {} 触发限流({})，1分钟内已请求 {} 次，上限 {}",
+                    userId, isTts ? "TTS" : "AI", count, maxRequests);
+            writeRateLimitResponse(response, maxRequests);
             return false;
         }
 
@@ -83,12 +97,12 @@ public class RateLimitInterceptor implements HandlerInterceptor {
         return true;
     }
 
-    private void writeRateLimitResponse(HttpServletResponse response) throws IOException {
+    private void writeRateLimitResponse(HttpServletResponse response, int maxRequests) throws IOException {
         response.setStatus(429);
         response.setContentType("application/json;charset=UTF-8");
         response.getWriter().write(
                 objectMapper.writeValueAsString(
-                        Result.error("429", "请求过于频繁，请稍后再试（每分钟最多" + USER_MAX_REQUESTS + "次）")
+                        Result.error("429", "请求过于频繁，请稍后再试（每分钟最多" + maxRequests + "次）")
                 )
         );
     }

@@ -5,10 +5,13 @@ import { ElMessage } from 'element-plus'
 import { gsap } from 'gsap'
 import {
   ArrowLeft,
+  ArrowRight,
   Check,
   Clock,
+  Close,
   DataAnalysis,
   Document,
+  Headset,
   Refresh,
   Tickets,
   Warning,
@@ -18,6 +21,7 @@ import { draftFromTask, getMyCases } from '@/api/caseRecord'
 import { notifyStore } from '@/stores/notifyStore'
 import { taskAssistantStore } from '@/stores/taskAssistantStore'
 import { taskStatus, urgency, levelLabel, stepActionable } from '@/constants/taskStatus'
+import { useStepReadAlong } from '@/composables/useStepReadAlong'
 import TaskStepCard from '@/components/task/TaskStepCard.vue'
 import TaskAssistantPanel from '@/components/task/TaskAssistantPanel.vue'
 import CaseSubmitDialog from '@/components/case/CaseSubmitDialog.vue'
@@ -82,6 +86,23 @@ function scrollToStep(id) {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
+// 跟读模式：逐步念「标题+内容+安全提示」，读完一步停下等点「下一步」；当前步滚动到可视区 + 高亮
+const readAlong = useStepReadAlong(steps, {
+  onStep: (step) => scrollToStep(step.id),
+  onFinish: () => ElMessage.success('跟读完成'),
+})
+
+// 「从此步跟读」开关：再次点正在跟读的那一步 = 停止；否则从该步开始（在别处跟读时点别的步=切换过去）
+function startReadAlongFrom(step) {
+  if (readAlong.active.value && readAlong.currentStepId.value === step.id) {
+    readAlong.exit()
+    return
+  }
+  const i = steps.value.findIndex((x) => x.id === step.id)
+  if (i >= 0) readAlong.start(i)
+}
+
+let verifyPollTimer = null
 async function load() {
   loading.value = true
   try {
@@ -92,6 +113,15 @@ async function load() {
   } finally {
     loading.value = false
   }
+  scheduleVerifyPoll()
+}
+
+// 兜底：有步骤处于 SUBMITTED(AI验证中) 时每 8 秒自刷，确保即使 STEP_VERIFIED 推送丢失，
+// 页面也能反映验证完成（不再永远停在「验证中」）。无在验证步骤时自动停止。
+function scheduleVerifyPoll() {
+  if (verifyPollTimer) { clearTimeout(verifyPollTimer); verifyPollTimer = null }
+  const verifying = (task.value?.steps || []).some(s => s.status === 'SUBMITTED')
+  if (verifying) verifyPollTimer = setTimeout(load, 8000)
 }
 
 async function onStart() {
@@ -191,6 +221,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   motionContext?.revert()
+  readAlong.exit() // 离开页面时停掉正在播放的跟读语音
+  if (verifyPollTimer) clearTimeout(verifyPollTimer)
 })
 </script>
 
@@ -331,6 +363,33 @@ onUnmounted(() => {
           </div>
         </div>
 
+        <!-- 跟读模式控制条：手上有油污/边看设备边操作时，用「听」代替「盯屏幕」 -->
+        <div v-if="steps.length" class="readalong-bar" :class="{ on: readAlong.active.value }">
+          <button v-if="!readAlong.active.value" type="button" class="ra-start" @click="readAlong.start()">
+            <el-icon><Headset /></el-icon> 跟读检修步骤
+          </button>
+          <template v-else>
+            <span class="ra-status">
+              <i class="ra-dot" />
+              正在跟读 · 第 {{ steps[readAlong.index.value]?.sortOrder || '—' }} 步
+              <em v-if="readAlong.waitingNext.value">（已读完，点「下一步」继续）</em>
+            </span>
+            <div class="ra-actions">
+              <button
+                v-if="readAlong.waitingNext.value && !readAlong.isLast.value"
+                type="button"
+                class="ra-next"
+                @click="readAlong.next()"
+              >
+                下一步 <el-icon><ArrowRight /></el-icon>
+              </button>
+              <button type="button" class="ra-exit" @click="readAlong.exit()">
+                <el-icon><Close /></el-icon> 退出跟读
+              </button>
+            </div>
+          </template>
+        </div>
+
         <div class="work-grid">
           <div class="steps-column">
             <div class="timeline-line" aria-hidden="true" />
@@ -342,8 +401,10 @@ onUnmounted(() => {
               :task-id="taskId"
               :executing="task.status === 'EXECUTING'"
               :active="s.id === activeStepId"
+              :reading="s.id === readAlong.currentStepId.value"
               @submitted="load"
               @chat="onChat"
+              @read-along="startReadAlongFrom"
             />
           </div>
           <aside class="assistant-column">
@@ -388,7 +449,7 @@ onUnmounted(() => {
 
 <style scoped>
 .task-console {
-  --c-accent-light: #db8556;
+  --c-accent-light: var(--plaza-accent);
   max-width: 1320px;
   margin: 0 auto;
   min-height: 100%;
@@ -428,16 +489,16 @@ onUnmounted(() => {
   position: relative; display: grid; min-height: 280px;
   grid-template-columns: minmax(0, 1fr) 390px; gap: 32px;
   padding: 28px 30px; overflow: hidden; border-radius: var(--plaza-radius-lg);
-  border: 1px solid rgba(219, 133, 86, 0.2);
+  border: 1px solid var(--plaza-accent-soft-strong);
   background:
-    radial-gradient(120% 120% at 86% -12%, rgba(219, 111, 42, 0.24), transparent 54%),
-    linear-gradient(160deg, #2c2117 0%, #1b140d 74%);
-  box-shadow: 0 26px 60px -22px rgba(60, 30, 10, 0.5);
+    radial-gradient(120% 120% at 86% -12%, var(--signal-line), transparent 54%),
+    linear-gradient(160deg, var(--plaza-heading) 0%, var(--plaza-heading) 74%);
+  box-shadow: 0 26px 60px -22px rgba(0, 0, 0, 0.5);
 }
 .task-command::after {
   position: absolute; top: -150px; right: -85px; width: 390px; height: 390px;
-  border: 1px solid rgba(219, 133, 86, 0.16); border-radius: 50%;
-  box-shadow: 0 0 0 48px rgba(219, 133, 86, 0.03), 0 0 0 96px rgba(219, 133, 86, 0.018);
+  border: 1px solid var(--plaza-accent-soft-strong); border-radius: 50%;
+  box-shadow: 0 0 0 48px var(--plaza-accent-soft), 0 0 0 96px var(--plaza-accent-soft);
   content: '';
 }
 .command-grid {
@@ -456,15 +517,15 @@ onUnmounted(() => {
   padding: 0 9px; border-radius: 999px; font-family: var(--font-mono);
   font-size: 9.5px; font-weight: 800;
 }
-.task-number { color: #d8cdbf; border: 1px solid rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.06); }
+.task-number { color: var(--plaza-border); border: 1px solid rgba(255, 255, 255, 0.12); background: rgba(255, 255, 255, 0.06); }
 .command-eyebrow { color: var(--c-accent-light); font-size: 9px; }
 .command-copy h1 {
   margin: 8px 0 8px; color: #fff; font-family: var(--font-display);
   font-size: clamp(28px, 3vw, 42px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.08;
 }
-.command-copy > p { max-width: 720px; margin: 0; color: #c6bcae; font-size: 13px; line-height: 1.75; }
+.command-copy > p { max-width: 720px; margin: 0; color: var(--plaza-border-strong); font-size: 13px; line-height: 1.75; }
 .command-meta { flex-wrap: wrap; gap: 9px 16px; margin-top: 21px; }
-.command-meta span { display: inline-flex; align-items: center; gap: 6px; color: #a79a89; font-size: 11px; }
+.command-meta span { display: inline-flex; align-items: center; gap: 6px; color: var(--plaza-text-muted); font-size: 11px; }
 .command-meta .el-icon { color: var(--c-accent-light); }
 .report-images { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 16px; }
 .report-images img { width: 58px; height: 58px; object-fit: cover; border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 8px; }
@@ -478,13 +539,13 @@ onUnmounted(() => {
   position: relative; display: grid; width: 88px; height: 88px; place-items: center; border-radius: 50%;
   background: conic-gradient(var(--c-accent-light) var(--task-progress, 0deg), rgba(255, 255, 255, 0.08) 0);
 }
-.progress-dial::before { position: absolute; width: 72px; height: 72px; border-radius: 50%; background: #221913; content: ''; }
-.progress-dial span { position: relative; z-index: 1; color: #c9bdae; font-family: var(--font-mono); font-size: 10px; }
+.progress-dial::before { position: absolute; width: 72px; height: 72px; border-radius: 50%; background: var(--plaza-heading); content: ''; }
+.progress-dial span { position: relative; z-index: 1; color: var(--plaza-border-strong); font-family: var(--font-mono); font-size: 10px; }
 .progress-dial b { color: #fff; font-size: 21px; }
 .progress-copy { display: flex; min-width: 0; flex-direction: column; justify-content: center; }
-.progress-copy > span { color: #9a8d7c; font-size: 8px; }
+.progress-copy > span { color: var(--plaza-text-muted); font-size: 8px; }
 .progress-copy strong { margin-top: 3px; color: #fff; font-family: var(--font-display); font-size: 26px; font-weight: 800; }
-.progress-copy small { color: #b0a493; font-size: 10px; }
+.progress-copy small { color: var(--plaza-text-muted); font-size: 10px; }
 .readout-grid { display: grid; grid-column: 1 / -1; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; }
 .readout-grid > span {
   display: grid; min-width: 0; grid-template-columns: 20px minmax(0, 1fr); grid-template-rows: auto auto;
@@ -492,16 +553,16 @@ onUnmounted(() => {
   border-radius: 9px; background: rgba(255, 255, 255, 0.025);
 }
 .readout-grid .el-icon { grid-row: 1 / 3; color: var(--c-accent-light); font-size: 16px; }
-.readout-grid b { overflow: hidden; color: #efe7da; font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
-.readout-grid small { color: #97897a; font-size: 8px; }
+.readout-grid b { overflow: hidden; color: var(--plaza-panel-bg); font-size: 12px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
+.readout-grid small { color: var(--plaza-text-muted); font-size: 8px; }
 .command-actions { grid-column: 1 / -1; gap: 8px; }
 .command-primary, .command-secondary {
   display: inline-flex; min-height: 42px; align-items: center; justify-content: center; gap: 7px;
   padding: 0 18px; border-radius: 9px; font-size: 12px; font-weight: 800; cursor: pointer;
 }
-.command-primary { border: 1px solid transparent; color: #fff; background: linear-gradient(145deg, #db8556, #c4602f); box-shadow: 0 8px 20px rgba(196, 96, 47, 0.3); }
+.command-primary { border: 1px solid transparent; color: #fff; background: linear-gradient(145deg, var(--plaza-accent), var(--plaza-accent)); box-shadow: 0 8px 20px var(--plaza-accent); }
 .command-primary:hover { filter: brightness(1.05); }
-.command-secondary { border: 1px solid rgba(255, 255, 255, 0.14); color: #d8cec1; background: rgba(255, 255, 255, 0.05); }
+.command-secondary { border: 1px solid rgba(255, 255, 255, 0.14); color: var(--plaza-border); background: rgba(255, 255, 255, 0.05); }
 .command-primary:disabled { opacity: 0.55; cursor: not-allowed; }
 
 /* ===== 状态条 ===== */
@@ -533,6 +594,29 @@ onUnmounted(() => {
 .workflow-summary i { width: 7px; height: 7px; border-radius: 50%; background: var(--plaza-border-strong); }
 .workflow-summary i.done { background: #5e8c3e; }
 .workflow-summary i.active { background: var(--plaza-accent); box-shadow: 0 0 0 4px var(--plaza-accent-soft); }
+
+/* ===== 跟读模式控制条 ===== */
+.readalong-bar { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-bottom: 11px; }
+.readalong-bar.on { padding: 9px 13px; border: 1px solid var(--plaza-accent-soft-strong); border-radius: 11px; background: var(--plaza-accent-soft); }
+.ra-start {
+  display: inline-flex; min-height: 38px; align-items: center; gap: 7px; padding: 0 15px;
+  border: 1px solid var(--plaza-accent-soft-strong); border-radius: 9px;
+  color: var(--plaza-accent); background: var(--plaza-bg-card);
+  font-size: 12px; font-weight: 800; cursor: pointer;
+  transition: background .18s ease, border-color .18s ease;
+}
+.ra-start:hover { background: var(--plaza-accent-soft); border-color: var(--plaza-accent); }
+.ra-status { display: inline-flex; align-items: center; gap: 8px; color: var(--plaza-accent); font-size: 12px; font-weight: 700; }
+.ra-status em { color: var(--plaza-text-muted); font-style: normal; font-size: 11px; font-weight: 600; }
+.ra-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--plaza-accent); box-shadow: 0 0 0 4px var(--plaza-accent-soft); animation: ra-pulse 1.4s ease-in-out infinite; }
+@keyframes ra-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+.ra-actions { display: inline-flex; align-items: center; gap: 8px; }
+.ra-next, .ra-exit { display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 0 13px; border-radius: 8px; font-size: 11px; font-weight: 800; cursor: pointer; }
+.ra-next { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 6px 16px var(--plaza-accent-soft-strong); }
+.ra-next:hover { filter: brightness(1.05); }
+.ra-exit { border: 1px solid var(--plaza-border-strong); color: var(--plaza-text-muted); background: var(--plaza-bg-card); }
+.ra-exit:hover { border-color: var(--plaza-accent); color: var(--plaza-accent); }
+@media (prefers-reduced-motion: reduce) { .ra-dot { animation: none; } }
 
 .work-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(350px, 0.38fr); align-items: start; gap: 14px; }
 .steps-column { position: relative; display: flex; min-width: 0; flex-direction: column; gap: 10px; }

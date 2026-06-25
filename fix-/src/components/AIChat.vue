@@ -6,6 +6,8 @@ import {
   ChatLineRound,
   Delete,
   FolderOpened,
+  Microphone,
+  Mute,
   Plus,
   Refresh,
   Tools,
@@ -15,6 +17,10 @@ import AgentActivityPanel from '@/components/ai/AgentActivityPanel.vue'
 import ChatMessage from '@/components/ai/ChatMessage.vue'
 import SessionSidebar from '@/components/ai/SessionSidebar.vue'
 import { aiChatStore } from '@/stores/aiChatStore'
+import { useSpeech } from '@/composables/useSpeech'
+
+// 自动朗读开关（AI 回复生成完自动念），状态共享自全局语音单例
+const { state: speechState, setAutoRead } = useSpeech()
 
 const AGENT_PANEL_EVENTS = new Set([
   'tool',
@@ -318,6 +324,14 @@ onActivated(() => {
           </div>
 
           <div class="header-actions">
+            <button
+              type="button"
+              :title="speechState.autoRead ? '自动朗读：开（点击关闭）' : '自动朗读：关（点击开启）'"
+              :class="{ active: speechState.autoRead }"
+              @click="setAutoRead(!speechState.autoRead)"
+            >
+              <el-icon><Microphone v-if="speechState.autoRead" /><Mute v-else /></el-icon>
+            </button>
             <button type="button" title="会话记录" :class="{ active: showHistory }" @click="showHistory = !showHistory">
               <el-icon><FolderOpened /></el-icon>
             </button>
@@ -437,10 +451,10 @@ onActivated(() => {
   gap: 14px;
   padding: 13px 18px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
-  color: #2c2117;
+  color: var(--plaza-heading);
   background:
-    radial-gradient(circle at 82% 20%, rgba(219, 111, 42, 0.08), transparent 26%),
-    linear-gradient(145deg, #ffffff, #fbf6ef);
+    radial-gradient(circle at 82% 20%, var(--plaza-accent-soft), transparent 26%),
+    linear-gradient(145deg, var(--plaza-bg-card), var(--plaza-panel-bg));
 }
 
 .title-block { display: flex; min-width: 0; align-items: center; gap: 11px; }
@@ -452,14 +466,14 @@ onActivated(() => {
   place-items: center;
   border-radius: 10px;
   color: #fff;
-  background: linear-gradient(145deg, #db8556, #c4602f);
-  box-shadow: 0 8px 18px rgba(196, 96, 47, 0.3);
+  background: var(--plaza-accent-grad);
+  box-shadow: 0 8px 18px var(--plaza-accent-soft-strong);
   font-size: 19px;
 }
 .title-copy { display: flex; min-width: 0; flex-direction: column; }
-.title-copy span { color: #db8556; font-family: var(--font-mono); font-size: 7px; font-weight: 800; letter-spacing: 0.12em; }
-.title-copy h1 { margin: 1px 0 0; color: #2c2117; font-family: var(--font-display); font-size: 18px; font-weight: 800; line-height: 1.2; }
-.title-copy p { margin-top: 2px; overflow: hidden; color: #8a7d6c; font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.title-copy span { color: var(--plaza-accent); font-family: var(--font-mono); font-size: 7px; font-weight: 800; letter-spacing: 0.12em; }
+.title-copy h1 { margin: 1px 0 0; color: var(--plaza-heading); font-family: var(--font-display); font-size: 18px; font-weight: 800; line-height: 1.2; }
+.title-copy p { margin-top: 2px; overflow: hidden; color: var(--plaza-text-muted); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
 
 .header-controls { display: flex; align-items: center; gap: 10px; }
 .mode-switch {
@@ -469,7 +483,7 @@ onActivated(() => {
   padding: 3px;
   border: 1px solid rgba(0, 0, 0, 0.08);
   border-radius: 9px;
-  background: rgba(44, 33, 23, 0.04);
+  background: rgba(0, 0, 0, 0.04);
 }
 .mode-switch button {
   display: inline-flex;
@@ -481,14 +495,14 @@ onActivated(() => {
   padding: 0 10px;
   border: 0;
   border-radius: 7px;
-  color: #8a7d6c;
+  color: var(--plaza-text-muted);
   background: transparent;
   font-size: 9px;
   font-weight: 700;
   cursor: pointer;
 }
-.mode-switch button:hover { color: #2c2117; }
-.mode-switch button.active { color: #fff; background: linear-gradient(145deg, #db8556, #c4602f); box-shadow: 0 5px 14px rgba(196, 96, 47, 0.26); }
+.mode-switch button:hover { color: var(--plaza-heading); }
+.mode-switch button.active { color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 5px 14px var(--plaza-accent-soft-strong); }
 .mode-switch button:disabled { cursor: not-allowed; opacity: 0.55; }
 
 .header-actions { display: flex; gap: 7px; }
@@ -499,12 +513,12 @@ onActivated(() => {
   place-items: center;
   border: 1px solid rgba(0, 0, 0, 0.1);
   border-radius: 8px;
-  color: #6b5f4f;
-  background: rgba(44, 33, 23, 0.04);
+  color: var(--plaza-text-muted);
+  background: rgba(0, 0, 0, 0.04);
   cursor: pointer;
 }
 .header-actions button:hover,
-.header-actions button.active { color: #db8556; border-color: rgba(219, 133, 86, 0.4); background: rgba(219, 133, 86, 0.12); }
+.header-actions button.active { color: var(--plaza-accent); border-color: var(--plaza-accent-soft-strong); background: var(--plaza-accent-soft); }
 
 /* ===== 消息区 ===== */
 .messages-container {
@@ -513,7 +527,7 @@ onActivated(() => {
   padding: 19px 22px 23px;
   overflow-y: auto;
   background:
-    radial-gradient(circle at 86% 0%, rgba(196, 96, 47, 0.05), transparent 23%),
+    radial-gradient(circle at 86% 0%, var(--plaza-accent-soft), transparent 23%),
     var(--plaza-bg);
 }
 .message-stream {
@@ -533,7 +547,7 @@ onActivated(() => {
   border: 1px solid var(--plaza-border);
   border-radius: 15px;
   background:
-    radial-gradient(circle at 95% 8%, rgba(196, 96, 47, 0.08), transparent 24%),
+    radial-gradient(circle at 95% 8%, var(--plaza-accent-soft), transparent 24%),
     var(--plaza-bg-card);
   box-shadow: var(--plaza-shadow-organic);
 }
@@ -546,8 +560,8 @@ onActivated(() => {
   place-items: center;
   border-radius: 12px;
   color: #fff;
-  background: linear-gradient(145deg, #db8556, #c4602f);
-  box-shadow: 0 8px 20px rgba(196, 96, 47, 0.22);
+  background: var(--plaza-accent-grad);
+  box-shadow: 0 8px 20px var(--plaza-accent-soft-strong);
   font-size: 21px;
 }
 .empty-heading span { color: var(--plaza-text-muted); font-family: var(--font-mono); font-size: 8px; font-weight: 800; letter-spacing: 0.11em; }

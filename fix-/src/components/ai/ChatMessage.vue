@@ -1,6 +1,7 @@
 <script setup>
-import { computed } from 'vue'
-import { ChatDotRound, CopyDocument, DataAnalysis, Right } from '@element-plus/icons-vue'
+import { computed, watch } from 'vue'
+import { ChatDotRound, CopyDocument, DataAnalysis, Loading, Right, VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import { useSpeech } from '@/composables/useSpeech'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -10,9 +11,52 @@ const props = defineProps({
 
 const emit = defineEmits(['open-agent'])
 
+// 语音朗读：全局单例播放器，按 message.id 标识当前是否在播/在加载本条
+const { state: speechState, speak, isSpeaking, isLoading } = useSpeech()
+const speaking = computed(() => isSpeaking(props.message.id))
+const loadingSpeech = computed(() => isLoading(props.message.id))
+
 const isUser = computed(() => props.message.role === 'user')
 const diagnosisItems = computed(() =>
   Array.isArray(props.message.diagnosisItems) ? props.message.diagnosisItems : [],
+)
+
+// 诊断项（结构化）转为可读/可显示的纯文本，与正文合成同一段，确保朗读完整覆盖、各回复样式统一
+function diagnosisToText(items) {
+  return items
+    .map((it, i) => {
+      const part = it.fault_part || it.faultPart || '排查项'
+      const pr = it.priority ? `（${it.priority}）` : ''
+      const cause = it.root_cause || it.rootCause
+      const basis = it.knowledge_basis || it.knowledgeBasis
+      let s = `${i + 1}. ${part}${pr}`
+      if (cause) s += `\n可能原因：${cause}`
+      if (basis) s += `\n知识依据：${basis}`
+      return s
+    })
+    .join('\n\n')
+}
+
+// 正文：开头文字 + 诊断纯文本。显示/复制/朗读/自动朗读统一用它（单一来源）
+const bodyText = computed(() => {
+  const parts = []
+  if (props.message.content) parts.push(props.message.content)
+  if (!isUser.value && diagnosisItems.value.length) parts.push(diagnosisToText(diagnosisItems.value))
+  return parts.join('\n\n')
+})
+
+function toggleSpeak() {
+  speak(props.message.id, bodyText.value)
+}
+
+// 自动朗读：仅在本条「生成中 → 完成」的瞬间触发一次（历史消息加载时状态已是 done，不会误触）
+watch(
+  () => props.message.status,
+  (now, prev) => {
+    if (prev === 'streaming' && now === 'done' && !isUser.value && speechState.autoRead && bodyText.value) {
+      speak(props.message.id, bodyText.value)
+    }
+  },
 )
 const messageImageUrls = computed(() =>
   (props.message.images || []).filter((image) => typeof image === 'string' && image),
@@ -70,7 +114,7 @@ const agentLiveText = computed(() =>
 )
 
 async function copyMessage() {
-  const text = props.message.content || ''
+  const text = bodyText.value || ''
   if (!text) return
   try {
     await navigator.clipboard.writeText(text)
@@ -116,30 +160,8 @@ async function copyMessage() {
         />
       </div>
 
-      <div v-if="message.content || !isUser" class="message-bubble">
-        <p v-if="message.content" class="message-text">{{ message.content }}</p>
-
-        <ol v-if="!isUser && diagnosisItems.length" class="diagnosis-list">
-          <li v-for="(item, index) in diagnosisItems" :key="index" class="diagnosis-item">
-            <header class="diagnosis-head">
-              <span class="diagnosis-no">{{ index + 1 }}</span>
-              <span v-if="item.priority || item.fault_part || item.faultPart" class="diagnosis-title">
-                {{ item.fault_part || item.faultPart || '排查项' }}
-              </span>
-              <span v-if="item.priority" class="diagnosis-priority">{{ item.priority }}</span>
-            </header>
-            <dl class="diagnosis-body">
-              <div v-if="item.root_cause || item.rootCause">
-                <dt>可能原因</dt>
-                <dd>{{ item.root_cause || item.rootCause }}</dd>
-              </div>
-              <div v-if="item.knowledge_basis || item.knowledgeBasis">
-                <dt>知识依据</dt>
-                <dd>{{ item.knowledge_basis || item.knowledgeBasis }}</dd>
-              </div>
-            </dl>
-          </li>
-        </ol>
+      <div v-if="bodyText || !isUser" class="message-bubble">
+        <p v-if="bodyText" class="message-text">{{ bodyText }}</p>
 
         <div v-if="!isUser && evidenceImages.length" class="evidence-list">
           <figure v-for="(item, index) in evidenceImages" :key="`${item.imageUrl}-${index}`" class="evidence-item">
@@ -198,10 +220,23 @@ async function copyMessage() {
         </div>
       </template>
 
-      <div v-if="!isUser && message.content" class="message-actions">
+      <div v-if="!isUser && bodyText" class="message-actions">
         <button type="button" title="复制回复" @click="copyMessage">
           <el-icon><CopyDocument /></el-icon>
           <span>复制</span>
+        </button>
+        <button
+          type="button"
+          :title="speaking ? '停止朗读' : '朗读回复'"
+          :disabled="loadingSpeech"
+          @click="toggleSpeak"
+        >
+          <el-icon :class="{ 'is-loading': loadingSpeech }">
+            <Loading v-if="loadingSpeech" />
+            <VideoPause v-else-if="speaking" />
+            <VideoPlay v-else />
+          </el-icon>
+          <span>{{ loadingSpeech ? '合成中' : speaking ? '停止' : '朗读' }}</span>
         </button>
       </div>
     </div>
@@ -227,8 +262,8 @@ async function copyMessage() {
   border-radius: 8px;
   display: grid;
   place-items: center;
-  background: #19120d;
-  color: #f8efe3;
+  background: var(--plaza-heading);
+  color: var(--plaza-panel-bg);
   box-shadow: var(--plaza-shadow-organic);
   font-weight: 700;
 }
@@ -291,86 +326,6 @@ async function copyMessage() {
   font-size: 14px;
 }
 
-.diagnosis-list {
-  list-style: none;
-  margin: 10px 0 0;
-  padding: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.diagnosis-item {
-  padding: 10px 12px;
-  border: 1px solid var(--plaza-border);
-  border-left: 3px solid var(--plaza-accent);
-  border-radius: 9px;
-  background: var(--plaza-bg-card, #fff);
-}
-
-.diagnosis-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.diagnosis-no {
-  display: grid;
-  width: 20px;
-  height: 20px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 6px;
-  color: #fff;
-  background: var(--plaza-accent);
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.diagnosis-title {
-  flex: 1;
-  min-width: 0;
-  color: var(--plaza-heading, #2c2117);
-  font-size: 13.5px;
-  font-weight: 700;
-}
-
-.diagnosis-priority {
-  flex: 0 0 auto;
-  padding: 1px 8px;
-  border-radius: 999px;
-  color: #a65b2c;
-  background: var(--plaza-accent-soft);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.diagnosis-body {
-  margin: 7px 0 0;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.diagnosis-body > div {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 1fr);
-  gap: 8px;
-}
-
-.diagnosis-body dt {
-  color: var(--plaza-text-muted);
-  font-size: 12px;
-}
-
-.diagnosis-body dd {
-  margin: 0;
-  color: var(--plaza-text);
-  font-size: 13px;
-  line-height: 1.6;
-  word-break: break-word;
-}
-
 .image-list {
   display: flex;
   flex-wrap: wrap;
@@ -411,7 +366,7 @@ async function copyMessage() {
   overflow: hidden;
   border: 1px solid rgba(168, 150, 124, 0.24);
   border-radius: 8px;
-  background: rgba(246, 240, 229, 0.72);
+  background: rgba(255, 255, 255, 0.72);
 }
 
 .evidence-image {
@@ -460,7 +415,7 @@ async function copyMessage() {
   padding: 5px 12px;
   border: 1px solid var(--plaza-border);
   border-radius: 9px;
-  color: #a65b2c;
+  color: var(--plaza-accent-hover);
   background: var(--plaza-accent-soft);
   font-size: 12px;
 }
@@ -512,7 +467,7 @@ async function copyMessage() {
   place-items: center;
   border-radius: 7px;
   color: #fff;
-  background: linear-gradient(145deg, #db8556, #c4602f);
+  background: linear-gradient(145deg, var(--plaza-accent), var(--plaza-accent));
   font-size: 13px;
 }
 

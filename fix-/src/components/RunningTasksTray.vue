@@ -153,7 +153,7 @@ function itemLeave(el, done) {
   width: 320px;
   background:
     radial-gradient(120% 80% at 100% 0%, rgba(255, 166, 43, 0.08), transparent 55%),
-    linear-gradient(180deg, #fffdf9, var(--plaza-bg-card));
+    linear-gradient(180deg, var(--plaza-bg-card), var(--plaza-bg-card));
   border: 1px solid var(--plaza-border);
   border-radius: 16px;
   box-shadow:
@@ -203,7 +203,7 @@ function itemLeave(el, done) {
   position: absolute;
   inset: 0;
   border-radius: 50%;
-  background: rgba(196, 96, 47, 0.35);
+  background: var(--plaza-accent);
   animation: pulse-ring 1.8s ease-out infinite;
 }
 @keyframes pulse-ring {
@@ -218,14 +218,14 @@ function itemLeave(el, done) {
   letter-spacing: 0.2px;
   color: var(--plaza-heading);
 }
-.tray-sub { font-size: 10.5px; color: #b3a692; }
+.tray-sub { font-size: 10.5px; color: var(--plaza-text-muted); }
 .tray-count {
   font-family: var(--font-mono);
   font-size: 12px;
   font-weight: 700;
   color: var(--plaza-accent);
-  background: rgba(196, 96, 47, 0.12);
-  border: 1px solid rgba(196, 96, 47, 0.18);
+  background: var(--plaza-accent-soft);
+  border: 1px solid var(--plaza-accent-soft-strong);
   border-radius: 20px;
   min-width: 22px;
   height: 22px;
@@ -245,7 +245,7 @@ function itemLeave(el, done) {
   border-radius: 10px;
   transition: background 0.16s ease;
 }
-.tray-item:hover { background: #faf4ea; }
+.tray-item:hover { background: var(--plaza-bg-card); }
 .tray-item.is-failed { background: rgba(197, 64, 44, 0.06); }
 .tray-item.is-failed:hover { background: rgba(197, 64, 44, 0.1); }
 
@@ -291,7 +291,7 @@ function itemLeave(el, done) {
 
 /* 头部脉冲在无进行中任务（仅剩失败项）时转为静止灰点 */
 .tray-pulse.is-idle::before { animation: none; opacity: 0; }
-.tray-pulse.is-idle i { background: #c9bca6; }
+.tray-pulse.is-idle i { background: var(--plaza-border-strong); }
 
 /* 环形 indeterminate（conic 渐变 + 旋转，比 border spinner 更精致） */
 .ti-ring {
@@ -318,7 +318,7 @@ function itemLeave(el, done) {
 .ti-time {
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: #a8997f;
+  color: var(--plaza-text-muted);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -328,7 +328,7 @@ function itemLeave(el, done) {
   flex: 1;
   height: 3px;
   border-radius: 3px;
-  background: #efe6d6;
+  background: var(--plaza-panel-bg);
   overflow: hidden;
 }
 .ti-bar i {
@@ -350,7 +350,7 @@ function itemLeave(el, done) {
 .ti-stage {
   font-family: var(--font-mono);
   font-size: 10.5px;
-  color: #a8997f;
+  color: var(--plaza-text-muted);
   white-space: nowrap;
   flex-shrink: 0;
 }
@@ -359,7 +359,7 @@ function itemLeave(el, done) {
   flex: 1;
   height: 3px;
   border-radius: 3px;
-  background: #efe6d6;
+  background: var(--plaza-panel-bg);
   overflow: hidden;
 }
 .ti-progress i {
@@ -385,7 +385,7 @@ function itemLeave(el, done) {
   flex-shrink: 0;
   border: none;
   background: transparent;
-  color: #cbb89e;
+  color: var(--plaza-border-strong);
   border-radius: 7px;
   cursor: pointer;
   display: flex;
@@ -394,7 +394,7 @@ function itemLeave(el, done) {
   transition: background 0.15s ease, color 0.15s ease, transform 0.18s ease;
 }
 .ti-x:hover {
-  background: rgba(196, 96, 47, 0.1);
+  background: var(--plaza-accent-soft);
   color: var(--plaza-accent);
   transform: rotate(90deg);
 }

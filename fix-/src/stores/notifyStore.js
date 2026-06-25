@@ -150,6 +150,17 @@ async function checkStatus(job) {
     if (st && !['GENERATING', 'PENDING', 'generating', 'pending'].includes(st)) return 'success'
     return 'running'
   }
+  if (job.kind === 'step') {
+    // 步骤AI验证：查所属任务详情、定位该步，状态进入终态(完成/AI通过/AI驳回/跳过)即视为验证完成。
+    // 这是「兼容漏推」的兜底——STEP_VERIFIED 推送一旦丢失(断线重连窗口/服务重启，SimpleBroker 不为离线用户缓存)，
+    // 仅靠推送会让步骤永久转圈；此处轮询补齐，与 knowledge/task 一致。需 job 携带 taskId。
+    if (!job.taskId) return 'running'
+    const res = await request({ url: `/weixiu/task/${job.taskId}`, method: 'GET', silent: true })
+    const step = (res?.data?.steps || []).find(s => String(s.id) === String(job.refId))
+    if (!step) return 'running'
+    if (['COMPLETED', 'AI_PASSED', 'AI_REJECTED', 'SKIPPED'].includes(step.status)) return 'success'
+    return 'running'
+  }
   return 'running'
 }
 
@@ -199,9 +210,14 @@ export const notifyStore = {
     state.connected = false
   },
 
-  /** 通用：登记一个后台任务（触发会产生 WS 通知的接口后调用） */
-  trackJob({ key, kind, refId, title }) {
-    state.jobs[key] = { key, kind, refId: String(refId), title, status: 'running', startedAt: Date.now(), percent: 0, stage: '' }
+  /** 通用：登记一个后台任务（触发会产生 WS 通知的接口后调用）。
+   *  step 类需额外传 taskId，供 checkStatus 轮询兜底定位步骤（兼容漏推）。 */
+  trackJob({ key, kind, refId, taskId, title }) {
+    state.jobs[key] = {
+      key, kind, refId: String(refId),
+      taskId: taskId != null ? String(taskId) : null,
+      title, status: 'running', startedAt: Date.now(), percent: 0, stage: '',
+    }
     persist()
     startTimer()
   },
