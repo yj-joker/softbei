@@ -595,11 +595,9 @@ onBeforeUnmount(() => {
   overflow: hidden;
   border-radius: 15px;
   color: #f4ece0;
-  border: 1px solid rgba(240, 151, 74, 0.16);
-  background:
-    radial-gradient(120% 130% at 100% 0%, rgba(219, 111, 42, 0.2), transparent 55%),
-    linear-gradient(150deg, #2c2117 0%, #1b140d 76%);
-  box-shadow: 0 26px 60px -24px rgba(60, 30, 10, 0.55);
+  border: 1px solid var(--plaza-accent-soft-strong);
+  background: var(--plaza-console-grad);
+  box-shadow: 0 26px 60px -24px rgba(20, 14, 8, 0.5);
 }
 .console-grid {
   position: absolute;
@@ -636,8 +634,8 @@ onBeforeUnmount(() => {
   border: 1px solid rgba(255, 255, 255, 0.13);
   border-radius: 18px;
   color: #fff;
-  background: linear-gradient(145deg, #db8556, #c4602f);
-  box-shadow: 0 14px 30px rgba(196, 96, 47, 0.3);
+  background: var(--plaza-accent-grad);
+  box-shadow: 0 14px 30px var(--plaza-accent-soft-strong);
   font-family: var(--font-display);
   font-size: 30px;
   font-weight: 800;
@@ -659,7 +657,7 @@ onBeforeUnmount(() => {
   font-size: 9px;
   font-weight: 800;
   letter-spacing: 0.13em;
-  color: #db8556;
+  color: var(--plaza-console-accent);
 }
 .identity-copy h2 {
   margin: 6px 0 0;
@@ -742,17 +740,17 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   padding: 13px 15px;
-  background: rgba(28, 21, 13, 0.86);
+  background: rgba(0, 0, 0, 0.30);
 }
 .readout-icon {
   display: grid;
   width: 34px;
   height: 34px;
   place-items: center;
-  border: 1px solid rgba(219, 133, 86, 0.22);
+  border: 1px solid var(--plaza-accent-soft-strong);
   border-radius: 9px;
-  color: #db8556;
-  background: rgba(219, 133, 86, 0.1);
+  color: var(--plaza-console-accent);
+  background: var(--plaza-accent-soft);
 }
 .readout-copy {
   display: flex;
