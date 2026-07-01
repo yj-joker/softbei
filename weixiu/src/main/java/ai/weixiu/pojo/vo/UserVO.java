@@ -16,5 +16,6 @@ public class UserVO {
     private LocalDateTime hireDate;
     private Integer  type;
     private Integer status;
+    private LocalDateTime lastLoginTime;
 
 }

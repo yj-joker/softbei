@@ -40,12 +40,13 @@ const userInitial = computed(() => userInfo.value.name?.[0] || 'A')
 const isActive = computed(() => Number(userInfo.value.status) === 1)
 const normalizedForm = computed(() => ({ phone: form.phone?.trim() || '' }))
 const isDirty = computed(() => normalizedForm.value.phone !== (userInfo.value.phone || ''))
+const lastLoginText = computed(() => formatDate(userInfo.value.lastLoginTime))
 
 const identityReadouts = computed(() => [
   { label: '联系方式', value: userInfo.value.phone || '未绑定手机号', icon: Phone },
   { label: '协作邮箱', value: userInfo.value.email || '未绑定邮箱', icon: Message },
   { label: '入职日期', value: formatDate(userInfo.value.hireDate, false), icon: Calendar },
-  { label: '最近登录', value: formatDate(userInfo.value.lastLoginTime), icon: Clock },
+  { label: '最近登录', value: lastLoginText.value, icon: Clock },
 ])
 
 function getCurrentUser() {
@@ -82,9 +83,64 @@ function getStatusText(status) {
   return code === 1 ? '账号已激活' : '账号未激活'
 }
 
+function pickUserField(source, keys) {
+  for (const key of keys) {
+    const value = source?.[key]
+    if (value !== undefined && value !== null && value !== '') return value
+  }
+  return undefined
+}
+
+function normalizeUserProfile(source = {}) {
+  const hireDate = pickUserField(source, ['hireDate', 'hire_date'])
+  const lastLoginTime = pickUserField(source, [
+    'lastLoginTime',
+    'last_login_time',
+    'lastLoginAt',
+    'last_login_at',
+    'lastLogin',
+    'last_login',
+    'loginTime',
+    'login_time',
+  ])
+  return {
+    ...source,
+    ...(hireDate !== undefined ? { hireDate } : {}),
+    ...(lastLoginTime !== undefined ? { lastLoginTime } : {}),
+  }
+}
+
+function normalizeDateValue(value) {
+  if (Array.isArray(value)) {
+    const [year, month = 1, day = 1, hour = 0, minute = 0, second = 0] = value
+    return new Date(year, month - 1, day, hour, minute, second)
+  }
+  if (typeof value === 'string') {
+    return new Date(value.includes('T') ? value : value.replace(' ', 'T'))
+  }
+  if (value && typeof value === 'object') {
+    const datePart = value.date || value
+    const timePart = value.time || value
+    const year = datePart.year
+    const month = datePart.monthValue ?? datePart.month
+    const day = datePart.dayOfMonth ?? datePart.day
+    if (year && month && day) {
+      return new Date(
+        year,
+        month - 1,
+        day,
+        timePart.hour ?? 0,
+        timePart.minute ?? 0,
+        timePart.second ?? 0,
+      )
+    }
+  }
+  return new Date(value)
+}
+
 function formatDate(value, withTime = true) {
   if (!value) return '-'
-  const date = new Date(value)
+  const date = normalizeDateValue(value)
   if (Number.isNaN(date.getTime())) return '-'
   return date.toLocaleString('zh-CN', {
     year: 'numeric',
@@ -101,13 +157,13 @@ async function fetchUserInfo() {
     return
   }
 
-  userInfo.value = { ...current, ...userInfo.value }
+  userInfo.value = normalizeUserProfile({ ...current, ...userInfo.value })
   syncForm()
   loading.value = true
   try {
     const res = await getUserById(current.id)
     if (res.code === '200' || res.code === 200) {
-      userInfo.value = res.data || {}
+      userInfo.value = normalizeUserProfile(res.data || {})
       syncForm()
       syncLocalUser(userInfo.value)
     } else {
@@ -403,7 +459,7 @@ onBeforeUnmount(() => {
               <span class="security-icon"><el-icon><Clock /></el-icon></span>
               <span>
                 <b>最近登录</b>
-                <small>{{ formatDate(userInfo.lastLoginTime) }}</small>
+                <small>{{ lastLoginText }}</small>
               </span>
             </div>
           </div>
