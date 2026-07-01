@@ -20,6 +20,7 @@ import reactor.core.publisher.Flux;
  * 本工具类优先 normalize 再解析，兼容两种格式。</p>
  */
 public final class AiStreamEventUtils {
+    private static final String FRIENDLY_AI_ERROR = "\u62b1\u6b49\uff0cAI \u5bf9\u8bdd\u670d\u52a1\u6682\u65f6\u9047\u5230\u95ee\u9898\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5\u3002";
 
     private AiStreamEventUtils() {
     }
@@ -70,7 +71,12 @@ public final class AiStreamEventUtils {
             return Flux.empty();
         }
 
-        if ("done".equals(root.path("event").asText(""))) {
+        String event = root.path("event").asText("");
+        if ("error".equals(event)) {
+            return Flux.just(errorEvent(root.path("data").path("message").asText(root.path("message").asText("")),
+                    mapper));
+        }
+        if ("done".equals(event)) {
             return Flux.just(ensureDoneHasEvidenceImages(root, mapper));
         }
         return Flux.just(toEventJson(root, mapper))
@@ -80,8 +86,32 @@ public final class AiStreamEventUtils {
     public static String errorEvent(String message, ObjectMapper mapper) {
         ObjectNode root = mapper.createObjectNode();
         root.put("event", "error");
-        root.putObject("data").put("message", message == null ? "" : message);
+        root.putObject("data").put("message", safeErrorMessage(message));
         return root.toString();
+    }
+
+    public static String safeErrorMessage(String message) {
+        String text = message == null ? "" : message.trim();
+        if (text.isEmpty() || isTechnicalErrorMessage(text) || text.length() > 120) {
+            return FRIENDLY_AI_ERROR;
+        }
+        return text;
+    }
+
+    private static boolean isTechnicalErrorMessage(String message) {
+        String lower = message.toLowerCase();
+        return lower.contains("### error querying database")
+                || lower.contains("java.")
+                || lower.contains("exception")
+                || lower.contains("sqlsyntaxerrorexception")
+                || lower.contains("sqlexception")
+                || lower.contains("bad sql grammar")
+                || lower.contains("unknown column")
+                || lower.contains("defaultparametermap")
+                || lower.contains("mapper.java")
+                || lower.contains("select ")
+                || lower.contains(" from ")
+                || lower.contains("caused by:");
     }
 
     /**

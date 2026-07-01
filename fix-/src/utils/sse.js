@@ -1,3 +1,5 @@
+import { sanitizeAiErrorMessage } from '@/utils/aiErrorFallback'
+
 function trimLeadingBreaks(text) {
   return text.replace(/^[\r\n]+/, '')
 }
@@ -42,7 +44,19 @@ function normalizeEvent(payload) {
   try {
     const json = JSON.parse(text)
     if (json && typeof json === 'object') {
+      if (json.event === 'error') {
+        return {
+          ...json,
+          data: {
+            ...(json.data || {}),
+            message: sanitizeAiErrorMessage(json.data?.message || json.message),
+          },
+        }
+      }
       if (json.event) return json
+      if (json.code && String(json.code) !== '200') {
+        return { event: 'error', data: { message: sanitizeAiErrorMessage(json.message || json.msg) } }
+      }
       if (typeof json.content === 'string') return { event: 'token', data: { content: json.content } }
       if (typeof json.message === 'string') return { event: 'token', data: { content: json.message } }
     }

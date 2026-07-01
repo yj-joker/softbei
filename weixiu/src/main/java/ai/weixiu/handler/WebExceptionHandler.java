@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 @RestControllerAdvice
 @Slf4j
 public class WebExceptionHandler {
+    private static final String SERVER_ERROR_MESSAGE = "\u670d\u52a1\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5";
 
     @ExceptionHandler(NullException.class)
     public Result handler(NullException e) {
@@ -73,10 +74,12 @@ public class WebExceptionHandler {
 
     @ExceptionHandler(Exception.class)
     public Result handleException(Exception e) {
-        return Result.error("500", e.getMessage());
+        log.error("Unhandled server exception", e);
+        return Result.error("500", SERVER_ERROR_MESSAGE);
     }
     @ExceptionHandler(UploadException.class)
     public Result handleUploadException(UploadException e) {
-        return Result.error("500", e.getMessage());
+        log.error("Upload failed", e);
+        return Result.error("500", SERVER_ERROR_MESSAGE);
     }
 }

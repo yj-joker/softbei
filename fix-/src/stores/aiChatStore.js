@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { aiChatStream } from '@/api/aiChat'
 import { flushSseEvents, readSseEvents } from '@/utils/sse'
+import { AI_FALLBACK_MESSAGE, isTechnicalErrorText, sanitizeAiContent, sanitizeAiErrorMessage } from '@/utils/aiErrorFallback'
 import {
   createAgentTimelineStep,
   createInitialAgentProgress,
@@ -366,7 +367,16 @@ export const aiChatStore = {
         }
 
         if (event.event === 'token') {
-          fullContent += data.content || ''
+          if (assistant.status === 'error') return
+          const token = data.content || ''
+          if (isTechnicalErrorText(token) || isTechnicalErrorText(fullContent + token)) {
+            fullContent = AI_FALLBACK_MESSAGE
+            assistant.status = 'error'
+            assistant.agentProgress = createProgressSummary(assistant)
+            startTypewriter()
+            return
+          }
+          fullContent += token
           startTypewriter()
           return
         }
@@ -388,8 +398,9 @@ export const aiChatStore = {
         }
 
         if (event.event === 'error') {
-          const message = data.message || '生成失败'
-          fullContent += fullContent ? `\n\n[错误] ${message}` : `[错误] ${message}`
+          const message = sanitizeAiErrorMessage(data.message)
+          fullContent = sanitizeAiContent(fullContent)
+          fullContent += fullContent ? `\n\n${message}` : message
           assistant.status = 'error'
           startTypewriter()
           assistant.agentProgress = createProgressSummary(assistant)
@@ -409,6 +420,7 @@ export const aiChatStore = {
       flushSseEvents(buffer, handleEvent)
 
       if (!fullContent.trim() && !assistant.evidenceImages.length) fullContent = '(空响应)'
+      fullContent = sanitizeAiContent(fullContent)
       startTypewriter()
       await waitForTypewriter()
       assistant.content = fullContent
@@ -422,7 +434,7 @@ export const aiChatStore = {
           clearInterval(typeTimer)
           typeTimer = null
         }
-        assistant.content = fullContent || assistant.content
+        assistant.content = sanitizeAiContent(fullContent || assistant.content)
         assistant.status = 'stopped'
         if (!assistant.content.trim()) assistant.content = '已停止生成。'
       } else {

@@ -1,6 +1,7 @@
 import { reactive } from 'vue'
 import { taskChatStream, getTaskChatHistory } from '@/api/maintenanceTask'
 import { flushSseEvents, readSseEvents } from '@/utils/sse'
+import { AI_FALLBACK_MESSAGE, isTechnicalErrorText, sanitizeAiContent, sanitizeAiErrorMessage } from '@/utils/aiErrorFallback'
 import {
   createAgentTimelineStep,
   createInitialAgentProgress,
@@ -49,13 +50,23 @@ function applyStreamEvent(message, event) {
   }
 
   if (event.event === 'token') {
-    message.content += data.content || ''
+    if (message.status === 'error') return
+    const token = data.content || ''
+    if (isTechnicalErrorText(token) || isTechnicalErrorText(message.content + token)) {
+      message.content = AI_FALLBACK_MESSAGE
+      message.status = 'error'
+      message.agentProgress = createProgressSummary(message)
+      return
+    }
+    message.content += token
   } else if (event.event === 'done') {
     message.evidenceImages = Array.isArray(data.evidenceImages) ? data.evidenceImages : []
     message.latencyMs = data.latency_ms || data.latencyMs || 0
     message.agentProgress = createProgressSummary({ ...message, status: 'done' }, data)
   } else if (event.event === 'error') {
-    message.content += `\n[错误] ${data.message || '生成失败'}`
+    const safeMessage = sanitizeAiErrorMessage(data.message)
+    const current = sanitizeAiContent(message.content)
+    message.content = current ? `${current}\n${safeMessage}` : safeMessage
     message.status = 'error'
     message.agentProgress = createProgressSummary(message)
   }
@@ -147,6 +158,7 @@ export const taskAssistantStore = {
 
       flushSseEvents(buffer, (event) => applyStreamEvent(assistant, event))
       if (!assistant.content && !assistant.evidenceImages.length) assistant.content = '(无回复)'
+      assistant.content = sanitizeAiContent(assistant.content)
       if (assistant.status !== 'error') assistant.status = 'done'
       assistant.agentProgress = createProgressSummary(assistant)
     } catch (error) {
@@ -155,6 +167,7 @@ export const taskAssistantStore = {
         if (!assistant.content.trim()) assistant.content = '已停止生成。'
       } else {
         assistant.status = 'error'
+        assistant.content = sanitizeAiContent(assistant.content)
         if (!assistant.content) assistant.content = '抱歉，助手出错了，请稍后再试。'
       }
       assistant.agentProgress = createProgressSummary(assistant)
