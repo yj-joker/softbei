@@ -76,9 +76,12 @@ const modeSessions = computed(() =>
 )
 const messages = computed(() => currentSession.value?.messages || [])
 
+const isStreaming = computed(() => currentSession.value?.streaming || false)
 const latestAssistantMessage = computed(() =>
   [...messages.value].reverse().find((message) => message.role === 'assistant') || null,
 )
+
+const showStopBtn = computed(() => latestAssistantMessage.value?.status === 'streaming')
 
 function hasAgentPanelData(message) {
   return message?.mode !== 'chat'
@@ -194,7 +197,7 @@ function handleSend(payload) {
 }
 
 function handleStop() {
-  aiChatStore.stop(props.storageKey)
+  aiChatStore.stop(props.storageKey, currentSession.value?.id)
 }
 
 function sendQuickPrompt(prompt) {
@@ -202,7 +205,7 @@ function sendQuickPrompt(prompt) {
 }
 
 function changeMode(mode) {
-  if (state.streaming || currentMode.value === mode) return
+  if (isStreaming.value || currentMode.value === mode) return
   currentMode.value = mode
   localStorage.setItem(modeStorageKey, mode)
   aiChatStore.currentSession(props.storageKey, mode)
@@ -306,7 +309,7 @@ onActivated(() => {
             <button
               type="button"
               :class="{ active: currentMode === 'chat' }"
-              :disabled="state.streaming"
+              :disabled="isStreaming"
               @click="changeMode('chat')"
             >
               <el-icon><ChatLineRound /></el-icon>
@@ -315,7 +318,7 @@ onActivated(() => {
             <button
               type="button"
               :class="{ active: currentMode === 'maintenance' }"
-              :disabled="state.streaming"
+              :disabled="isStreaming"
               @click="changeMode('maintenance')"
             >
               <el-icon><Tools /></el-icon>
@@ -363,7 +366,7 @@ onActivated(() => {
                 v-for="prompt in quickPrompts"
                 :key="prompt.text"
                 type="button"
-                :disabled="state.streaming"
+                :disabled="isStreaming"
                 @click="sendQuickPrompt(prompt.text)"
               >
                 <span>{{ prompt.title }}</span>
@@ -391,7 +394,7 @@ onActivated(() => {
       </transition>
 
         <AIBottomInput
-          :generating="state.streaming"
+          :generating="isStreaming"
           @send="handleSend"
           @stop="handleStop"
         />
