@@ -323,9 +323,137 @@ class FixAgent(BaseAgent):
                 rerun.metadata["react_status_before_rerun"] = react_status
             rerun.metadata["intent_rerun_with_full_tools"] = True
             self._attach_minimum_requirement_check(rerun, rerun_context)
-            return rerun
+            output = rerun
+
+        # A 硬兜底：evidence-required 意图却没调 knowledge_retrieval → 强制检索 + 据证据重答
+        forced = await self.grounded_fallback_if_unretrieved(input_data, output.tools_used or [])
+        if forced is not None:
+            return forced
 
         return output
+
+    async def grounded_fallback_if_unretrieved(
+        self,
+        input_data: AgentInput,
+        used_tools: List[str],
+    ) -> Optional[AgentOutput]:
+        """A 硬兜底入口（流式与非流式共用）：evidence-required 意图却没调
+        knowledge_retrieval 时，强制检索一次并仅依据证据重答。
+        不适用（意图不需检索 / 已经检索过）或检索为空 → 返回 None，保留原答案。
+        """
+        run_context = self.build_run_context(input_data)
+        required = self._required_tools_for_policy(run_context)
+        if "knowledge_retrieval" not in required:
+            return None
+        if "knowledge_retrieval" in set(used_tools or []):
+            return None
+        return await self.force_grounded_answer(input_data, run_context)
+
+    async def force_grounded_answer(
+        self,
+        input_data: AgentInput,
+        run_context: AgentRunContext,
+    ) -> Optional[AgentOutput]:
+        """强制检索手册证据并据此生成回答（CRAG 式纠正动作）。
+        检索失败 / 为空 → 返回 None，交由调用方保留原答案。
+        """
+        from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
+        from services.llm.service import get_llm_service
+
+        start = time.time()
+        query = (input_data.user_message or "").strip()
+        if not query:
+            return None
+        scope = run_context.retrieval_scope or {}
+        try:
+            retrieval = await get_knowledge_retrieval_tool().run(
+                query=query,
+                top_k=5,
+                document_id=scope.get("document_id"),
+                device_type=scope.get("device_type"),
+            )
+        except Exception as exc:
+            logger.warning("[fix_agent][forced_retrieval] 检索异常: %s", exc)
+            return None
+        if not retrieval.success or not retrieval.data:
+            return None
+
+        evidence_items = retrieval.data
+        evidence_text = "\n\n".join(
+            self._forced_evidence_to_text(item, idx)
+            for idx, item in enumerate(evidence_items, start=1)
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是设备检修知识库问答助手。必须严格依据给定的知识库证据回答，"
+                    "参数、型号、步骤必须逐字忠实于证据，证据中没有的绝不编造；"
+                    "证据不足时明确说明不足。禁止使用 emoji。"
+                    "普通解释用自然段；编号、清单、步骤每一项单独换行，用“1. 内容”格式。"
+                    "始终用中文，不要出现 image_url、doc_id、chunk_id、top_k 等内部标识；"
+                    "引用出处时请用“手册第X页”或章节名，不要出现“证据1”“片段2”这类内部编号。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"用户问题：{query}\n\n检索到的手册片段：\n{evidence_text}\n\n"
+                    "请仅依据上述片段用中文回答；未覆盖处明确说明，不要编造参数、型号或操作步骤。"
+                ),
+            },
+        ]
+        try:
+            response = await get_llm_service().chat(messages=messages, temperature=0.1)
+        except Exception as exc:
+            logger.warning("[fix_agent][forced_retrieval] 生成异常: %s", exc)
+            return None
+
+        trace = [{
+            "iteration": 1,
+            "action": "tool_call",
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"query": query, "top_k": 5},
+                "result_summary": str(evidence_items)[:200],
+                "result_data": [
+                    item.model_dump() if hasattr(item, "model_dump") else item
+                    for item in evidence_items
+                ],
+            }],
+        }]
+        logger.info(
+            "[fix_agent][forced_retrieval] 已强制检索并据证据重答 evidence=%d",
+            len(evidence_items),
+        )
+        return AgentOutput(
+            agent_name=self.name,
+            message=response.get("content", "") if isinstance(response, dict) else str(response or ""),
+            tools_used=["knowledge_retrieval"],
+            metadata={
+                "execution_mode": "forced_retrieval_grounded",
+                "react_trace": trace,
+                "react_iterations": 1,
+                "intent_decision": run_context.intent_decision,
+            },
+            latency_ms=int((time.time() - start) * 1000),
+            raw_response=response if isinstance(response, dict) else None,
+        )
+
+    @staticmethod
+    def _forced_evidence_to_text(item: Any, index: int) -> str:
+        data = item.model_dump() if hasattr(item, "model_dump") else (item if isinstance(item, dict) else {})
+        metadata = data.get("metadata") or {}
+        content = data.get("content") or data.get("text") or ""
+        page = metadata.get("page_number") or metadata.get("page")
+        section = metadata.get("section_title") or ""
+        parts = []
+        if section:
+            parts.append(str(section).replace("\n", " ").strip())
+        if page:
+            parts.append(f"第{page}页")
+        head = f"[手册片段{index}｜{' · '.join(parts)}]" if parts else f"[手册片段{index}]"
+        return f"{head}\n{content}"
 
     @staticmethod
     def _without_tool_scope(input_data: AgentInput) -> AgentInput:

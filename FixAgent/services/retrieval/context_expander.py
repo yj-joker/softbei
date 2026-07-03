@@ -28,7 +28,7 @@ SECTION_LABEL_PRIORITY = {
     "table_row": 3,
     "table_full": 4,
     "image_summary": 5,
-    "image": 6,
+    "image": 5,
     "general": 9,
 }
 
@@ -141,7 +141,7 @@ def _collect_section_context(
             records = vector_service.get_section_records(
                 document_id,
                 parent_section_id,
-                limit=SECTION_LOOKUP_LIMIT,
+                limit=SECTION_LOOKUP_LIMIT * 3,
             )
         except Exception as exc:
             logger.warning("section context expansion skipped: %s", exc)

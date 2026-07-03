@@ -228,6 +228,8 @@ def _type_alignment_bonus(
             elif title_hit_ratio < 0.6:
                 bonus -= 0.03
     elif plan.intent == "procedure":
+        if "section_match" in (candidate.get("routes") or []):
+            bonus += 0.05
         if chunk_label == "step":
             bonus += 0.075
         if chunk_type == "text" and query_coverage >= 0.18:
@@ -273,6 +275,9 @@ def _completeness_adjustment(candidate: Dict[str, Any], plan: RetrievalPlan, con
         adjustment -= 0.22
     if metadata.get("answer_role") == "navigation" and plan.intent != "outline":
         adjustment -= 0.16
+    # B：section_match 候选是目录确认过的内容，短文本（如步骤标题）不应扣分
+    if "section_match" in (candidate.get("routes") or []):
+        return adjustment
     rrf_route_count = int(metadata.get("rrf_route_count") or 0)
     if text_length < 18:
         adjustment -= 0.01 if rrf_route_count > 1 else 0.045
@@ -303,7 +308,7 @@ def _structural_features(query: str, candidate: Dict[str, Any]) -> Dict[str, Any
     query_coverage = _coverage(terms, content)
     title_coverage = _coverage(terms, title_text)
     # 反向覆盖：标题里的词有多少出现在查询中。标题短、不被查询长度稀释，
-    # 对“查询指明章节”的图片检索区分度更高（正确章节标题命中率明显高于相邻章节）。
+    # 对"查询指明章节"的图片检索区分度更高（正确章节标题命中率明显高于相邻章节）。
     title_terms = _query_terms(title_text)
     title_hit_ratio = _coverage(title_terms, query_text)
     unit_overlap = _overlap_count(query_units, content_units)
@@ -335,6 +340,16 @@ def _structural_score(query: str, candidate: Dict[str, Any], plan: RetrievalPlan
     score = _base_score(candidate) * base_weight
     score += min(0.30, query_coverage * 0.36)
     score += min(0.14, title_coverage * 0.20)
+    # D：章节名精确短语命中——query 含某节标题核心（去掉章号）则强抬该节，
+    # 区分"气门间隙(4.6)"与"气缸头(4.7)"等近名词同章场景；命中节本身没被召回则无效。
+    # B：section_match 路由是 recall 阶段已确认的标题命中，确定性更强，给更高加分。
+    routes = set(candidate.get("routes") or [])
+    if "section_match" in routes:
+        score += 0.14
+    else:
+        section_core = re.sub(r"^[\s\d.、]+", "", str(metadata.get("section_title") or "").replace("\n", " ")).strip()
+        if len(section_core) >= 2 and section_core in _normalize_text(query):
+            score += 0.10
     score += min(0.10, unit_overlap * 0.05 + number_overlap * 0.05)
     score += _route_consensus_bonus(candidate, plan)
     score += _type_alignment_bonus(

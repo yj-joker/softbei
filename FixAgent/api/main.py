@@ -570,6 +570,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             verification=verification if has_issues else None,
             diagnosis_items=diagnosis_items,
             evidence_images=evidence_images,
+            metadata=final_result.metadata,
         )
     except Exception as e:
         logger.exception(f"[chat] session={request.session_id} error")
@@ -790,6 +791,18 @@ async def chat_stream(request: ChatRequest):
                 fallback_text = await _maintenance_fallback_answer(input_data, maint_ctx)
                 if fallback_text:
                     logger.info("[chat_stream] 检修助手出口兜底已触发 session=%s", request.session_id)
+
+            # —— A 硬兜底：evidence-required 意图却没检索 → 强制检索 + 据证据重答 ——
+            if not fallback_text:
+                used_tools = list(tools_in_stream or stream_tools_used or [])
+                forced = await fix_agent.grounded_fallback_if_unretrieved(input_data, used_tools)
+                if forced is not None:
+                    full_message = forced.message
+                    stream_react_trace = forced.metadata.get("react_trace", stream_react_trace)
+                    stream_metadata = {**stream_metadata, **forced.metadata}
+                    if "knowledge_retrieval" not in tools_in_stream:
+                        tools_in_stream.append("knowledge_retrieval")
+                    logger.info("[chat_stream] A 强制检索兜底已触发 session=%s", request.session_id)
 
             if fallback_text:
                 # 兜底答案是基于上下文的务实建议，不走检索校验、不加内联标记

@@ -850,7 +850,7 @@ class ReviewAgent:
         r"(?:N\s*[·.]?\s*m|mm|cm|MPa|kPa|°[CF]|℃|V|%)",
         re.IGNORECASE,
     )
-    _PARAM_DOWNGRADE_HINT = "以设备手册/铭牌为准"
+    _PARAM_DOWNGRADE_HINT = "以手册为准"
     # 有精确参数被降级时，末尾补的整体声明（取代逐句【未经手册查证】标签）
     _PARAM_DISCLAIMER = "注：以上精确参数（扭矩、间隙等）未在检索到的手册中找到，请以设备手册/铭牌为准。"
 
@@ -859,6 +859,7 @@ class ReviewAgent:
     _PARAM_WITH_LEAD_PATTERN = re.compile(
         r"(?:常见|通常|一般|大约|大概)?\s*"
         r"(?:为|约|约为|达|至|不低于|不高于|不超过|不小于|不大于|≥|≤|大于|小于)?\s*"
+        r"(?:精度|误差|公差|偏差)?\s*[±]?\s*"
         r"\d[\d,]*(?:\.\d+)?\s*(?:[～~\-–—±]\s*\d+(?:\.\d+)?)?\s*"
         r"(?:N\s*[·.]?\s*m|mm|cm|MPa|kPa|°[CF]|℃|V|%)",
         re.IGNORECASE,
@@ -982,6 +983,20 @@ class ReviewAgent:
             result = result.replace(value, cls._PARAM_DOWNGRADE_HINT)
         return result
 
+    @staticmethod
+    def _normalize_param(text: str) -> str:
+        """参数值专用规范化（B1）：在 _GroundingCheck._normalize 基础上额外统一
+        全角数字、连接符（–/—/～）和单位写法（牛·米/牛米→N.M），降低“手册真值因
+        写法不同被误删”的概率（如手册‘95 ± 5 N·m’对上模型‘95±5N·m’）。
+        """
+        value = (text or "").upper()
+        value = value.translate(str.maketrans("０１２３４５６７８９", "0123456789"))
+        value = (value.replace("，", ",").replace("·", ".").replace("．", ".")
+                      .replace("～", "~").replace("－", "-").replace("–", "-").replace("—", "-"))
+        value = value.replace("牛顿米", "N.M").replace("牛顿.米", "N.M").replace("牛米", "N.M").replace("牛.米", "N.M")
+        value = re.sub(r"[\s,]", "", value)
+        return value
+
     @classmethod
     def _downgrade_uncited_numbers(cls, message: str, trace: List[Dict]) -> str:
         """数值红线（字面核对版）：回答里每个精确技术参数，其确切数字串若没在这轮
@@ -991,24 +1006,32 @@ class ReviewAgent:
         像手册的句子里”骗过），这里直接拿数值字面核对检索原文，更硬。降级时连同前面的
         “为/≥/约”等引导词一起替换，不留“为以手册为准”这类病句。
 
-        取舍：宁可错降不可漏放——手册写“12牛·米”而模型写“12N·m”时单位写法不同会
-        匹配不上，手册真有的数值也可能被降级，这是红线优先的代价。
+        B1：用 _normalize_param 统一单位/全半角再比对，避免手册真值因写法不同被误删。
+        B2：替换后去掉相邻重复提示（“为准为准”），并在紧贴中文时补空格（避免“为准开口扳手”）。
         """
         if not message:
             return message
         evidence = _GroundingCheck._collect_evidence(trace)
-        normalized_evidence = _GroundingCheck._normalize("\n".join(evidence)) if evidence else ""
+        normalized_evidence = cls._normalize_param("\n".join(evidence)) if evidence else ""
 
         def _replace(match: re.Match) -> str:
             text = match.group(0)
             num_match = cls._TECHNICAL_PARAM_PATTERN.search(text)
             if not num_match:
                 return text
-            if _GroundingCheck._normalize(num_match.group(0)) in normalized_evidence:
+            if normalized_evidence and cls._normalize_param(num_match.group(0)) in normalized_evidence:
                 return text  # 手册原文里确有该数值 → 原样保留
             return cls._PARAM_DOWNGRADE_HINT  # 查无依据 → 降级（连引导词一并替换）
 
-        return cls._PARAM_WITH_LEAD_PATTERN.sub(_replace, message)
+        result = cls._PARAM_WITH_LEAD_PATTERN.sub(_replace, message)
+        # B2：清理替换产物——相邻重复提示合并；提示紧贴中文时补一个空格
+        #     （"范围/之间"等量词紧跟时除外，避免出现"…为准 范围内"这种怪空格）
+        hint = re.escape(cls._PARAM_DOWNGRADE_HINT)
+        result = re.sub(rf"(?:{hint})(?:\s*[和与及或、，,]?\s*{hint})+", cls._PARAM_DOWNGRADE_HINT, result)
+        result = re.sub(rf"({hint})(?![范之])(?=[一-鿿])", r"\1 ", result)
+        # 去掉提示词与紧跟量词之间“原文自带”的空格（如“…mm 范围内”降级后留下的空格）
+        result = re.sub(rf"{hint}\s+(?=范围|之间|以内|以上|以下|左右)", cls._PARAM_DOWNGRADE_HINT, result)
+        return result
 
     @classmethod
     def _append_param_disclaimer(cls, message: str) -> str:

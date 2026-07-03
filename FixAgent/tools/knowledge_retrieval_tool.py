@@ -20,6 +20,7 @@ from services.retrieval.policy import (
     diversify_candidates,
     summarize_confidence,
 )
+from services.retrieval.section_index import SectionTitleIndex
 from services.knowledge.vector_service import build_redis_filter, escape_redis_tag_value, get_vector_service
 from tools.base_tool import BaseTool, ToolException
 
@@ -191,11 +192,10 @@ class KnowledgeRetrievalTool(BaseTool):
         plan,
         freeze_head: int = 3,
     ) -> List[Dict]:
-        """图片规整（仅 procedure）：装配/检修流程的回答以步骤为主、配图为辅，
-        让最终结果恰好保留 1 张主节（表头步骤所在节）的配图。
-        没图就从召回补 1 张主节图（治图被纯分数挤掉）；图太多或含无关节的图，
-        只留主节那 1 张、其余名额用步骤等非图候选回填（治按节捞图带出一堆无关配图）。
-        用 parent_section_id 锚定主节，比 toc_path 更可靠。"""
+        """图片规整（仅 procedure）：只保留主节（表头步骤所在节）的配图，
+        砍掉其他节的图（治"拆发动机"带回一堆无关配图）。主节有多少张留多少张，
+        不设数量上限——前文 E 已按 query 核心词收口，不会溢出。
+        没图就从召回池补 1 张主节图（兜底）。"""
         if plan.intent != "procedure":
             return selected
         if not selected or top_k <= 0:
@@ -211,35 +211,111 @@ class KnowledgeRetrievalTool(BaseTool):
         if not anchor:
             return selected
 
-        main_image = next(
-            (it for it in selected if cls._is_image_record(it) and section_id(it) in anchor),
-            None,
-        )
-        if main_image is None:
-            main_image = next(
+        # 分类：主节图 / 无关节图 / 非图候选
+        main_images = [it for it in selected if cls._is_image_record(it) and section_id(it) in anchor]
+        foreign_images = [it for it in selected if cls._is_image_record(it) and section_id(it) not in anchor]
+        non_images = [it for it in selected if not cls._is_image_record(it)]
+
+        if not main_images:
+            # 主节没有图 → 从召回池补 1 张
+            fallback = next(
                 (it for it in ranked if cls._is_image_record(it) and section_id(it) in anchor),
                 None,
             )
+            if fallback is not None:
+                main_images = [fallback]
 
-        non_images = [it for it in selected if not cls._is_image_record(it)]
-        had_image = len(non_images) != len(selected)
-        if main_image is None and not had_image:
+        if not main_images and not foreign_images:
             return selected
 
-        reserve = max(top_k - 1, 0) if main_image is not None else top_k
-        rebuilt = non_images[:reserve]
-        if main_image is not None:
-            rebuilt.append(main_image)
-        if len(rebuilt) < top_k:
-            have = {it.get("doc_id") for it in rebuilt}
-            for it in ranked:
-                if len(rebuilt) >= top_k:
-                    break
-                if cls._is_image_record(it) or it.get("doc_id") in have:
-                    continue
-                rebuilt.append(it)
-                have.add(it.get("doc_id"))
-        return rebuilt[:top_k]
+        # 重建：非图候选 + 主节全量图，无关节图丢弃
+        rebuilt = non_images + main_images
+        # 给非图候选留空间（至少留 2 个文本位），但允许多余图溢出 top_k
+        # （与 _ensure_section_steps 一致：证据优先，不硬砍）
+        return rebuilt
+
+    @classmethod
+    def _ensure_section_steps(
+        cls,
+        selected: List[Dict],
+        plan,
+        vector_service,
+        max_steps: int = 10,
+    ) -> List[Dict]:
+        """C 按节取全：procedure/parameter 意图下，把主节（selected 里占比最高的
+        parent_section_id）的完整正文块从库里直接补齐——procedure 补 step_raw 步骤块、
+        parameter 补 table 数值表块——按 source_index 排序，避免正文没进 top_k 导致模型
+        漏步/编造（如涨紧器只回“参照气缸头”、气门间隙说“证据里没数值”）。允许超出 top_k。"""
+        intent_chunk_type = {"procedure": "step_raw", "parameter": "table"}.get(plan.intent)
+        if intent_chunk_type is None:
+            return selected
+        if not selected or not hasattr(vector_service, "get_section_records"):
+            return selected
+
+        counter: Dict[tuple, int] = {}
+        score_by_sec: Dict[tuple, float] = {}
+        for it in selected:
+            meta = it.get("metadata") or {}
+            key = (str(meta.get("document_id") or ""), str(meta.get("parent_section_id") or ""))
+            if not all(key):
+                continue
+            counter[key] = counter.get(key, 0) + 1
+            sc = float(it.get("relevance_score") or it.get("score") or 0.0)
+            score_by_sec[key] = max(score_by_sec.get(key, 0.0), sc)
+        if not counter:
+            return selected
+        document_id, parent_section_id = max(
+            counter, key=lambda k: (counter[k], score_by_sec.get(k, 0.0))
+        )
+
+        try:
+            records = vector_service.get_section_records(
+                document_id, parent_section_id, limit=30, chunk_type=intent_chunk_type
+            )
+        except Exception as exc:
+            logger.warning("[ensure_section_steps] 取节步骤失败: %s", exc)
+            return selected
+        if not records:
+            return selected
+
+        have_ids: set = set()
+        have_text: set = set()
+        for it in selected:
+            meta = it.get("metadata") or {}
+            have_ids.add(str(it.get("doc_id") or it.get("id") or ""))
+            if meta.get("source_chunk_id"):
+                have_ids.add(str(meta["source_chunk_id"]))
+            rt = (meta.get("raw_text") or it.get("content") or it.get("text") or "").strip()
+            if rt:
+                have_text.add(rt)
+
+        new_steps: List[Dict] = []
+        for rec in records:
+            rec = rec.model_dump() if hasattr(rec, "model_dump") else dict(rec)
+            meta = dict(rec.get("metadata") or {})
+            rid = str(rec.get("doc_id") or rec.get("id") or "")
+            src = str(meta.get("source_chunk_id") or "")
+            text = (rec.get("text") or rec.get("content") or meta.get("raw_text") or "").strip()
+            if not text:
+                continue
+            if rid in have_ids or (src and src in have_ids) or text in have_text:
+                continue
+            meta["context_role"] = "section_step" if plan.intent == "procedure" else "section_param"
+            new_steps.append({"doc_id": rid, "id": rid, "text": text, "content": text, "metadata": meta})
+            have_text.add(text)
+
+        if not new_steps:
+            return selected
+
+        def _order(rec: Dict) -> int:
+            meta = rec.get("metadata") or {}
+            try:
+                return int(meta.get("source_index"))
+            except (TypeError, ValueError):
+                return 9999
+
+        new_steps.sort(key=_order)
+        return selected + new_steps[:max_steps]
 
     @staticmethod
     def _mark_route(doc: Dict, route: str) -> Dict:
@@ -306,6 +382,69 @@ class KnowledgeRetrievalTool(BaseTool):
             return int(value)
         except (TypeError, ValueError):
             return None
+
+    # —— E 查图相关性收口（image_identification）——
+    # 用图自带的 章节名/图注/VLM摘要 判相关；判相关不靠重排名次，只看字面命中。
+    _IMG_QUERY_STOPWORDS = (
+        "帮我", "帮", "请", "给我", "给", "查一下", "查查", "查询", "查找", "查", "我",
+        "看一下", "看看", "看", "找一下", "找", "想", "了解", "知道", "显示", "展示",
+        "搜索", "搜", "提供", "介绍", "关于", "一下", "结构", "构造", "内部", "外形",
+        "图片", "图纸", "图示", "示意图", "照片", "图像", "插图", "图", "相关", "的",
+        "这个", "那个", "是什么", "有哪些", "哪些", "一张", "几张", "张", "和", "与", "及", "以及",
+    )
+
+    @classmethod
+    def _query_core_terms(cls, query: str) -> List[str]:
+        """从查图问题里抽出核心实体词（去掉“帮我查”“结构”“图片”等通用词）。"""
+        s = query or ""
+        for w in cls._IMG_QUERY_STOPWORDS:
+            s = s.replace(w, " ")
+        return [t for t in re.split(r"[^一-鿿A-Za-z0-9]+", s) if len(t) >= 2]
+
+    @classmethod
+    def _filter_query_images(cls, ranked, selected, top_k, plan, query):
+        """E：查图意图（image_identification）下按相关性收口图片。
+
+        判据=图的 章节名/toc/图注/正文 + 关联 VLM 摘要 是否含问题核心词（字面命中，
+        不靠重排名次）。CRAG 式分级：相关图≥2 张才砍掉无关图；<2 张则原样全留——
+        宁可多给几张无关图（用户一眼略过），也绝不把目标图误删。"""
+        if getattr(plan, "intent", "") != "image_identification":
+            return selected
+        terms = cls._query_core_terms(query) if selected else []
+        if not terms:
+            return selected  # 抽不出核心词 → 不动（兜底）
+
+        images = [it for it in selected if cls._is_image_record(it)]
+        if len(images) <= 1:
+            return selected  # 本就没几张，不折腾
+
+        # 每张图关联的 VLM 摘要文字（image_summary 与图同 canonical_id）
+        summary_by_id: Dict[str, str] = {}
+        for it in ranked:
+            if (it.get("metadata") or {}).get("chunk_type") == "image_summary":
+                key = cls._canonical_id(it)
+                summary_by_id[key] = summary_by_id.get(key, "") + " " + str(it.get("content") or it.get("text") or "")
+
+        def is_relevant(img: Dict) -> bool:
+            meta = img.get("metadata") or {}
+            text = " ".join([
+                str(meta.get("section_title") or ""),
+                str(meta.get("toc_path") or ""),
+                str(meta.get("caption") or ""),
+                str(img.get("content") or img.get("text") or ""),
+                summary_by_id.get(cls._canonical_id(img), ""),
+            ])
+            return any(term in text for term in terms)
+
+        relevant_ids = {cls._canonical_id(im) for im in images if is_relevant(im)}
+        if len(relevant_ids) < 2:
+            return selected  # 相关不足 → 全留兜底，绝不误删目标
+
+        # 够目标 → 只留相关图，无关图砍掉；非图候选原样保留
+        return [
+            it for it in selected
+            if (not cls._is_image_record(it)) or (cls._canonical_id(it) in relevant_ids)
+        ]
 
     @staticmethod
     def _is_image_record(record: Dict[str, Any]) -> bool:
@@ -496,6 +635,9 @@ class KnowledgeRetrievalTool(BaseTool):
         final_top_k = max(int(top_k or 0), 0)
         recall_k = max(final_top_k * 3, DEFAULT_RECALL_TOP_N) if final_top_k else 0
         optional_filter_used = any((category, tags, device_type, document_version, manual_type))
+        # B: 标题命中查找（纯字符串匹配，< 1ms，提前计算用于可观测）
+        section_index = SectionTitleIndex.get_instance()
+        section_match_hits = section_index.find(query) if section_index._built else []
         await _emit_retrieval_event(
             _event_sink,
             "retrieval_start",
@@ -506,6 +648,7 @@ class KnowledgeRetrievalTool(BaseTool):
                 "topK": final_top_k,
                 "recallTopN": recall_k,
                 "hasImages": bool(image_urls),
+                "sectionMatchCount": len(section_match_hits),
             },
         )
 
@@ -621,7 +764,35 @@ class KnowledgeRetrievalTool(BaseTool):
 
         try:
             vector_service = get_vector_service()
-            route_results = await asyncio.gather(*(run_route(route) for route in plan.routes))
+            # B: 章节标题命中 → 强制召回（先翻目录再看内容）
+            section_index = SectionTitleIndex.get_instance()
+            section_index.build(vector_service)
+
+            async def fetch_section_match_candidates() -> List[Dict]:
+                hits = section_index.find(query)
+                if not hits:
+                    return []
+                all_records: List[Dict] = []
+                for ref in hits:
+                    doc_id = ref.document_id
+                    if document_id and document_id != doc_id:
+                        continue  # 有文档限定则只拉该文档的匹配节
+                    try:
+                        records = await asyncio.to_thread(
+                            vector_service.get_section_records,
+                            doc_id, ref.section_id, limit=30, chunk_type=None,
+                        )
+                    except Exception as exc:
+                        logger.debug("section_match fetch %s/%s failed: %s", doc_id, ref.section_id, exc)
+                        continue
+                    for record in records:
+                        all_records.append(self._mark_route(record, "section_match"))
+                return all_records
+
+            route_results = await asyncio.gather(
+                *(run_route(route) for route in plan.routes),
+                fetch_section_match_candidates(),
+            )
             candidate_lists = [list(docs) for docs in route_results]
 
             if not any(candidate_lists) and optional_filter_used and not document_id:
@@ -718,6 +889,8 @@ class KnowledgeRetrievalTool(BaseTool):
 
         selected = self._promote_section_siblings(ranked, selected, final_top_k)
         selected = self._ensure_section_image(ranked, selected, final_top_k, plan)
+        selected = self._ensure_section_steps(selected, plan, vector_service)
+        selected = self._filter_query_images(ranked, selected, final_top_k, plan, query)
         final_quality = evaluate_retrieval_quality(plan, ranked, selected, top_k=final_top_k)
         candidate_count_after = len(merged)
         await _emit_retrieval_event(

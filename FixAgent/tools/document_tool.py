@@ -899,9 +899,82 @@ class DocumentParserTool(BaseTool):
             stack.append((level, title))
         return entries
 
+    # 仅"章 / 二级节"级别的标题才作为章节边界（与历史粒度一致；更细的三级标题留给 toc_path 细分）
+    _SECTION_TITLE_RE = re.compile(r'(第[一二三四五六七八九十\d]+[章节]|\d+(?:\.\d+)+(?:\s|$))')
+
+    @staticmethod
+    def _is_section_level_title(title: str) -> bool:
+        t = (title or "").replace("\n", " ").strip()
+        return bool(t) and DocumentParserTool._SECTION_TITLE_RE.search(t) is not None
+
+    @staticmethod
+    def _elem_top(elem: dict) -> float | None:
+        """图片/表格的垂直位置（top y）；取不到返回 None。"""
+        if not isinstance(elem, dict):
+            return None
+        top = elem.get("top")
+        if top is None:
+            bbox = elem.get("bbox") or []
+            top = bbox[1] if len(bbox) >= 2 else None
+        try:
+            return float(top)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _heading_top(text_blocks: list, title: str) -> float | None:
+        """在版面 block 里找承载该标题的块，返回其 top y；用于把图/表按位置归节。"""
+        core = re.sub(r'^[\s\d\.\、，,（）()【】．一二三四五六七八九十]+', '', (title or "").replace("\n", " ")).strip()
+        needle = (core if len(core) >= 2 else (title or "")).replace(" ", "").strip()
+        if not needle:
+            return None
+        for block in text_blocks or []:
+            if needle in str(block.get("text", "")).replace(" ", ""):
+                bbox = DocumentParserTool._bbox(block) or []
+                if len(bbox) >= 2:
+                    return float(bbox[1])
+        return None
+
+    @staticmethod
+    def _page_section_cuts(text: str, text_blocks: list, page_num: int,
+                           toc_entries: list | None, chapter_pattern) -> list:
+        """本页的章节边界 [(char_pos, top_y, title), ...]（按字符位置升序）。
+
+        书签优先：用 PDF 目录里属于本页、且为"章/节"级别的标题，按行首字符位置定位；
+        书签本页一个都没命中（或无书签）时回退到页面正则。目录页不作为边界。
+        top_y 仅用于把图/表按垂直位置归到正确的节。
+        """
+        pt = text.strip()
+        if not pt or DocumentParserTool._looks_like_outline_page(pt):
+            return []
+        cuts = []
+        if toc_entries:
+            for entry in toc_entries:
+                if entry.get("page") != page_num:
+                    continue
+                if not DocumentParserTool._is_section_level_title(entry.get("title", "")):
+                    continue
+                pos = DocumentParserTool._heading_pos(pt, entry)
+                if pos < 0:
+                    continue
+                cuts.append((pos, DocumentParserTool._heading_top(text_blocks, entry.get("title", "")),
+                             entry.get("title", "").strip()))
+        if not cuts:
+            for m in chapter_pattern.finditer(pt):
+                title = m.group().strip()
+                if not DocumentParserTool._is_section_level_title(title):
+                    continue
+                cuts.append((m.start(), DocumentParserTool._heading_top(text_blocks, title), title))
+        cuts.sort(key=lambda c: c[0])
+        return cuts
+
     @staticmethod
     def _group_into_sections(pages_data: list, toc_entries: list | None = None) -> list:
-        """Group cleaned layout-aware page content into sections."""
+        """将逐页内容按章节边界分组。
+
+        边界按"位置"切分（书签优先、正则兜底）：一页内标题**之前**的内容归上一节、
+        标题**及其之后**归新节，避免历史上"整页塞进新节"导致的标题与正文错位一格。
+        """
         repeated_noise = DocumentParserTool._repeated_margin_texts(pages_data)
         chapter_pattern = re.compile(
             r'(第[一二三四五六七八九十\d]+章|第[一二三四五六七八九十\d]+节|^\s*\d+(?:\.\d+)+\s+[^\n]+)',
@@ -909,15 +982,14 @@ class DocumentParserTool(BaseTool):
         )
 
         sections = []
-        current_section = {
-            "section_title": "前言",
-            "page_range": "",
-            "text_chunks": [],
-            "images": [],
-            "tables": [],
-            "_start_page": pages_data[0]["page"] if pages_data else 1,
-        }
-        sections.append(current_section)
+
+        def _new_section(title: str) -> dict:
+            sec = {"section_title": title, "page_range": "",
+                   "text_chunks": [], "images": [], "tables": []}
+            sections.append(sec)
+            return sec
+
+        current_section = _new_section("前言")
 
         for page_data in pages_data:
             page_num = page_data["page"]
@@ -926,47 +998,80 @@ class DocumentParserTool(BaseTool):
             page_view["_valid_tables"] = valid_tables
             page_view["tables"] = valid_tables
             text = DocumentParserTool._layout_text_for_page(page_view, repeated_noise)
-            match = chapter_pattern.search(text)
-            if match and (current_section["text_chunks"] or current_section["images"] or current_section["tables"]):
-                current_section["page_range"] = f"{current_section['_start_page']}-{page_num - 1}"
-                current_section = {
-                    "section_title": match.group().strip(),
-                    "page_range": "",
-                    "text_chunks": [],
-                    "images": [],
-                    "tables": [],
-                    "_start_page": page_num,
-                }
-                sections.append(current_section)
-            elif match and current_section["section_title"] == "前言":
-                current_section["section_title"] = match.group().strip()
-                current_section["_start_page"] = page_num
+            text_blocks = page_view.get("text_blocks") or []
 
-            if text.strip():
-                page_chunks = DocumentParserTool._split_page_text(text, page_num)
+            cuts = DocumentParserTool._page_section_cuts(
+                text, text_blocks, page_num, toc_entries, chapter_pattern)
+
+            # 本页 text chunk：先取字符偏移再标 toc_path（_assign_toc_paths 会 pop _off）
+            page_chunks = DocumentParserTool._split_page_text(text, page_num) if text.strip() else []
+            chunk_offs = [int(c.get("_off", 0) or 0) for c in page_chunks]
+            if page_chunks:
                 DocumentParserTool._assign_toc_paths(text, page_chunks, page_num, toc_entries)
-                current_section["text_chunks"].extend(page_chunks)
-            current_section["images"].extend(page_data.get("images") or [])
+
+            # 本页图片
+            page_images = list(page_data.get("images") or [])
+            # 本页表格（构建 entry，保留 bbox 以便按位置归属）
+            page_tables = []
             for table in valid_tables:
                 if isinstance(table, dict):
-                    table_entry = {
-                        "page": page_num,
-                        "caption": table.get("caption") or f"第{page_num}页表格",
-                        "rows": table.get("rows") or [],
-                    }
+                    entry = {"page": page_num,
+                             "caption": table.get("caption") or f"第{page_num}页表格",
+                             "rows": table.get("rows") or []}
                     if table.get("bbox"):
-                        table_entry["bbox"] = table["bbox"]
+                        entry["bbox"] = table["bbox"]
                 else:
-                    table_entry = {"page": page_num, "caption": f"第{page_num}页表格", "rows": table}
-                if table_entry.get("rows"):
-                    current_section["tables"].append(table_entry)
+                    entry = {"page": page_num, "caption": f"第{page_num}页表格", "rows": table}
+                if entry.get("rows"):
+                    page_tables.append(entry)
 
-        if sections:
-            last_page = pages_data[-1]["page"] if pages_data else 1
-            for section in sections:
-                if not section["page_range"]:
-                    section["page_range"] = f"{section.get('_start_page', 1)}-{last_page}"
-                section.pop("_start_page", None)
+            if not cuts:
+                current_section["text_chunks"].extend(page_chunks)
+                current_section["images"].extend(page_images)
+                current_section["tables"].extend(page_tables)
+                continue
+
+            # 有边界：seg[0]=边界前(归当前节)，seg[i+1]=第 i 个标题起的新节
+            seg_sections = [current_section] + [_new_section(c[2]) for c in cuts]
+
+            def _seg_by_char(off: int) -> int:
+                idx = 0
+                for i, (pos, _t, _ti) in enumerate(cuts):
+                    if off >= pos:
+                        idx = i + 1
+                    else:
+                        break
+                return idx
+
+            def _seg_by_top(top) -> int:
+                if top is None:
+                    return 0
+                idx = 0
+                for i, (_pos, ctop, _ti) in enumerate(cuts):
+                    if ctop is None:
+                        continue
+                    if top >= ctop:
+                        idx = i + 1
+                    else:
+                        break
+                return idx
+
+            for chunk, off in zip(page_chunks, chunk_offs):
+                seg_sections[_seg_by_char(off)]["text_chunks"].append(chunk)
+            for img in page_images:
+                seg_sections[_seg_by_top(DocumentParserTool._elem_top(img))]["images"].append(img)
+            for tbl in page_tables:
+                seg_sections[_seg_by_top(DocumentParserTool._elem_top(tbl))]["tables"].append(tbl)
+
+            current_section = seg_sections[-1]
+
+        # 页码范围按落入该节的元素页码计算（比脆弱的 _start_page 推算更准）
+        for section in sections:
+            pages = [c.get("page") for c in section["text_chunks"] if c.get("page")]
+            pages += [im.get("page") for im in section["images"] if im.get("page")]
+            pages += [t.get("page") for t in section["tables"] if t.get("page")]
+            if pages:
+                section["page_range"] = f"{min(pages)}-{max(pages)}"
 
         return [section for section in sections if section["text_chunks"] or section["images"] or section["tables"]]
 

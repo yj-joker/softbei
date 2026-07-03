@@ -155,6 +155,10 @@ class ChatResponse(BaseResponse):
         serialization_alias="diagnosisItems",
         description="结构化诊断排查项，供前端渲染表格",
     )
+    metadata: dict = Field(
+        default_factory=dict,
+        description="Agent execution metadata including react_trace for debugging and evidence extraction",
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
