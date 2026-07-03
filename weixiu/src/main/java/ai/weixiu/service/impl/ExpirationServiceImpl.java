@@ -94,10 +94,6 @@ public class ExpirationServiceImpl implements ExpirationService {
     @Override
     public void markDeprecated(String nodeId, String nodeType, List<String> replacedByIds, String reason, String deprecatedBy) {
         try {
-            String replacedByIdsStr = replacedByIds != null && !replacedByIds.isEmpty()
-                    ? String.join(", ", replacedByIds)
-                    : "";
-
             neo4jClient.query(
                     "MATCH (n) WHERE n.id = $id " +
                     "SET n.status = 'deprecated', " +
@@ -107,7 +103,7 @@ public class ExpirationServiceImpl implements ExpirationService {
                     "RETURN n.id AS id"
             ).bind(nodeId).to("id")
              .bind(deprecatedBy != null ? deprecatedBy : "auto").to("deprecatedBy")
-             .bind(replacedByIdsStr).to("replacedBy")
+             .bind(replacedByIds != null ? replacedByIds : List.of()).to("replacedBy")
              .run();
 
             log.info("[过期判定] 节点标记过期: type={} id={} reason={}", nodeType, nodeId,
