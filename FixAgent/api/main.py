@@ -4,7 +4,7 @@ import os
 import time
 from functools import partial
 from typing import List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -1236,7 +1236,7 @@ async def multimodal_embedding(req: MultimodalEmbeddingRequest):
 async def global_exception_handler(request, exc):
     return JSONResponse(
         status_code=500,
-        content=get_base_response(
+        content=BaseResponse(
             success=False,
             message=str(exc),
             code=500
@@ -1269,7 +1269,7 @@ async def check_task_promotion_expiration(request: Request):
         device_name, new_fault_ids, new_sol_ids
     )
 
-    return get_base_response(success=True, data=result)
+    return BaseResponse(success=True, data=result).model_dump()
 
 
 @app.post("/ai/expiration/check-manual-upgrade")
@@ -1295,4 +1295,4 @@ async def check_manual_upgrade_expiration(request: Request):
         manual_id, new_document_id, manual_name
     )
 
-    return get_base_response(success=True, data=result)
+    return BaseResponse(success=True, data=result).model_dump()
