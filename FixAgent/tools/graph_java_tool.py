@@ -229,9 +229,11 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                     title = sol.get("title") or "暂无标题"
                     est_time = sol.get("estimatedTime")
                     verified = sol.get("verified")
+                    status = sol.get("status", "active")
                     time_str = f"{est_time}分钟" if est_time else "未知"
                     verified_str = "已验证" if verified else "⚠未验证(手册推断)"
-                    lines.append(f"   方案{j + 1}：{title}（{time_str}，{verified_str}）")
+                    deprecated_suffix = " [已过期]" if status == "deprecated" else ""
+                    lines.append(f"   方案{j + 1}：{title}（{time_str}，{verified_str}）{deprecated_suffix}")
             else:
                 # 兼容旧字段
                 sol_title = path.get("solutionTitle") or "暂无解决方案"

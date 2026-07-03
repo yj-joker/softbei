@@ -193,7 +193,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             params.put("faultIds", faultIds);
         }
 
-        String whereClause = String.join(" OR ", orConditions);
+        String whereClause = "(" + String.join(" OR ", orConditions) + ")"
+                + " AND (NOT EXISTS(f.status) OR f.status <> 'deprecated')";
 
         // 确保评分参数存在（即使为空列表）
         params.putIfAbsent("componentIds", List.of());
@@ -218,12 +219,14 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 WITH path.d AS d, path.c AS c, path.f AS f,
                      path.hasHistory AS hasHistory, path.matchScore AS matchScore, total
                 OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
+                WHERE (NOT EXISTS(s.status) OR s.status <> 'deprecated')
                 WITH d, c, f, hasHistory, matchScore, total,
                      collect(DISTINCT {
                          id: s.id,
                          title: s.title,
                          estimatedTime: s.estimated_time,
-                         verified: s.verified
+                         verified: s.verified,
+                         status: coalesce(s.status, 'active')
                      }) AS solutions
                 RETURN d.id AS deviceId,
                        d.name AS deviceName,
@@ -278,7 +281,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                         id.toString(),
                         map.get("title") != null ? map.get("title").toString() : null,
                         map.get("estimatedTime") != null ? ((Number) map.get("estimatedTime")).intValue() : null,
-                        map.get("verified") != null ? (Boolean) map.get("verified") : null
+                        map.get("verified") != null ? (Boolean) map.get("verified") : null,
+                        map.get("status") != null ? map.get("status").toString() : "active"
                 ));
             }
         }

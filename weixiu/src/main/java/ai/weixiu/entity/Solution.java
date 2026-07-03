@@ -58,6 +58,20 @@ public class Solution {
     @Property("multimodal_embedding")
     private List<Double> multimodalEmbedding;
 
+    // ===== 知识过期字段 =====
+    @Property("status")
+    @Builder.Default
+    private String status = "active";  // "active" | "deprecated" | "review"
+
+    @Property("deprecated_at")
+    private LocalDateTime deprecatedAt;  // 标记过期的时刻
+
+    @Property("deprecated_by")
+    private String deprecatedBy;  // "auto" | "admin"
+
+    @Property("replaced_by_ids")
+    private List<String> replacedByIds;  // 替代它的新方案 ID 列表
+
     // 关系 适用于哪些故障（多对多，反向声明，故障端是 OUTGOING）
     // Solution 这边是 INCOMING：故障 --[HAS_SOLUTION]--> 解决方案
 //    @Relationship(type = "HAS_SOLUTION", direction = Relationship.Direction.INCOMING)

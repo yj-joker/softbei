@@ -1236,9 +1236,63 @@ async def multimodal_embedding(req: MultimodalEmbeddingRequest):
 async def global_exception_handler(request, exc):
     return JSONResponse(
         status_code=500,
-        content=BaseResponse(
+        content=get_base_response(
             success=False,
             message=str(exc),
             code=500
-        ).model_dump()
+        )
     )
+
+
+# ==================== 知识过期判定 ====================
+
+@app.post("/ai/expiration/check-task-promotion")
+async def check_task_promotion_expiration(request: Request):
+    """任务沉淀到图谱后触发过期判定（内部接口）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+
+    device_name = (body.get("device_name") or "").strip()
+    new_fault_ids = body.get("new_fault_ids") or []
+    new_sol_ids = body.get("new_sol_ids") or []
+
+    if not device_name:
+        raise HTTPException(status_code=400, detail="device_name required")
+
+    logger.info("[过期判定API] 任务沉淀触发: device=%s, faults=%d, solutions=%d",
+                device_name, len(new_fault_ids), len(new_sol_ids))
+
+    from services.knowledge.expiration import get_expiration_service
+    result = await get_expiration_service().check_new_knowledge(
+        device_name, new_fault_ids, new_sol_ids
+    )
+
+    return get_base_response(success=True, data=result)
+
+
+@app.post("/ai/expiration/check-manual-upgrade")
+async def check_manual_upgrade_expiration(request: Request):
+    """手册更新后触发过期判定（内部接口）。"""
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+
+    manual_id = body.get("manual_id", 0)
+    new_document_id = (body.get("new_document_id") or "").strip()
+    manual_name = (body.get("manual_name") or "").strip()
+
+    if not new_document_id:
+        raise HTTPException(status_code=400, detail="new_document_id required")
+
+    logger.info("[过期判定API] 手册更新触发: manualId=%s, documentId=%s, name=%s",
+                manual_id, new_document_id, manual_name)
+
+    from services.knowledge.expiration import get_expiration_service
+    result = await get_expiration_service().check_manual_upgrade(
+        manual_id, new_document_id, manual_name
+    )
+
+    return get_base_response(success=True, data=result)

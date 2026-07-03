@@ -23,6 +23,7 @@ import ai.weixiu.pojo.vo.TaskStepRecordVO;
 import ai.weixiu.service.MaintenanceTaskService;
 import ai.weixiu.service.MemoryPreferenceService;
 import ai.weixiu.service.MioIOUpLoadService;
+import ai.weixiu.service.ExpirationService;
 import ai.weixiu.utils.MultimodalEmbeddingUtils;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
@@ -46,6 +47,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 @Service
@@ -68,6 +70,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     private final MemoryPreferenceService memoryPreferenceService;
     private final MultimodalEmbeddingUtils multimodalEmbeddingUtils;
     private final WebClient webClient;
+    private final ExpirationService expirationService;
 
     @Value("${weixiu.task-validate.enabled:true}")
     private boolean validateEnabled;
@@ -595,6 +598,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         Long procedureId = (graphData.get("procedureId") instanceof Number)
                 ? ((Number) graphData.get("procedureId")).longValue() : null;
 
+        List<String> newSolIdList = new ArrayList<>();
         for (Map<String, Object> sol : solutions) {
             String solTitle = (String) sol.get("title");
             if (solTitle == null || solTitle.isBlank()) continue;
@@ -602,6 +606,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             String relatedFault = (String) sol.get("relatedFault");
 
             String solId = createSolutionNode(solTitle, summary, procedureId, taskId);
+            newSolIdList.add(solId);
 
             // 关联 Fault → Solution (HAS_SOLUTION)
             String faultId = faultIdMap.get(relatedFault);
@@ -613,6 +618,18 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         // 标记已沉淀
         task.setPromotedGraph("PROMOTED");
         taskMapper.updateById(task);
+
+        // 异步触发知识过期判定（不阻塞主流程）
+        final String finalDeviceName = deviceName;
+        final List<String> finalFaultIds = new ArrayList<>(faultIdMap.values());
+        final List<String> finalSolIds = newSolIdList;
+        CompletableFuture.runAsync(() -> {
+            try {
+                expirationService.checkNewKnowledgeAsync(finalDeviceName, finalFaultIds, finalSolIds);
+            } catch (Exception e) {
+                log.warn("[知识沉淀] 过期判定触发失败（非阻塞）: taskId={}, err={}", taskId, e.getMessage());
+            }
+        });
 
         log.info("[知识沉淀] 任务沉淀到图谱完成 taskId={} 设备={} 部件数={} 故障数={} 方案数={}",
                 taskId, deviceName, components.size(), faults.size(), solutions.size());

@@ -11,6 +11,7 @@ import ai.weixiu.mapper.MaintenanceManualMapper;
 import ai.weixiu.mq.KnowledgeImportProducer;
 import ai.weixiu.service.KnowledgeDocumentService;
 import ai.weixiu.service.MioIOUpLoadService;
+import ai.weixiu.service.ExpirationService;
 import ai.weixiu.utils.BaseContext;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.IdWorker;
@@ -55,6 +56,7 @@ public class KnowledgeDocumentServiceImpl
     private final MioIOUpLoadService mioIOUpLoadService;
     private final KnowledgeImportProducer knowledgeImportProducer;
     private final RedissonClient redissonClient;
+    private final ExpirationService expirationService;
 
     @Override
     @Transactional
@@ -234,6 +236,14 @@ public class KnowledgeDocumentServiceImpl
                                 } catch (Exception e) {
                                     log.warn("删除旧版本 MinIO 文件失败: {}", finalOldMinioObjectName, e);
                                 }
+                            }
+                            // 触发图谱知识过期判定（手动切换 active 后，检查旧手册派生的知识是否过期）
+                            try {
+                                expirationService.checkManualUpgradeAsync(
+                                        doc.getManualId(), documentId, manual.getManualName());
+                            } catch (Exception e) {
+                                log.warn("触发图谱过期判定失败（非阻塞）: manualId={}, err={}",
+                                        doc.getManualId(), e.getMessage());
                             }
                         }
                     });
