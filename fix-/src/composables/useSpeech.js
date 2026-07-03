@@ -22,20 +22,8 @@ import { synthesizeSpeech } from '@/api/tts'
  * 对外 API（speak/stop/isSpeaking/isLoading/onEnded 语义）保持不变：onEnded 在「最后一句也播完」时才触发。
  */
 
-// 自动朗读偏好（AI 回复生成完自动念），持久化到 localStorage，默认开
-const AUTO_READ_KEY = 'wx_tts_auto_read'
-function loadAutoRead() {
-  try { return localStorage.getItem(AUTO_READ_KEY) !== '0' } catch (e) { return true }
-}
-
 // —— 模块级单例：跨组件共享同一个播放器与状态 ——
-const state = reactive({ speakingId: null, loadingId: null, autoRead: loadAutoRead() })
-
-/** 开/关「自动朗读」并持久化。 */
-function setAutoRead(v) {
-  state.autoRead = !!v
-  try { localStorage.setItem(AUTO_READ_KEY, v ? '1' : '0') } catch (e) { /* ignore */ }
-}
+const state = reactive({ speakingId: null, loadingId: null })
 
 let audio = null
 let objectUrl = null
@@ -219,7 +207,6 @@ export function useSpeech() {
     state,
     speak,
     stop,
-    setAutoRead,
     isSpeaking: (id) => state.speakingId === id,
     isLoading: (id) => state.loadingId === id,
   }

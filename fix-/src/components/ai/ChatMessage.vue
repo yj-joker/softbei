@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 import { ChatDotRound, CopyDocument, DataAnalysis, Loading, Right, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { useSpeech } from '@/composables/useSpeech'
 
@@ -12,7 +12,7 @@ const props = defineProps({
 const emit = defineEmits(['open-agent'])
 
 // 语音朗读：全局单例播放器，按 message.id 标识当前是否在播/在加载本条
-const { state: speechState, speak, isSpeaking, isLoading } = useSpeech()
+const { speak, isSpeaking, isLoading } = useSpeech()
 const speaking = computed(() => isSpeaking(props.message.id))
 const loadingSpeech = computed(() => isLoading(props.message.id))
 
@@ -37,7 +37,7 @@ function diagnosisToText(items) {
     .join('\n\n')
 }
 
-// 正文：开头文字 + 诊断纯文本。显示/复制/朗读/自动朗读统一用它（单一来源）
+// 正文：开头文字 + 诊断纯文本。显示/复制/朗读统一用它（单一来源）
 const bodyText = computed(() => {
   const parts = []
   if (props.message.content) parts.push(props.message.content)
@@ -49,15 +49,6 @@ function toggleSpeak() {
   speak(props.message.id, bodyText.value)
 }
 
-// 自动朗读：仅在本条「生成中 → 完成」的瞬间触发一次（历史消息加载时状态已是 done，不会误触）
-watch(
-  () => props.message.status,
-  (now, prev) => {
-    if (prev === 'streaming' && now === 'done' && !isUser.value && speechState.autoRead && bodyText.value) {
-      speak(props.message.id, bodyText.value)
-    }
-  },
-)
 const messageImageUrls = computed(() =>
   (props.message.images || []).filter((image) => typeof image === 'string' && image),
 )

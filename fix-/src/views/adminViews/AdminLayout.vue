@@ -4,6 +4,7 @@ import { useRouter, useRoute } from 'vue-router'
 import RunningTasksTray from '@/components/RunningTasksTray.vue'
 import ThemeSwitcher from '@/components/ThemeSwitcher.vue'
 import { notifyStore } from '@/stores/notifyStore'
+import { useSpeech } from '@/composables/useSpeech'
 import { enterShell, enterMain } from '@/utils/motion'
 import {
   House,
@@ -17,6 +18,7 @@ import {
 
 const router = useRouter()
 const route = useRoute()
+const { stop: stopSpeech } = useSpeech()
 
 // 登录后建立 WebSocket 通知连接 + 恢复后台任务对账
 onMounted(() => notifyStore.init())
@@ -74,6 +76,7 @@ function goToHome() {
 }
 
 function goToLogin() {
+  stopSpeech()
   notifyStore.stop() // 断开 WS，避免登出后无限重连握手失败
   localStorage.removeItem('userInfo')
   router.push('/login')

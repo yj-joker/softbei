@@ -61,14 +61,17 @@
 
 <script setup>
 import { useRouter } from 'vue-router'
+import { useSpeech } from '@/composables/useSpeech'
 
 const router = useRouter()
+const { stop: stopSpeech } = useSpeech()
 
 const goTo = (path) => {
   router.push(path)
 }
 
 const handleLogout = () => {
+  stopSpeech()
   router.push('/login')
 }
 </script>
