@@ -72,6 +72,12 @@ public class WebExceptionHandler {
         return Result.error("409", e.getMessage());
     }
 
+    @ExceptionHandler(DomainRuleSyncException.class)
+    public Result handler(DomainRuleSyncException e) {
+        log.warn(e.getMessage());
+        return Result.error("502", e.getMessage());
+    }
+
     @ExceptionHandler(Exception.class)
     public Result handleException(Exception e) {
         log.error("Unhandled server exception", e);

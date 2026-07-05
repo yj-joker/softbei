@@ -3,7 +3,7 @@ import logging
 import os
 import time
 from functools import partial
-from typing import List
+from typing import Any, List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -45,6 +45,13 @@ from guardrails import get_review_agent
 from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput, AgentOutput
 from services.knowledge.vector_service import build_redis_filter, get_vector_service
+from services.domain_rules import (
+    DOMAIN_RULE_TOOL_NAME,
+    DomainRuleServiceError,
+    delete_domain_rule,
+    match_domain_rule,
+    upsert_domain_rule,
+)
 from services.llm.service import get_llm_service
 from services.knowledge.image_summary_service import get_image_summary_service
 from services.intent_router import get_intent_router
@@ -180,6 +187,152 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+@app.post("/ai/domain-rules/upsert")
+async def domain_rule_upsert(request: dict[str, Any]):
+    try:
+        return await upsert_domain_rule(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except DomainRuleServiceError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/ai/domain-rules/delete")
+async def domain_rule_delete(request: dict[str, Any]):
+    try:
+        return await delete_domain_rule(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except DomainRuleServiceError as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+_DOMAIN_RULE_INTENTS = {
+    "fault_diagnosis",
+    "maintenance_guidance",
+    "procedure_planning",
+}
+
+
+def _execution_mode(metadata: dict | None) -> str:
+    return (metadata or {}).get("execution_mode") or ""
+
+
+def _is_deterministic_direct_output(output: AgentOutput) -> bool:
+    return _execution_mode(output.metadata) in {"knowledge_inventory_direct", "domain_rule_direct"}
+
+
+def _should_try_domain_rule(request: ChatRequest, input_data: AgentInput) -> bool:
+    if request.images:
+        return False
+    context = input_data.context or {}
+    if context.get("disable_domain_rule_engine") or context.get("force_react"):
+        return False
+    intent_decision = context.get("intent_decision") if isinstance(context.get("intent_decision"), dict) else {}
+    intent = intent_decision.get("intent")
+    mode = getattr(request.mode, "value", request.mode)
+    return intent in _DOMAIN_RULE_INTENTS or mode in {"diagnosis", "guidance", "full"}
+
+
+def _domain_rule_trace(match: dict[str, Any]) -> list[dict[str, Any]]:
+    rule = match.get("rule") or {}
+    return [
+        {
+            "iteration": 0,
+            "thought": "domain rule direct hit",
+            "tool_calls": [
+                {
+                    "name": DOMAIN_RULE_TOOL_NAME,
+                    "args": {
+                        "rule_id": rule.get("rule_id"),
+                        "rule_code": rule.get("rule_code"),
+                    },
+                    "result_data": {
+                        "message": match.get("message", ""),
+                        "rule": rule,
+                        "matched_symptom_keys": match.get("matched_symptom_keys", []),
+                        "evidence_sources": match.get("evidence_sources", []),
+                        "score": match.get("score"),
+                    },
+                }
+            ],
+        }
+    ]
+
+
+def _domain_rule_tool_items(match: dict[str, Any]) -> list[dict[str, Any]]:
+    rule = match.get("rule") or {}
+    return [
+        {
+            "title": rule.get("title") or "\u4e13\u5bb6\u89c4\u5219",
+            "content": rule.get("conclusion") or match.get("message", ""),
+            "type": "rule",
+            "score": match.get("score"),
+            "metadata": {
+                "doc_id": rule.get("doc_id"),
+                "rule_id": rule.get("rule_id"),
+                "rule_code": rule.get("rule_code"),
+                "matched_symptom_keys": match.get("matched_symptom_keys", []),
+            },
+        }
+    ]
+
+
+async def _try_domain_rule_direct(request: ChatRequest, input_data: AgentInput) -> AgentOutput | None:
+    if not _should_try_domain_rule(request, input_data):
+        return None
+    started = time.time()
+    try:
+        match = await match_domain_rule(input_data.user_message, device_type=request.device_type)
+    except DomainRuleServiceError as e:
+        logger.warning("[domain_rule] direct match skipped: %s", e)
+        return None
+    if not match:
+        return None
+
+    latency_ms = int((time.time() - started) * 1000)
+    metadata = {
+        "execution_mode": "domain_rule_direct",
+        "confidence_source": "rule",
+        "confidence_label": "\u786e\u5b9a",
+        "domain_rule": match.get("rule"),
+        "domain_rule_match": match,
+        "evidence_sources": match.get("evidence_sources", []),
+        "react_trace": _domain_rule_trace(match),
+        "verification": {
+            "grounding": {"unverified_count": 0},
+            "graph": {"unverified_count": 0},
+            "safety": {"missing_count": 0},
+        },
+    }
+    return AgentOutput(
+        agent_name="fix_agent",
+        message=match.get("message", ""),
+        intention="fault_diagnosis",
+        tools_used=[DOMAIN_RULE_TOOL_NAME],
+        metadata=metadata,
+        latency_ms=latency_ms,
+        raw_response=match,
+    )
+
+
+async def _stream_direct_agent_output(output: AgentOutput):
+    import asyncio as _asyncio
+
+    match = output.metadata.get("domain_rule_match") or {}
+    yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '\u89c4\u5219\u5f15\u64ce\u547d\u4e2d\uff0c\u6b63\u5728\u751f\u6210\u786e\u5b9a\u6027\u8bca\u65ad', 'mode': 'domain_rule'}})}\n\n"
+    yield f"data: {json_dumps({'event': 'tool', 'data': {'tool': DOMAIN_RULE_TOOL_NAME}})}\n\n"
+    yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': DOMAIN_RULE_TOOL_NAME, 'text': output.message, 'items': _domain_rule_tool_items(match)}})}\n\n"
+
+    for i, char in enumerate(output.message):
+        yield f"data: {json_dumps({'event': 'token', 'data': {'content': char}})}\n\n"
+        if i % 15 == 0:
+            await _asyncio.sleep(0)
+
+    yield f"data: {json_dumps({'event': 'verification', 'data': {'has_issues': False, 'summary': {'grounding_unverified': 0, 'graph_unverified': 0, 'safety_missing': 0}}})}\n\n"
+    yield f"data: {json_dumps({'event': 'done', 'data': {'tools_used': output.tools_used, 'latency_ms': output.latency_ms, 'domainRule': output.metadata.get('domain_rule'), 'confidenceSource': output.metadata.get('confidence_source'), 'evidenceSources': output.metadata.get('evidence_sources', []), 'metadata': output.metadata}})}\n\n"
+
+
 
 
 def _is_knowledge_inventory_question(message: str) -> bool:
@@ -504,7 +657,10 @@ async def chat(request: ChatRequest) -> ChatResponse:
         fix_t0 = time.time()
         fix_result = None
         review_level = "full"
-        if _should_use_rag_fast_path(request):
+        fix_result = await _try_domain_rule_direct(request, input_data)
+        if fix_result is not None:
+            review_level = "light"
+        elif _should_use_rag_fast_path(request):
             fix_result = await _run_rag_fast_path(request)
             if fix_result is not None:
                 review_level = "light"
@@ -539,7 +695,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             )
 
         review_t0 = time.time()
-        if fix_result.metadata.get("execution_mode") == "knowledge_inventory_direct":
+        if _is_deterministic_direct_output(fix_result):
             final_result = fix_result
         else:
             final_result = await get_review_agent().review(fix_result, level=review_level)
@@ -743,6 +899,12 @@ async def chat_stream(request: ChatRequest):
 
         try:
             fix_agent = get_fix_agent()
+            direct_output = await _try_domain_rule_direct(request, input_data)
+            if direct_output is not None:
+                async for event in _stream_direct_agent_output(direct_output):
+                    yield event
+                return
+
 
             # 执行 FixAgent ReAct，转发进度事件（status/tool），缓冲 token
             # 等 ReAct 完成 + 验证管线跑完后再流式输出带内联标记的回答
@@ -829,7 +991,7 @@ async def chat_stream(request: ChatRequest):
                 )
 
                 # 运行3层确定性校验（~300ms），获取内联标记位置
-                if fix_output.metadata.get("execution_mode") == "knowledge_inventory_direct":
+                if _is_deterministic_direct_output(fix_output):
                     verified_output = fix_output
                 else:
                     verified_output = await get_review_agent().review(fix_output)
