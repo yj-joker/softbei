@@ -75,7 +75,7 @@ const routes = [
       {
         path: 'domain-rules',
         name: 'AdminDomainRules',
-        component: () => import('../views/adminViews/AdminDomainRules.vue')
+        redirect: { path: '/admin/knowledge-center', query: { tab: 'domain-rules' } }
       },
       {
         path: 'settings',

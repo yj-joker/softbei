@@ -18,6 +18,13 @@ function expectIncludes(file, text) {
   }
 }
 
+function expectNotIncludes(file, text) {
+  const content = read(file)
+  if (content.includes(text)) {
+    throw new Error(`${file} should not include ${text}`)
+  }
+}
+
 const apiExports = [
   'getDomainRulePage',
   'getDomainRuleDetail',
@@ -37,8 +44,12 @@ for (const name of apiExports) {
 expectIncludes('src/api/domainRule.js', "const PREFIX = '/weixiu/domain-rule'")
 expectIncludes('src/api/domainRule.js', '`${PREFIX}/page`')
 expectIncludes('src/router/index.js', 'AdminDomainRules')
-expectIncludes('src/router/index.js', 'AdminDomainRules.vue')
-expectIncludes('src/views/adminViews/AdminLayout.vue', '/admin/domain-rules')
+expectIncludes('src/router/index.js', "tab: 'domain-rules'")
+expectNotIncludes('src/router/index.js', "component: () => import('../views/adminViews/AdminDomainRules.vue')")
+expectNotIncludes('src/views/adminViews/AdminLayout.vue', '/admin/domain-rules')
+expectIncludes('src/views/adminViews/AdminKnowledgeCenter.vue', "import AdminDomainRules from './AdminDomainRules.vue'")
+expectIncludes('src/views/adminViews/AdminKnowledgeCenter.vue', "name: 'domain-rules'")
+expectIncludes('src/views/adminViews/AdminKnowledgeCenter.vue', 'component: AdminDomainRules')
 expectIncludes('src/views/adminViews/AdminDomainRules.vue', '诊断规则')
 expectIncludes('src/views/adminViews/AdminDomainRules.vue', 'rule-form-dialog')
 expectIncludes('src/views/adminViews/AdminDomainRules.vue', 'submitDomainRule')
