@@ -470,11 +470,11 @@ CREATE TABLE IF NOT EXISTS `domain_rule` (
     `sync_status`        VARCHAR(20)  NOT NULL DEFAULT 'not_synced' COMMENT 'not_synced/syncing/synced/failed',
     `sync_error`         TEXT         NULL COMMENT 'last sync error',
     PRIMARY KEY (`id`),
-    UNIQUE KEY `uk_rule_code` (`rule_code`),
-    KEY `idx_status` (`status`),
-    KEY `idx_sync_status` (`sync_status`),
-    KEY `idx_device_type` (`device_type`),
-    KEY `idx_created_at` (`created_at`)
+    UNIQUE KEY `uk_domain_rule_code` (`rule_code`),
+    KEY `idx_domain_rule_status` (`status`),
+    KEY `idx_domain_rule_sync_status` (`sync_status`),
+    KEY `idx_domain_rule_device_type` (`device_type`),
+    KEY `idx_domain_rule_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='domain diagnostic rule';
 
 CREATE TABLE IF NOT EXISTS `memory_dedup_state` (
