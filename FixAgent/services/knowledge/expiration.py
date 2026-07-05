@@ -188,7 +188,12 @@ class ExpirationService:
             )
 
             # 6. 写回 Neo4j + 审核队列
-            result = await self._apply_verdicts_and_queue(verdicts)
+            result = await self._apply_verdicts_and_queue(
+                verdicts,
+                trigger_type="task_promotion",
+                device_name=device_name,
+                new_nodes=new_nodes,
+            )
 
             logger.info("[过期判定] 完成: %d 个判决, REPLACE=%d, SUPPLEMENT=%d, UNRELATED=%d, REVIEW=%d",
                         len(verdicts),
@@ -269,7 +274,12 @@ class ExpirationService:
             )
 
             # 6. 写回 + 审核队列
-            result = await self._apply_verdicts_and_queue(verdicts)
+            result = await self._apply_verdicts_and_queue(
+                verdicts,
+                trigger_type="manual_upgrade",
+                device_name=device_type,
+                new_nodes=new_summary,
+            )
 
             logger.info("[过期判定-手册] 完成: %d 个判决", len(verdicts))
 
@@ -599,6 +609,9 @@ class ExpirationService:
     async def _apply_verdicts_and_queue(
         self,
         verdicts: List[Dict[str, Any]],
+        trigger_type: str = "task_promotion",
+        device_name: str = "",
+        new_nodes: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """将 LLM 判决结果写回 Neo4j 标记过期 + 低置信度入审核队列"""
         review_queue = []
@@ -617,8 +630,27 @@ class ExpirationService:
                         "deprecated_by": "auto",
                     })
                 elif v.get("need_review"):
-                    # 低置信度或无法判定 → 入审核队列
-                    review_queue.append(v)
+                    # 低置信度或无法判定 → 入审核队列，补充新知识摘要
+                    enriched = dict(v)
+                    enriched["trigger_type"] = trigger_type
+                    enriched["device_name"] = device_name
+
+                    # 从 new_nodes 中提取新知识摘要
+                    if new_nodes:
+                        if new_nodes.get("type") == "manual":
+                            enriched["new_fault_name"] = ""
+                            enriched["new_solution_title"] = new_nodes.get("file_name", "")
+                            enriched["new_solution_summary"] = new_nodes.get("description", "")
+                        else:
+                            faults = new_nodes.get("faults", [])
+                            solutions = new_nodes.get("solutions", [])
+                            if faults:
+                                enriched["new_fault_name"] = faults[0].get("name", "")
+                            if solutions:
+                                enriched["new_solution_title"] = solutions[0].get("title", "")
+                                enriched["new_solution_summary"] = solutions[0].get("description", "")
+
+                    review_queue.append(enriched)
 
             if payload["verdicts"]:
                 async with httpx.AsyncClient(timeout=10.0) as client:

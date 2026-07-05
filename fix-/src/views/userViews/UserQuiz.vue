@@ -339,7 +339,7 @@ watch(generating, (g) => {
         <div class="mode-card js-card" :class="{ busy: generating }">
           <div class="mc-icon ai js-ai-icon">AI</div>
           <h3>AI 出题</h3>
-          <p>实时按你的画像弱点 + 知识库证据生成可溯源客观题（无源不出题）。</p>
+          <p>实时按你的画像弱点 + 知识库证据生成客观题</p>
           <el-button :loading="generating" round @click="startGenerate">
             {{ generating ? '正在生成题目…' : '来一套题' }}
           </el-button>

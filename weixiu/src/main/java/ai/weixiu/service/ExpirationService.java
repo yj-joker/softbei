@@ -1,5 +1,8 @@
 package ai.weixiu.service;
 
+import ai.weixiu.entity.ExpirationReview;
+import ai.weixiu.pojo.PageResult;
+
 /**
  * 知识图谱过期判定服务
  *
@@ -43,4 +46,29 @@ public interface ExpirationService {
      * @param deprecatedBy    标记者："auto" 或 "admin"
      */
     void markDeprecated(String nodeId, String nodeType, java.util.List<String> replacedByIds, String reason, String deprecatedBy);
+
+    /**
+     * 管理员分页查询过期判定待审列表。
+     *
+     * @param page   页码
+     * @param size   每页条数
+     * @param status 审核状态筛选（null 表示全部）
+     */
+    PageResult<ExpirationReview> listReviews(int page, int size, String status);
+
+    /**
+     * 管理员确认过期：标记旧节点为 deprecated。
+     *
+     * @param reviewId  待审记录 ID
+     * @param adminName 管理员用户名
+     */
+    void approveReview(Long reviewId, String adminName);
+
+    /**
+     * 管理员驳回过期判定：旧知识保持 active。
+     *
+     * @param reviewId  待审记录 ID
+     * @param adminName 管理员用户名
+     */
+    void rejectReview(Long reviewId, String adminName);
 }

@@ -456,3 +456,28 @@ CREATE TABLE IF NOT EXISTS `memory_dedup_state` (
                                                     `last_dedup_at` DATETIME NULL     COMMENT '上次语义去重时间',
                                                     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='记忆语义去重进度';
+
+-- =============================================
+-- 知识过期判定待审表
+-- =============================================
+CREATE TABLE IF NOT EXISTS `expiration_review` (
+    `id`                    BIGINT       PRIMARY KEY COMMENT '雪花ID',
+    `trigger_type`          VARCHAR(20)  NOT NULL COMMENT 'TASK_PROMOTION / MANUAL_UPGRADE',
+    `device_name`           VARCHAR(200) NULL COMMENT '设备名称',
+    `manual_name`           VARCHAR(200) NULL COMMENT '手册名称',
+    `new_fault_name`        VARCHAR(200) NULL COMMENT '新故障名',
+    `new_solution_title`    VARCHAR(200) NULL COMMENT '新方案标题',
+    `new_solution_summary`  TEXT         NULL COMMENT '新方案摘要',
+    `candidate_node_id`     VARCHAR(100) NOT NULL COMMENT '候选旧节点 Neo4j ID',
+    `candidate_fault_name`  VARCHAR(200) NULL COMMENT '旧故障名',
+    `candidate_solution_title` VARCHAR(200) NULL COMMENT '旧方案标题',
+    `verdict`               VARCHAR(30)  NOT NULL COMMENT 'LLM判定: REPLACE/SUPPLEMENT/UNRELATED',
+    `confidence`            DECIMAL(4,3) NULL COMMENT '置信度 0~1',
+    `llm_reason`            TEXT         NULL COMMENT 'LLM判定理由',
+    `review_status`         VARCHAR(20)  DEFAULT 'PENDING' COMMENT 'PENDING/APPROVED/REJECTED',
+    `reviewed_by`           VARCHAR(100) NULL COMMENT '审核人',
+    `reviewed_at`           DATETIME     NULL COMMENT '审核时间',
+    `created_at`            DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`            DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_review_status` (`review_status`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '知识过期判定待审表';

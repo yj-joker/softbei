@@ -1269,7 +1269,12 @@ async def check_task_promotion_expiration(request: Request):
         device_name, new_fault_ids, new_sol_ids
     )
 
-    return BaseResponse(success=True, data=result).model_dump()
+    return {
+        "success": True,
+        "message": "操作成功",
+        "code": 200,
+        "data": result,
+    }
 
 
 @app.post("/ai/expiration/check-manual-upgrade")
@@ -1295,4 +1300,9 @@ async def check_manual_upgrade_expiration(request: Request):
         manual_id, new_document_id, manual_name
     )
 
-    return BaseResponse(success=True, data=result).model_dump()
+    return {
+        "success": True,
+        "message": "操作成功",
+        "code": 200,
+        "data": result,
+    }
