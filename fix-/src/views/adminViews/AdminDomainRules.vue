@@ -51,7 +51,7 @@ const statusTabs = [
 
 const loading = ref(false)
 const rules = ref([])
-const stats = reactive({ draft: 0, pending: 0, active: 0, failed: 0 })
+const stats = reactive({ draft: 0, pending: 0, active: 0, rejected: 0, disabled: 0, failed: 0 })
 const pagination = reactive({ page: 1, size: 10, total: 0 })
 
 const filters = reactive({
@@ -131,15 +131,19 @@ async function loadList(page = 1) {
 
 async function refreshStats() {
   try {
-    const [draftRes, pendingRes, activeRes, allRes] = await Promise.all([
+    const [draftRes, pendingRes, activeRes, rejectedRes, disabledRes, allRes] = await Promise.all([
       getDomainRulePage({ page: 1, size: 1, status: 'draft' }),
       getDomainRulePage({ page: 1, size: 1, status: 'pending' }),
       getDomainRulePage({ page: 1, size: 1, status: 'active' }),
+      getDomainRulePage({ page: 1, size: 1, status: 'rejected' }),
+      getDomainRulePage({ page: 1, size: 1, status: 'disabled' }),
       getDomainRulePage({ page: 1, size: 1000 }),
     ])
     stats.draft = responseTotal(draftRes.data)
     stats.pending = responseTotal(pendingRes.data)
     stats.active = responseTotal(activeRes.data)
+    stats.rejected = responseTotal(rejectedRes.data)
+    stats.disabled = responseTotal(disabledRes.data)
     stats.failed = responseList(allRes.data).filter((item) => item.syncStatus === 'failed').length
   } catch {
     // 统计失败不影响列表主流程。
@@ -440,6 +444,16 @@ onMounted(() => loadList(1))
         <span class="stat-num">{{ stats.active }}</span>
         <span class="stat-label">已发布规则</span>
         <span class="stat-bar active" />
+      </div>
+      <div class="stat-card" @click="switchStatus('rejected')">
+        <span class="stat-num">{{ stats.rejected }}</span>
+        <span class="stat-label">已驳回规则</span>
+        <span class="stat-bar rejected" />
+      </div>
+      <div class="stat-card" @click="switchStatus('disabled')">
+        <span class="stat-num">{{ stats.disabled }}</span>
+        <span class="stat-label">已禁用规则</span>
+        <span class="stat-bar disabled" />
       </div>
       <div class="stat-card sync-failed" @click="filters.status = ''; loadList(1)">
         <span class="stat-num">{{ stats.failed }}</span>
@@ -869,6 +883,8 @@ onMounted(() => loadList(1))
 .stat-bar.draft { background: var(--plaza-text-muted); }
 .stat-bar.pending { background: #f59e0b; }
 .stat-bar.active { background: var(--plaza-accent); }
+.stat-bar.rejected { background: #ef4444; }
+.stat-bar.disabled { background: #94a3b8; }
 .stat-bar.failed { background: #ef4444; }
 
 .ap-filters {
