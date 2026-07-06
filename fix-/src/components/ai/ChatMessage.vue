@@ -9,7 +9,7 @@ const props = defineProps({
   agentEnabled: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['open-agent'])
+const emit = defineEmits(['open-agent', 'send-follow-up'])
 
 // 语音朗读：全局单例播放器，按 message.id 标识当前是否在播/在加载本条
 const { speak, isSpeaking, isLoading } = useSpeech()
@@ -19,6 +19,22 @@ const loadingSpeech = computed(() => isLoading(props.message.id))
 const isUser = computed(() => props.message.role === 'user')
 const diagnosisItems = computed(() =>
   Array.isArray(props.message.diagnosisItems) ? props.message.diagnosisItems : [],
+)
+const diagnosticFollowUp = computed(() => props.message.diagnosticFollowUp || null)
+const followUpOptions = computed(() =>
+  Array.isArray(diagnosticFollowUp.value?.options) ? diagnosticFollowUp.value.options : [],
+)
+const followUpHypotheses = computed(() =>
+  Array.isArray(diagnosticFollowUp.value?.hypotheses) ? diagnosticFollowUp.value.hypotheses : [],
+)
+const canAnswerFollowUp = computed(() =>
+  !isUser.value && diagnosticFollowUp.value?.status === 'awaiting_answer' && followUpOptions.value.length > 0,
+)
+const isFollowUpSubmitted = computed(() =>
+  !isUser.value && diagnosticFollowUp.value?.status === 'submitted',
+)
+const showFollowUpCard = computed(() =>
+  canAnswerFollowUp.value || isFollowUpSubmitted.value,
 )
 
 // 诊断项（结构化）转为可读/可显示的纯文本，与正文合成同一段，确保朗读完整覆盖、各回复样式统一
@@ -118,6 +134,15 @@ async function copyMessage() {
     document.body.removeChild(input)
   }
 }
+
+function sendFollowUp(option) {
+  if (!canAnswerFollowUp.value || !option) return
+  emit('send-follow-up', {
+    text: option.label || `${option.id}. ${option.text}`,
+    optionId: option.id,
+    followUp: diagnosticFollowUp.value,
+  })
+}
 </script>
 
 <template>
@@ -172,6 +197,34 @@ async function copyMessage() {
               <small v-if="item.page">P{{ item.page }}</small>
             </figcaption>
           </figure>
+        </div>
+
+        <div v-if="showFollowUpCard" class="follow-up-card">
+          <div class="follow-up-head">
+            <b>候选根因收敛</b>
+            <span>{{ canAnswerFollowUp ? '请选择一个现场现象' : '已提交，正在收敛' }}</span>
+          </div>
+          <div v-if="followUpHypotheses.length" class="follow-up-hypotheses">
+            <span
+              v-for="item in followUpHypotheses.slice(0, 3)"
+              :key="item.id || item.rootCause"
+            >
+              {{ item.rootCause }} · {{ Number(item.confidence || 0).toFixed(2) }}
+            </span>
+          </div>
+          <div v-if="canAnswerFollowUp" class="follow-up-options">
+            <button
+              v-for="option in followUpOptions"
+              :key="option.id || option.label"
+              type="button"
+              @click="sendFollowUp(option)"
+            >
+              {{ option.label }}
+            </button>
+          </div>
+          <div v-else class="follow-up-submitted">
+            已选择：{{ diagnosticFollowUp.selectedOptionLabel || '正在处理你的补充信息' }}
+          </div>
         </div>
         <div v-if="message.status === 'streaming' && !message.content" class="thinking">
           <span />
@@ -394,6 +447,85 @@ async function copyMessage() {
   flex-shrink: 0;
   color: var(--plaza-accent);
   font-weight: 700;
+}
+
+.follow-up-card {
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid var(--plaza-border);
+  border-left: 3px solid var(--plaza-accent);
+  border-radius: 8px;
+  background: var(--plaza-accent-soft);
+}
+
+.follow-up-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.follow-up-head b {
+  color: var(--plaza-heading);
+  font-size: 13px;
+}
+
+.follow-up-head span {
+  color: var(--plaza-text-muted);
+  font-size: 11px;
+}
+
+.follow-up-hypotheses {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.follow-up-hypotheses span {
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--plaza-accent-hover);
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.follow-up-options {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.follow-up-options button {
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--plaza-border);
+  border-radius: 7px;
+  color: var(--plaza-text);
+  background: var(--plaza-bg-card);
+  text-align: left;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease;
+}
+
+.follow-up-options button:hover {
+  color: #a65e00;
+  border-color: var(--plaza-accent);
+  background: #fff;
+}
+
+.follow-up-submitted {
+  margin-top: 9px;
+  padding: 7px 9px;
+  border: 1px dashed var(--plaza-border);
+  border-radius: 7px;
+  color: var(--plaza-text-muted);
+  background: rgba(255, 255, 255, 0.62);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .agent-live {

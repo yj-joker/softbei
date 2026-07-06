@@ -187,6 +187,30 @@ function handleSend(payload) {
   scrollToBottom(true)
 }
 
+function handleFollowUpSend(payload) {
+  if (!payload?.text || state.streaming) return
+  const pendingFollowUp = payload.followUp
+    ? JSON.parse(JSON.stringify(payload.followUp))
+    : null
+  if (payload.followUp?.status === 'awaiting_answer') {
+    payload.followUp.status = 'submitted'
+    payload.followUp.selectedOptionId = payload.optionId
+    payload.followUp.selectedOptionLabel = payload.text
+  }
+  resetAgentPanel()
+  aiChatStore.send(props.storageKey, {
+    text: payload.text,
+    files: [],
+    thinking: currentMode.value === 'maintenance',
+    mode: currentMode.value,
+    context: {
+      diagnostic_follow_up: pendingFollowUp,
+      selected_option_id: payload.optionId,
+    },
+  })
+  scrollToBottom(true)
+}
+
 function handleStop() {
   aiChatStore.stop(props.storageKey)
 }
@@ -365,6 +389,7 @@ onActivated(() => {
             :user-initial="userInitial"
             :agent-enabled="currentMode === 'maintenance'"
             @open-agent="openAgentPanel"
+            @send-follow-up="handleFollowUpSend"
           />
         </div>
       </main>

@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import re
 import time
 from functools import partial
 from typing import Any, List
@@ -51,6 +52,13 @@ from services.domain_rules import (
     delete_domain_rule,
     match_domain_rule,
     upsert_domain_rule,
+)
+from services.causal_followup import (
+    FOLLOW_UP_TOOL_NAME,
+    build_follow_up,
+    format_follow_up_message,
+    format_resolution_message,
+    resolve_follow_up,
 )
 from services.llm.service import get_llm_service
 from services.knowledge.image_summary_service import get_image_summary_service
@@ -187,6 +195,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
 @app.post("/ai/domain-rules/upsert")
 async def domain_rule_upsert(request: dict[str, Any]):
     try:
@@ -219,7 +229,11 @@ def _execution_mode(metadata: dict | None) -> str:
 
 
 def _is_deterministic_direct_output(output: AgentOutput) -> bool:
-    return _execution_mode(output.metadata) in {"knowledge_inventory_direct", "domain_rule_direct"}
+    return _execution_mode(output.metadata) in {
+        "knowledge_inventory_direct",
+        "domain_rule_direct",
+        "causal_follow_up_resolved",
+    }
 
 
 def _should_try_domain_rule(request: ChatRequest, input_data: AgentInput) -> bool:
@@ -264,7 +278,7 @@ def _domain_rule_tool_items(match: dict[str, Any]) -> list[dict[str, Any]]:
     rule = match.get("rule") or {}
     return [
         {
-            "title": rule.get("title") or "\u4e13\u5bb6\u89c4\u5219",
+            "title": rule.get("title") or "专家规则",
             "content": rule.get("conclusion") or match.get("message", ""),
             "type": "rule",
             "score": match.get("score"),
@@ -294,7 +308,7 @@ async def _try_domain_rule_direct(request: ChatRequest, input_data: AgentInput) 
     metadata = {
         "execution_mode": "domain_rule_direct",
         "confidence_source": "rule",
-        "confidence_label": "\u786e\u5b9a",
+        "confidence_label": "确定",
         "domain_rule": match.get("rule"),
         "domain_rule_match": match,
         "evidence_sources": match.get("evidence_sources", []),
@@ -320,7 +334,7 @@ async def _stream_direct_agent_output(output: AgentOutput):
     import asyncio as _asyncio
 
     match = output.metadata.get("domain_rule_match") or {}
-    yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '\u89c4\u5219\u5f15\u64ce\u547d\u4e2d\uff0c\u6b63\u5728\u751f\u6210\u786e\u5b9a\u6027\u8bca\u65ad', 'mode': 'domain_rule'}})}\n\n"
+    yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '规则引擎命中，正在生成确定性诊断', 'mode': 'domain_rule'}})}\n\n"
     yield f"data: {json_dumps({'event': 'tool', 'data': {'tool': DOMAIN_RULE_TOOL_NAME}})}\n\n"
     yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': DOMAIN_RULE_TOOL_NAME, 'text': output.message, 'items': _domain_rule_tool_items(match)}})}\n\n"
 
@@ -333,6 +347,101 @@ async def _stream_direct_agent_output(output: AgentOutput):
     yield f"data: {json_dumps({'event': 'done', 'data': {'tools_used': output.tools_used, 'latency_ms': output.latency_ms, 'domainRule': output.metadata.get('domain_rule'), 'confidenceSource': output.metadata.get('confidence_source'), 'evidenceSources': output.metadata.get('evidence_sources', []), 'metadata': output.metadata}})}\n\n"
 
 
+def _causal_follow_up_trace(result: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        {
+            "iteration": 0,
+            "thought": "causal follow-up rerank",
+            "tool_calls": [
+                {
+                    "name": FOLLOW_UP_TOOL_NAME,
+                    "args": {
+                        "question": result.get("question"),
+                        "selected_option": (result.get("selectedOption") or {}).get("id"),
+                    },
+                    "result_data": result,
+                }
+            ],
+        }
+    ]
+
+
+def _causal_follow_up_tool_items(result: dict[str, Any]) -> list[dict[str, Any]]:
+    items = []
+    for item in result.get("hypotheses") or []:
+        items.append(
+            {
+                "title": item.get("rootCause") or "候选根因",
+                "content": item.get("distinguishingFeature") or item.get("suggestedCheck") or "",
+                "type": "causal_follow_up",
+                "score": item.get("confidence"),
+                "metadata": {
+                    "faultPart": item.get("faultPart"),
+                    "candidateId": item.get("id"),
+                },
+            }
+        )
+    return items
+
+
+async def _try_causal_follow_up_resolution(
+    request: ChatRequest,
+    input_data: AgentInput,
+) -> AgentOutput | None:
+    started = time.time()
+    resolved = resolve_follow_up(input_data.context or {}, input_data.user_message)
+    if not resolved:
+        return None
+
+    message = format_resolution_message(resolved)
+    metadata = {
+        "execution_mode": "causal_follow_up_resolved",
+        "confidence_source": "causal_follow_up",
+        "confidence_label": "追问收敛",
+        "diagnostic_follow_up": resolved,
+        "react_trace": _causal_follow_up_trace(resolved),
+        "verification": {
+            "grounding": {"unverified_count": 0},
+            "graph": {"unverified_count": 0},
+            "safety": {"missing_count": 0},
+        },
+        "user_message": input_data.user_message,
+        "original_user_message": request.message,
+    }
+    return AgentOutput(
+        agent_name="fix_agent",
+        message=message,
+        intention="fault_diagnosis",
+        tools_used=[FOLLOW_UP_TOOL_NAME],
+        metadata=metadata,
+        latency_ms=int((time.time() - started) * 1000),
+        raw_response=resolved,
+    )
+
+
+async def _stream_causal_follow_up_output(output: AgentOutput):
+    import asyncio as _asyncio
+
+    result = output.metadata.get("diagnostic_follow_up") or {}
+    yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '已根据追问回答重排候选根因', 'mode': 'causal_follow_up'}})}\n\n"
+    yield f"data: {json_dumps({'event': 'tool', 'data': {'tool': FOLLOW_UP_TOOL_NAME}})}\n\n"
+    yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': FOLLOW_UP_TOOL_NAME, 'text': output.message, 'items': _causal_follow_up_tool_items(result)}})}\n\n"
+
+    for i, char in enumerate(output.message):
+        yield f"data: {json_dumps({'event': 'token', 'data': {'content': char}})}\n\n"
+        if i % 15 == 0:
+            await _asyncio.sleep(0)
+
+    done_data = {
+        "tools_used": output.tools_used,
+        "latency_ms": output.latency_ms,
+        "diagnosticFollowUp": result,
+        "metadata": output.metadata,
+    }
+    if result.get("diagnosisItems"):
+        done_data["diagnosisItems"] = result["diagnosisItems"]
+    yield f"data: {json_dumps({'event': 'verification', 'data': {'has_issues': False, 'summary': {'grounding_unverified': 0, 'graph_unverified': 0, 'safety_missing': 0}}})}\n\n"
+    yield f"data: {json_dumps({'event': 'done', 'data': done_data})}\n\n"
 
 
 def _is_knowledge_inventory_question(message: str) -> bool:
@@ -515,6 +624,309 @@ def _iter_trace_result_items(metadata: dict):
                         yield item_data
 
 
+_INVENTORY_QUERY_KEYWORDS = (
+    "清单",
+    "BOM",
+    "bom",
+    "部件",
+    "零件",
+    "料件",
+    "配件",
+    "明细",
+    "列表",
+)
+
+
+def _is_inventory_table_query(message: str) -> bool:
+    text = (message or "").strip()
+    if not text:
+        return False
+    return any(keyword in text for keyword in _INVENTORY_QUERY_KEYWORDS)
+
+
+def _inventory_cell(value) -> str:
+    return str(value or "").replace("\n", " ").strip().strip("|").strip()
+
+
+def _inventory_header_index(headers: list[str], *keywords: str) -> int | None:
+    for index, header in enumerate(headers):
+        normalized = _inventory_cell(header)
+        if any(keyword in normalized for keyword in keywords):
+            return index
+    return None
+
+
+def _inventory_row_from_cells(headers: list[str], cells: list[str]) -> dict | None:
+    cells = [_inventory_cell(cell) for cell in cells]
+    if not any(cells):
+        return None
+
+    seq_index = _inventory_header_index(headers, "序号", "编号")
+    name_index = _inventory_header_index(headers, "料件名称", "部件名称", "零件名称", "名称", "料件", "部件", "零件")
+    quantity_index = _inventory_header_index(headers, "数量", "数目")
+    remark_index = _inventory_header_index(headers, "备注", "说明", "工具")
+
+    if seq_index is None and cells and re.fullmatch(r"\d+", cells[0]):
+        seq_index = 0
+    if name_index is None:
+        name_index = 1 if len(cells) > 1 and seq_index == 0 else 0
+    if quantity_index is None and len(cells) > 2:
+        quantity_index = 2
+    if remark_index is None and len(cells) > 3:
+        remark_index = 3
+
+    def pick(index: int | None) -> str:
+        return cells[index] if index is not None and 0 <= index < len(cells) else ""
+
+    name = pick(name_index)
+    quantity = pick(quantity_index)
+    if not name or name in {"料件名称", "部件名称", "零件名称", "名称"}:
+        return None
+    if name == quantity:
+        quantity = ""
+    return {
+        "seq": pick(seq_index),
+        "name": name,
+        "quantity": quantity,
+        "remark": pick(remark_index),
+    }
+
+
+def _inventory_row_from_key_values(content: str) -> dict | None:
+    fields: dict[str, str] = {}
+    for part in re.split(r"[；;]\s*", content or ""):
+        if "=" in part:
+            key, value = part.split("=", 1)
+        elif "：" in part:
+            key, value = part.split("：", 1)
+        else:
+            continue
+        fields[_inventory_cell(key)] = _inventory_cell(value)
+
+    if not fields:
+        return None
+
+    def find_value(*keywords: str) -> str:
+        for key, value in fields.items():
+            if any(keyword in key for keyword in keywords):
+                return value
+        return ""
+
+    name = find_value("料件名称", "部件名称", "零件名称", "名称", "料件", "部件", "零件")
+    if not name:
+        return None
+    return {
+        "seq": find_value("序号", "编号"),
+        "name": name,
+        "quantity": find_value("数量", "数目"),
+        "remark": find_value("备注", "说明", "工具"),
+    }
+
+
+def _inventory_rows_from_pipe_table(content: str) -> list[dict]:
+    lines = [
+        _inventory_cell(line)
+        for line in (content or "").splitlines()
+        if "|" in line and line.strip()
+    ]
+    if len(lines) < 2:
+        return []
+
+    headers = [_inventory_cell(cell) for cell in lines[0].split("|")]
+    rows: list[dict] = []
+    for line in lines[1:]:
+        compact = line.replace("|", "").replace("-", "").replace(" ", "")
+        if not compact:
+            continue
+        row = _inventory_row_from_cells(headers, [_inventory_cell(cell) for cell in line.split("|")])
+        if row:
+            rows.append(row)
+    return rows
+
+
+def _inventory_rows_from_table_full(table_full) -> list[dict]:
+    if not table_full:
+        return []
+    if isinstance(table_full, str):
+        return _inventory_rows_from_pipe_table(table_full)
+    if not isinstance(table_full, dict):
+        return []
+
+    headers = table_full.get("headers") or table_full.get("columns") or []
+    rows = table_full.get("rows") or table_full.get("data") or []
+    parsed: list[dict] = []
+    for raw_row in rows:
+        if isinstance(raw_row, dict):
+            row = _inventory_row_from_key_values(
+                "；".join(f"{key}={value}" for key, value in raw_row.items())
+            )
+        elif isinstance(raw_row, (list, tuple)):
+            row = _inventory_row_from_cells([_inventory_cell(header) for header in headers], list(raw_row))
+        else:
+            row = _inventory_row_from_key_values(str(raw_row))
+        if row:
+            parsed.append(row)
+    return parsed
+
+
+def _dedupe_inventory_rows(rows: list[dict]) -> list[dict]:
+    seen: set[tuple[str, str]] = set()
+    deduped: list[dict] = []
+    for row in rows:
+        key = (row.get("seq") or "", row.get("name") or "")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(row)
+    return deduped
+
+
+def _inventory_sort_key(row: dict) -> tuple[int, str]:
+    seq = str(row.get("seq") or "").strip()
+    if seq.isdigit():
+        return (int(seq), "")
+    return (10_000, seq)
+
+
+def _inventory_subject_from_title(title: str) -> str:
+    subject = re.sub(r"^\s*\d+(?:\.\d+)*\s*", "", title or "").strip()
+    for suffix in ("部件清单", "零件清单", "料件清单", "配件清单", "清单"):
+        if subject.endswith(suffix):
+            subject = subject[: -len(suffix)].strip()
+            break
+    return subject or "该装配"
+
+
+def _format_inventory_table_answer_from_metadata(
+    message: str,
+    metadata: dict,
+    extra_items: list[dict] | None = None,
+) -> str | None:
+    """从检索 trace 中的表格证据直接生成清单回答，避免 LLM 把已命中的表格说成未找到。"""
+    if not _is_inventory_table_query(message):
+        return None
+
+    items = list(_iter_trace_result_items(metadata))
+    if extra_items:
+        items.extend(extra_items)
+    if not items:
+        return None
+
+    section_match_ids: set[str] = set()
+    for item in items:
+        meta = item.get("metadata") or {}
+        for sid in meta.get("section_match_ids") or []:
+            section_match_ids.add(str(sid))
+
+    candidates: list[dict] = []
+    row_groups: dict[tuple[str, str, str], dict] = {}
+
+    for item in items:
+        meta = item.get("metadata") or {}
+        chunk_type = meta.get("chunk_type") or meta.get("source_chunk_type") or ""
+        chunk_label = str(meta.get("chunk_label") or "")
+        if chunk_type != "table" and "table" not in chunk_label:
+            continue
+
+        content = item.get("content") or item.get("text") or ""
+        section_id = str(meta.get("parent_section_id") or "")
+        section_title = str(meta.get("section_title") or meta.get("chunk_label") or "").strip()
+        page = meta.get("page_number") or meta.get("page")
+
+        rows = _inventory_rows_from_table_full(meta.get("table_full"))
+        if not rows:
+            rows = _inventory_rows_from_pipe_table(content)
+
+        if rows:
+            candidates.append({
+                "rows": rows,
+                "section_id": section_id,
+                "section_title": section_title,
+                "page": page,
+                "chunk_label": chunk_label,
+            })
+            continue
+
+        row = _inventory_row_from_key_values(content)
+        if row:
+            group_key = (section_id, section_title, str(page or ""))
+            group = row_groups.setdefault(group_key, {
+                "rows": [],
+                "section_id": section_id,
+                "section_title": section_title,
+                "page": page,
+                "chunk_label": chunk_label,
+            })
+            group["rows"].append(row)
+
+    candidates.extend(row_groups.values())
+    if not candidates:
+        return None
+
+    groups: dict[tuple[str, str], dict] = {}
+    for candidate in candidates:
+        group_key = (
+            candidate.get("section_id") or "",
+            candidate.get("section_title") or "",
+        )
+        group = groups.setdefault(group_key, {
+            "rows": [],
+            "pages": [],
+            "section_id": candidate.get("section_id") or "",
+            "section_title": candidate.get("section_title") or "",
+            "full_table_count": 0,
+        })
+        group["rows"].extend(candidate.get("rows") or [])
+        page = candidate.get("page")
+        if page and page not in group["pages"]:
+            group["pages"].append(page)
+        if candidate.get("chunk_label") == "table_full":
+            group["full_table_count"] += 1
+
+    def score(group: dict) -> int:
+        section_id = group.get("section_id") or ""
+        section_score = 1000 if section_id and section_id in section_match_ids else 0
+        full_table_score = 200 * int(group.get("full_table_count") or 0)
+        title_score = 100 if "清单" in (group.get("section_title") or "") else 0
+        return section_score + full_table_score + title_score + len(group.get("rows") or []) * 10
+
+    best = max(groups.values(), key=score)
+    rows = _dedupe_inventory_rows(best.get("rows") or [])
+    if len(rows) < 2:
+        return None
+
+    rows = sorted(rows, key=_inventory_sort_key)
+    title = best.get("section_title") or "部件清单"
+    pages = best.get("pages") or []
+    numeric_pages = sorted({int(page) for page in pages if str(page).isdigit()})
+    if len(numeric_pages) == 1:
+        page_text = f"第{numeric_pages[0]}页"
+    elif len(numeric_pages) > 1:
+        page_text = f"第{numeric_pages[0]}-{numeric_pages[-1]}页"
+    else:
+        page_text = "对应表格"
+    subject = _inventory_subject_from_title(title)
+
+    lines = [
+        f"根据手册{page_text}“{title}”，{subject}所用部件如下（按序号排列）："
+    ]
+    for index, row in enumerate(rows, start=1):
+        seq = str(row.get("seq") or index).strip()
+        name = str(row.get("name") or "").strip()
+        quantity = str(row.get("quantity") or "").strip()
+        remark = str(row.get("remark") or "").strip()
+        if not name:
+            continue
+        line = f"{seq}. {name}"
+        if quantity:
+            line += f"；数量：{quantity}"
+        if remark:
+            line += f"；备注：{remark}"
+        lines.append(line)
+
+    return "\n".join(lines).strip()
+
+
 def _extract_evidence_images(metadata: dict) -> List[EvidenceImage]:
     images: List[EvidenceImage] = []
     seen = set()
@@ -548,6 +960,284 @@ def _extract_evidence_images(metadata: dict) -> List[EvidenceImage]:
     return images
 
 
+async def _collect_direct_section_table_items(message: str, metadata: dict) -> list[dict]:
+    """清单直取通道：按确定性章节补全同节全部表格，解决跨页 BOM 只召回一页的问题。"""
+    if not _is_inventory_table_query(message):
+        return []
+    try:
+        plan_intent = ""
+        document_id = ""
+        section_match_ids: List[str] = []
+        evidence_section_ids: List[str] = []
+        lookup_queries: List[str] = []
+        vector_service = None
+
+        def append_unique(values: List[str], value: str) -> None:
+            if value and value not in values:
+                values.append(value)
+
+        for key in ("original_user_message", "user_message", "message"):
+            value = str((metadata or {}).get(key) or "").strip()
+            if value:
+                append_unique(lookup_queries, value)
+        append_unique(lookup_queries, message)
+
+        for item in _iter_trace_result_items(metadata):
+            item_meta = dict(item.get("metadata") or {})
+            if item_meta.get("retrieval_plan_intent"):
+                plan_intent = str(item_meta["retrieval_plan_intent"])
+            if item_meta.get("document_id"):
+                document_id = str(item_meta["document_id"])
+            sm_ids = item_meta.get("section_match_ids")
+            if isinstance(sm_ids, list):
+                for sid in sm_ids:
+                    append_unique(section_match_ids, str(sid))
+            parent_section_id = str(item_meta.get("parent_section_id") or "")
+            chunk_type = item_meta.get("chunk_type") or item_meta.get("source_chunk_type") or ""
+            if parent_section_id and chunk_type not in {"image", "image_summary"}:
+                append_unique(evidence_section_ids, parent_section_id)
+
+        if not section_match_ids and lookup_queries:
+            try:
+                from services.knowledge.vector_service import get_vector_service
+                from services.retrieval.section_index import SectionTitleIndex
+
+                vector_service = get_vector_service()
+                section_index = SectionTitleIndex.get_instance()
+                section_index.build(vector_service)
+                for query in lookup_queries:
+                    for ref in section_index.find(query):
+                        append_unique(section_match_ids, str(ref.section_id))
+                        if not document_id and ref.document_id:
+                            document_id = str(ref.document_id)
+                    if section_match_ids:
+                        break
+            except Exception:
+                pass
+
+        if plan_intent not in ("outline", "procedure") and lookup_queries:
+            try:
+                from services.retrieval.planner import build_retrieval_plan
+
+                inferred_plan = build_retrieval_plan(
+                    lookup_queries[0],
+                    section_match_ids=section_match_ids,
+                )
+                plan_intent = inferred_plan.intent
+            except Exception:
+                pass
+
+        if plan_intent not in ("outline", "procedure"):
+            return []
+
+        target_section_ids: List[str] = []
+        for sid in evidence_section_ids:
+            if section_match_ids and sid not in section_match_ids:
+                continue
+            append_unique(target_section_ids, sid)
+        if not target_section_ids and section_match_ids:
+            # 清单标题匹配通常把目标清单节排在首位。
+            target_section_ids = section_match_ids[:1]
+        if not document_id or not target_section_ids:
+            return []
+
+        if vector_service is None:
+            from services.knowledge.vector_service import get_vector_service
+            vector_service = get_vector_service()
+
+        table_items: list[dict] = []
+        seen_ids: set[str] = set()
+        for sid in target_section_ids[:3]:
+            try:
+                records = vector_service.get_section_records(
+                    document_id, sid, limit=200, chunk_type="table",
+                )
+            except Exception:
+                continue
+            for rec in records:
+                rec = rec.model_dump() if hasattr(rec, "model_dump") else dict(rec)
+                rec_id = str(rec.get("id") or rec.get("doc_id") or "")
+                if rec_id and rec_id in seen_ids:
+                    continue
+                if rec_id:
+                    seen_ids.add(rec_id)
+                meta = dict(rec.get("metadata") or {})
+                meta.setdefault("section_match_ids", section_match_ids)
+                meta.setdefault("retrieval_plan_intent", plan_intent)
+                rec["metadata"] = meta
+                table_items.append(rec)
+        return table_items
+    except Exception:
+        return []
+
+
+async def _collect_direct_section_images(metadata: dict) -> List[EvidenceImage]:
+    """直取通道：procedure / outline 意图下，按 section_match_ids 确定性地查库取图。
+
+    不依赖检索排名，走 get_section_records(chunk_type='image') 精确查库。
+    消除图片返回的非确定性——目标章节的图只要存在就一定被拿到。
+    """
+    try:
+        trace = (metadata or {}).get("react_trace") or []
+        plan_intent = ""
+        document_id = ""
+        section_match_ids: List[str] = []
+        primary_section_ids: List[str] = []
+        evidence_section_ids: List[str] = []
+        lookup_queries: List[str] = []
+        vector_service = None
+
+        def append_unique(values: List[str], value: str) -> None:
+            if value and value not in values:
+                values.append(value)
+
+        for key in ("original_user_message", "user_message", "message"):
+            value = str((metadata or {}).get(key) or "").strip()
+            if value:
+                append_unique(lookup_queries, value)
+
+        for step in trace:
+            step_data = _plain_dict(step)
+            for tool_call in (step_data.get("tool_calls") or []):
+                call_data = _plain_dict(tool_call)
+                arguments = call_data.get("arguments") or call_data.get("args") or {}
+                arguments = _plain_dict(arguments) if hasattr(arguments, "model_dump") else arguments
+                if isinstance(arguments, dict):
+                    query_arg = str(arguments.get("query") or "").strip()
+                    if query_arg:
+                        append_unique(lookup_queries, query_arg)
+                elif isinstance(arguments, str) and arguments.strip():
+                    append_unique(lookup_queries, arguments.strip())
+                result_data = call_data.get("result_data")
+                if result_data is None:
+                    result_data = call_data.get("data")
+                if result_data is None:
+                    result_data = call_data.get("result")
+                result_data = _plain_dict(result_data) if hasattr(result_data, "model_dump") else result_data
+                if isinstance(result_data, dict):
+                    result_data = result_data.get("data", result_data)
+                if not isinstance(result_data, list):
+                    continue
+                for item in result_data:
+                    item_data = _plain_dict(item)
+                    item_meta = dict(item_data.get("metadata") or {})
+                    if item_meta.get("retrieval_plan_intent"):
+                        plan_intent = str(item_meta["retrieval_plan_intent"])
+                    if item_meta.get("document_id"):
+                        document_id = str(item_meta["document_id"])
+                    sm_ids = item_meta.get("section_match_ids")
+                    if isinstance(sm_ids, list) and sm_ids:
+                        for sid in sm_ids:
+                            append_unique(section_match_ids, str(sid))
+                    parent_section_id = str(item_meta.get("parent_section_id") or "")
+                    chunk_type = item_meta.get("chunk_type") or item_meta.get("source_chunk_type") or ""
+                    if parent_section_id and chunk_type not in {"image", "image_summary"}:
+                        append_unique(evidence_section_ids, parent_section_id)
+                        if item_meta.get("context_role") == "primary":
+                            append_unique(primary_section_ids, parent_section_id)
+
+        if not section_match_ids and lookup_queries:
+            try:
+                from services.knowledge.vector_service import get_vector_service
+                from services.retrieval.section_index import SectionTitleIndex
+
+                vector_service = get_vector_service()
+                section_index = SectionTitleIndex.get_instance()
+                section_index.build(vector_service)
+                for query in lookup_queries:
+                    for ref in section_index.find(query):
+                        append_unique(section_match_ids, str(ref.section_id))
+                        if not document_id and ref.document_id:
+                            document_id = str(ref.document_id)
+                    if section_match_ids:
+                        break
+            except Exception:
+                pass
+
+        if plan_intent not in ("procedure", "outline", "safety", "image_identification") and lookup_queries:
+            try:
+                from services.retrieval.planner import build_retrieval_plan
+
+                inferred_plan = build_retrieval_plan(
+                    lookup_queries[0],
+                    section_match_ids=section_match_ids,
+                )
+                plan_intent = inferred_plan.intent
+            except Exception:
+                pass
+
+        if plan_intent not in ("procedure", "outline", "safety", "image_identification"):
+            return []
+        target_section_ids: List[str] = []
+        for sid in primary_section_ids + evidence_section_ids:
+            if section_match_ids and sid not in section_match_ids:
+                continue
+            append_unique(target_section_ids, sid)
+        if not target_section_ids and section_match_ids:
+            target_section_ids = section_match_ids[:1]
+        if not document_id or not target_section_ids:
+            return []
+
+        if vector_service is None:
+            from services.knowledge.vector_service import get_vector_service
+            vector_service = get_vector_service()
+        images: List[EvidenceImage] = []
+        seen_urls: set = set()
+        for sid in target_section_ids[:3]:
+            try:
+                records = vector_service.get_section_records(
+                    document_id, sid, limit=20, chunk_type="image",
+                )
+            except Exception:
+                continue
+            for rec in records:
+                rec = rec.model_dump() if hasattr(rec, "model_dump") else dict(rec)
+                meta = dict(rec.get("metadata") or {})
+                image_url = meta.get("image_url") or rec.get("image_url")
+                if not image_url or image_url in seen_urls:
+                    continue
+                seen_urls.add(image_url)
+                images.append(EvidenceImage(
+                    image_url=image_url,
+                    caption=meta.get("caption") or meta.get("image_title") or "",
+                    page=meta.get("page_number") or meta.get("page"),
+                    section_title=meta.get("section_title", ""),
+                    document_id=meta.get("document_id", ""),
+                    source_chunk_id=str(rec.get("id") or rec.get("doc_id") or ""),
+                    context_role="direct_lookup",
+                ))
+        return images
+    except Exception:
+        return []
+
+
+def _merge_evidence_images(
+    existing: List[EvidenceImage], direct: List[EvidenceImage],
+) -> List[EvidenceImage]:
+    """合并 trace 提取的图片和直取通道图片，按 image_url 去重，直取通道的排前面。"""
+    seen = set()
+    merged: List[EvidenceImage] = []
+    direct_list = list(direct or [])
+    direct_section_keys = {
+        (img.document_id or "", img.section_title or "")
+        for img in direct_list
+        if img.document_id or img.section_title
+    }
+    existing_list = []
+    for img in list(existing or []):
+        if direct_section_keys:
+            key = (img.document_id or "", img.section_title or "")
+            if key not in direct_section_keys:
+                continue
+        existing_list.append(img)
+    for img in direct_list + existing_list:
+        key = img.image_url or img.source_chunk_id or f"image:{len(merged)}"
+        if key not in seen:
+            merged.append(img)
+            seen.add(key)
+    return merged
+
+
 async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
     """执行 RAG -> 单次 LLM 生成的轻量链路；失败时返回 None 交给 ReAct 回退。"""
     total_t0 = time.time()
@@ -567,6 +1257,58 @@ async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
         return None
 
     evidence_items = retrieval.data
+    trace = [{
+        "iteration": 1,
+        "action": "tool_call",
+        "duration_ms": retrieval_ms,
+        "tool_calls": [{
+            "name": "knowledge_retrieval",
+            "arguments": {"query": request.message, "top_k": 5},
+            "result_summary": str(evidence_items)[:200],
+            "result_data": [item.model_dump() if hasattr(item, "model_dump") else item for item in evidence_items],
+        }],
+    }]
+    table_metadata = {
+        "react_trace": trace,
+        "user_message": request.message,
+        "original_user_message": request.message,
+    }
+    direct_table_items = await _collect_direct_section_table_items(request.message, table_metadata)
+    table_answer = _format_inventory_table_answer_from_metadata(
+        request.message,
+        table_metadata,
+        direct_table_items,
+    )
+    if table_answer:
+        total_ms = int((time.time() - total_t0) * 1000)
+        logger.info(
+            "[chat][fast_path] session=%s direct_table_answer retrieval_ms=%s total_ms=%s evidence_count=%s",
+            request.session_id,
+            retrieval_ms,
+            total_ms,
+            len(evidence_items),
+        )
+        return AgentOutput(
+            agent_name="fix_agent",
+            message=table_answer,
+            tools_used=["knowledge_retrieval"],
+            metadata={
+                "execution_mode": "rag_table_direct",
+                "react_trace": trace,
+                "react_iterations": 1,
+                "deterministic_table_answer": True,
+                "user_message": request.message,
+                "original_user_message": request.message,
+                "phase_timings_ms": {
+                    "retrieval": retrieval_ms,
+                    "llm_generation": 0,
+                    "fast_path_total": total_ms,
+                },
+            },
+            latency_ms=total_ms,
+            raw_response={"content": table_answer},
+        )
+
     evidence_text = "\n\n".join(
         _evidence_item_to_text(item, idx)
         for idx, item in enumerate(evidence_items, start=1)
@@ -577,10 +1319,11 @@ async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
             "content": (
                 "你是设备检修知识库问答助手。必须基于给定知识库证据回答；"
                 "证据不足时明确说明不足，不要编造参数、型号或操作步骤。"
+                "严格按证据原文中的步骤数量和顺序输出，不要自行新增步骤、合并步骤或拆分步骤。"
                 "禁止使用 emoji。"
                 "不允许把多个信息点挤在同一整段中。"
                 "普通解释使用自然段；当内容包含编号、清单、选项、步骤或文件列表时，每一项必须单独换行。"
-                "编号格式使用“1. 内容”“2. 内容”，不要把多个编号写在同一行。"
+                "编号格式使用\"1. 内容\"\"2. 内容\"，不要把多个编号写在同一行。"
             ),
         },
         {
@@ -599,17 +1342,6 @@ async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
     llm_ms = int((time.time() - llm_t0) * 1000)
     total_ms = int((time.time() - total_t0) * 1000)
 
-    trace = [{
-        "iteration": 1,
-        "action": "tool_call",
-        "duration_ms": retrieval_ms,
-        "tool_calls": [{
-            "name": "knowledge_retrieval",
-            "arguments": {"query": request.message, "top_k": 5},
-            "result_summary": str(evidence_items)[:200],
-            "result_data": [item.model_dump() if hasattr(item, "model_dump") else item for item in evidence_items],
-        }],
-    }]
     logger.info(
         "[chat][fast_path] session=%s retrieval_ms=%s llm_ms=%s total_ms=%s evidence_count=%s",
         request.session_id,
@@ -657,7 +1389,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
         fix_t0 = time.time()
         fix_result = None
         review_level = "full"
-        fix_result = await _try_domain_rule_direct(request, input_data)
+        fix_result = await _try_causal_follow_up_resolution(request, input_data)
+        if fix_result is not None:
+            review_level = "light"
+        if fix_result is None:
+            fix_result = await _try_domain_rule_direct(request, input_data)
         if fix_result is not None:
             review_level = "light"
         elif _should_use_rag_fast_path(request):
@@ -715,8 +1451,39 @@ async def chat(request: ChatRequest) -> ChatResponse:
             f"返回耗时={final_result.latency_ms}ms"
         )
 
-        response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
+        direct_table_items = await _collect_direct_section_table_items(request.message, final_result.metadata)
+        table_answer = _format_inventory_table_answer_from_metadata(
+            request.message,
+            final_result.metadata,
+            direct_table_items,
+        )
+        if table_answer:
+            final_result.metadata["deterministic_table_answer"] = True
+            final_result.metadata["deterministic_table_answer_source"] = "api_response_override"
+            response_message = table_answer
+            diagnosis_items = None
+            verification = {}
+            has_issues = False
+        else:
+            response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
+            if not _is_deterministic_direct_output(final_result):
+                follow_up = build_follow_up(input_data.user_message, diagnosis_items, final_result.metadata)
+                if follow_up:
+                    final_result.metadata["execution_mode"] = "causal_follow_up_question"
+                    final_result.metadata["confidence_source"] = "causal_follow_up"
+                    final_result.metadata["diagnostic_follow_up"] = follow_up
+                    final_result.tools_used = list(final_result.tools_used or [])
+                    if FOLLOW_UP_TOOL_NAME not in final_result.tools_used:
+                        final_result.tools_used.append(FOLLOW_UP_TOOL_NAME)
+                    response_message = format_follow_up_message(follow_up)
+                    diagnosis_items = None
+                    verification = {}
+                    has_issues = False
         evidence_images = _extract_evidence_images(final_result.metadata)
+        # 直取通道：procedure 意图下，按确定性章节查库补图
+        direct_images = await _collect_direct_section_images(final_result.metadata)
+        if direct_images:
+            evidence_images = _merge_evidence_images(evidence_images, direct_images)
 
         return ChatResponse(
             session_id=request.session_id,
@@ -898,13 +1665,19 @@ async def chat_stream(request: ChatRequest):
         input_data = await _prepare_chat_agent_input(request)
 
         try:
-            fix_agent = get_fix_agent()
+            follow_up_output = await _try_causal_follow_up_resolution(request, input_data)
+            if follow_up_output is not None:
+                async for event in _stream_causal_follow_up_output(follow_up_output):
+                    yield event
+                return
+
             direct_output = await _try_domain_rule_direct(request, input_data)
             if direct_output is not None:
                 async for event in _stream_direct_agent_output(direct_output):
                     yield event
                 return
 
+            fix_agent = get_fix_agent()
 
             # 执行 FixAgent ReAct，转发进度事件（status/tool），缓冲 token
             # 等 ReAct 完成 + 验证管线跑完后再流式输出带内联标记的回答
@@ -973,6 +1746,14 @@ async def chat_stream(request: ChatRequest):
                 verification = {}
                 has_issues = False
                 markers = []
+                direct_images = await _collect_direct_section_images({
+                    **stream_metadata,
+                    "react_trace": stream_react_trace,
+                    "user_message": input_data.user_message,
+                    "original_user_message": request.message,
+                })
+                if direct_images:
+                    evidence_images = _merge_evidence_images(evidence_images, direct_images)
             else:
                 # 构建 AgentOutput 供验证管线校验
                 fix_output = AgentOutput(
@@ -997,9 +1778,14 @@ async def chat_stream(request: ChatRequest):
                     verified_output = await get_review_agent().review(fix_output)
                 if "react_trace" not in verified_output.metadata and fix_output.metadata.get("react_trace"):
                     verified_output.metadata["react_trace"] = fix_output.metadata["react_trace"]
+                verified_output.metadata.setdefault("user_message", input_data.user_message)
+                verified_output.metadata.setdefault("original_user_message", request.message)
                 verification = verified_output.metadata.get("verification", {})
                 has_issues = verified_output.metadata.get("verification_has_issues", False)
                 evidence_images = _extract_evidence_images(verified_output.metadata)
+                direct_images = await _collect_direct_section_images(verified_output.metadata)
+                if direct_images:
+                    evidence_images = _merge_evidence_images(evidence_images, direct_images)
 
                 # 流式输出最终回答（逐字），在未验证语句前插入 marker 事件
                 final_message, diagnosis_items = _extract_structured_chat_payload(verified_output.message)
@@ -1018,12 +1804,58 @@ async def chat_stream(request: ChatRequest):
                         diagnosis_items = None
                         markers = []
 
+            table_metadata = {
+                **stream_metadata,
+                "react_trace": stream_react_trace,
+                "user_message": input_data.user_message,
+                "original_user_message": request.message,
+            }
+            diagnostic_follow_up = None
+            direct_table_items = await _collect_direct_section_table_items(request.message, table_metadata)
+            table_answer = _format_inventory_table_answer_from_metadata(
+                request.message,
+                table_metadata,
+                direct_table_items,
+            )
+            if table_answer:
+                stream_metadata["deterministic_table_answer"] = True
+                stream_metadata["deterministic_table_answer_source"] = "stream_response_override"
+                final_message = table_answer
+                diagnosis_items = None
+                verification = {}
+                has_issues = False
+                markers = []
+
+            if not table_answer:
+                diagnostic_follow_up = build_follow_up(
+                    input_data.user_message,
+                    diagnosis_items,
+                    {**stream_metadata, "react_trace": stream_react_trace},
+                )
+                if diagnostic_follow_up:
+                    stream_metadata["execution_mode"] = "causal_follow_up_question"
+                    stream_metadata["confidence_source"] = "causal_follow_up"
+                    stream_metadata["diagnostic_follow_up"] = diagnostic_follow_up
+                    verified_tools = list(verified_tools or [])
+                    if FOLLOW_UP_TOOL_NAME not in verified_tools:
+                        verified_tools.append(FOLLOW_UP_TOOL_NAME)
+                    final_message = format_follow_up_message(diagnostic_follow_up)
+                    diagnosis_items = None
+                    verification = {}
+                    has_issues = False
+                    markers = []
+
             # —— 最终硬保险：检修场景下绝不让结构化 JSON / 冷拒答流给工人 ——
             if maint_ctx and _is_unhelpful_maintenance_reply(final_message):
                 logger.info("[chat_stream] 检修助手最终保险触发，替换为安全话术 session=%s", request.session_id)
                 final_message = _MAINT_SAFE_FALLBACK_LINE
                 diagnosis_items = None
                 markers = []
+
+            if diagnostic_follow_up:
+                yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '存在多个相近根因，正在生成区分性追问', 'mode': 'causal_follow_up'}})}\n\n"
+                yield f"data: {json_dumps({'event': 'tool', 'data': {'tool': FOLLOW_UP_TOOL_NAME}})}\n\n"
+                yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': FOLLOW_UP_TOOL_NAME, 'text': final_message, 'items': _causal_follow_up_tool_items(diagnostic_follow_up)}})}\n\n"
 
             marker_idx = 0
             for i, char in enumerate(final_message):
@@ -1061,9 +1893,12 @@ async def chat_stream(request: ChatRequest):
                 "event": "done",
                 "data": {
                     "tools_used": verified_tools,
-                    "latency_ms": verified_latency
+                    "latency_ms": verified_latency,
                 }
             }
+            if diagnostic_follow_up:
+                final_done["data"]["diagnosticFollowUp"] = diagnostic_follow_up
+                final_done["data"]["metadata"] = stream_metadata
             if diagnosis_items:
                 final_done["data"]["diagnosisItems"] = _serialize_diagnosis_items(diagnosis_items)
             if evidence_images:

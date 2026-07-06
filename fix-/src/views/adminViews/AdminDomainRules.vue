@@ -72,6 +72,7 @@ const form = reactive({
   id: null,
   title: '',
   deviceType: '',
+  symptomText: '',
   symptomKeys: [],
   conditionText: '',
   conclusion: '',
@@ -83,6 +84,7 @@ const form = reactive({
 
 const tagInput = ref('')
 const optionInput = ref('')
+const advancedPanels = ref([])
 
 const detailDrawer = reactive({
   show: false,
@@ -93,9 +95,16 @@ const detailDrawer = reactive({
 const formRules = {
   title: [{ required: true, message: '请填写规则标题', trigger: 'blur' }],
   deviceType: [{ required: true, message: '请填写设备类型', trigger: 'blur' }],
-  conditionText: [{ required: true, message: '请填写命中条件', trigger: 'blur' }],
-  conclusion: [{ required: true, message: '请填写诊断结论', trigger: 'blur' }],
+  symptomText: [{ required: true, message: '请填写故障现象', trigger: 'blur' }],
+  conclusion: [{ required: true, message: '请填写专家判断', trigger: 'blur' }],
 }
+
+const autoConditionText = computed(() => {
+  const device = form.deviceType.trim() || '当前设备'
+  const symptoms = normalizeSymptomKeys()
+  const symptomLabel = symptoms.length ? symptoms.join('、') : '录入故障现象'
+  return `当设备类型为${device}，且故障现象包含${symptomLabel}时，命中该专家规则。`
+})
 
 const activeStatusInfo = computed(() => STATUS[filters.status] || { label: '全部规则' })
 
@@ -159,6 +168,7 @@ function resetForm() {
   form.id = null
   form.title = ''
   form.deviceType = ''
+  form.symptomText = ''
   form.symptomKeys = []
   form.conditionText = ''
   form.conclusion = ''
@@ -168,6 +178,7 @@ function resetForm() {
   form.reviewComment = ''
   tagInput.value = ''
   optionInput.value = ''
+  advancedPanels.value = []
 }
 
 function fillForm(rule) {
@@ -175,25 +186,26 @@ function fillForm(rule) {
   form.title = rule.title || ''
   form.deviceType = rule.deviceType || ''
   form.symptomKeys = [...(rule.symptomKeys || [])]
+  form.symptomText = form.symptomKeys.join('、')
   form.conditionText = rule.conditionText || ''
   form.conclusion = rule.conclusion || ''
   form.question = rule.question || ''
   form.options = [...(rule.options || [])]
-  form.evidenceRefsText = JSON.stringify(rule.evidenceRefs || [], null, 2)
+  form.evidenceRefsText = formatEvidenceRefs(rule.evidenceRefs || [])
   form.reviewComment = rule.reviewComment || ''
 }
 
 function openCreate() {
   resetForm()
   dialog.mode = 'create'
-  dialog.title = '新建诊断规则'
+  dialog.title = '新建专家经验规则'
   dialog.show = true
 }
 
 async function openEdit(rule) {
   resetForm()
   dialog.mode = 'edit'
-  dialog.title = '编辑诊断规则'
+  dialog.title = '编辑专家经验规则'
   dialog.show = true
   try {
     const res = await getDomainRuleDetail(rule.id)
@@ -225,24 +237,87 @@ function removeOption(index) {
   form.options.splice(index, 1)
 }
 
+function uniqueText(values) {
+  const result = []
+  const seen = new Set()
+  values.forEach((item) => {
+    const text = String(item || '').trim()
+    if (!text || seen.has(text)) return
+    result.push(text)
+    seen.add(text)
+  })
+  return result
+}
+
+function splitInputText(value) {
+  return uniqueText(String(value || '').split(/[\n\r,，、;；]+/))
+}
+
+function normalizeSymptomKeys() {
+  return uniqueText([
+    ...splitInputText(form.symptomText),
+    ...form.symptomKeys,
+  ])
+}
+
+function formatEvidenceRefs(refs) {
+  if (!Array.isArray(refs) || refs.length === 0) return ''
+  return refs.map((ref) => {
+    if (ref?.text) return ref.text
+    return [ref?.source, ref?.section, ref?.page ? `第${ref.page}页` : '']
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+      .join(' ｜ ')
+  }).filter(Boolean).join('\n')
+}
+
+function parseEvidenceRefs(value) {
+  const text = String(value || '').trim()
+  if (!text) return []
+  if (text.startsWith('[')) {
+    const parsed = JSON.parse(text)
+    if (!Array.isArray(parsed)) {
+      throw new Error('evidence refs must be an array')
+    }
+    return parsed
+  }
+  return text.split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split(/[|｜]/).map((part) => part.trim()).filter(Boolean)
+      if (parts.length >= 2) {
+        const pageMatch = parts[2]?.match(/\d+/)
+        return {
+          source: parts[0],
+          section: parts[1],
+          ...(pageMatch ? { page: Number(pageMatch[0]) } : {}),
+        }
+      }
+      return { text: line }
+    })
+}
+
 function buildPayload() {
   let evidenceRefs = []
   try {
-    evidenceRefs = JSON.parse(form.evidenceRefsText || '[]')
-    if (!Array.isArray(evidenceRefs)) {
-      ElMessage.warning('证据引用必须是 JSON 数组')
-      return null
-    }
+    evidenceRefs = parseEvidenceRefs(form.evidenceRefsText)
   } catch {
-    ElMessage.warning('证据引用 JSON 格式不正确')
+    ElMessage.warning('证据引用格式不正确')
+    return null
+  }
+
+  const symptomKeys = normalizeSymptomKeys()
+  if (!symptomKeys.length) {
+    ElMessage.warning('请填写故障现象')
     return null
   }
 
   return {
     title: form.title.trim(),
     deviceType: form.deviceType.trim(),
-    symptomKeys: form.symptomKeys.map((item) => item.trim()).filter(Boolean),
-    conditionText: form.conditionText.trim(),
+    symptomKeys,
+    conditionText: form.conditionText.trim() || autoConditionText.value,
     conclusion: form.conclusion.trim(),
     question: form.question.trim() || undefined,
     options: form.options.map((item) => item.trim()).filter(Boolean),
@@ -593,91 +668,127 @@ onMounted(() => loadList(1))
       v-model="dialog.show"
       class="rule-form-dialog"
       :title="dialog.title"
-      width="720px"
+      width="760px"
       :close-on-click-modal="false"
       append-to-body
       align-center
     >
-      <el-form ref="formRef" :model="form" :rules="formRules" label-width="96px" @submit.prevent>
-        <el-form-item label="规则标题" prop="title">
-          <el-input v-model="form.title" maxlength="80" show-word-limit placeholder="例如：发动机冒蓝烟伴随烧机油" />
-        </el-form-item>
+      <el-form ref="formRef" :model="form" :rules="formRules" label-position="top" @submit.prevent>
+        <div class="rule-form-shell">
+          <section class="rule-form-section">
+            <div class="form-section-title">专家经验录入</div>
+            <div class="form-section-subtitle">核心信息</div>
 
-        <el-row :gutter="16">
-          <el-col :span="12">
-            <el-form-item label="设备类型" prop="deviceType">
-              <el-input v-model="form.deviceType" placeholder="例如：摩托车发动机" />
+            <el-row :gutter="16">
+              <el-col :xs="24" :sm="13">
+                <el-form-item label="规则名称" prop="title">
+                  <el-input v-model="form.title" maxlength="80" show-word-limit placeholder="例如：发动机冒蓝烟伴随烧机油" />
+                </el-form-item>
+              </el-col>
+              <el-col :xs="24" :sm="11">
+                <el-form-item label="适用设备" prop="deviceType">
+                  <el-input v-model="form.deviceType" placeholder="例如：摩托车发动机" />
+                </el-form-item>
+              </el-col>
+            </el-row>
+
+            <el-form-item label="故障现象" prop="symptomText">
+              <el-input
+                v-model="form.symptomText"
+                type="textarea"
+                :rows="2"
+                placeholder="例如：冒蓝烟、烧机油，冷却液没有明显减少"
+              />
             </el-form-item>
-          </el-col>
-          <el-col :span="12">
-            <el-form-item label="症状关键词">
-              <div class="tag-editor">
-                <div class="tag-list">
-                  <el-tag v-for="(item, index) in form.symptomKeys" :key="item" closable @close="removeTag(index)">
-                    {{ item }}
-                  </el-tag>
-                </div>
-                <el-input
-                  v-model="tagInput"
-                  placeholder="输入后回车添加"
-                  @keyup.enter="addTag"
-                  @blur="addTag"
-                />
-              </div>
+
+            <el-form-item label="专家判断" prop="conclusion">
+              <el-input
+                v-model="form.conclusion"
+                type="textarea"
+                :rows="4"
+                placeholder="例如：优先检查活塞环磨损或气门油封老化，并确认蓝烟出现时机"
+              />
             </el-form-item>
-          </el-col>
-        </el-row>
 
-        <el-form-item label="命中条件" prop="conditionText">
-          <el-input
-            v-model="form.conditionText"
-            type="textarea"
-            :rows="3"
-            placeholder="写清楚规则适用前提、排除条件和组合条件"
-          />
-        </el-form-item>
-
-        <el-form-item label="诊断结论" prop="conclusion">
-          <el-input
-            v-model="form.conclusion"
-            type="textarea"
-            :rows="3"
-            placeholder="规则命中后直接返回的确定性诊断结论"
-          />
-        </el-form-item>
-
-        <el-form-item label="区分追问">
-          <el-input v-model="form.question" placeholder="例如：启动时蓝烟更明显，还是加速时更明显？" />
-        </el-form-item>
-
-        <el-form-item label="追问选项">
-          <div class="tag-editor">
-            <div class="tag-list">
-              <el-tag v-for="(item, index) in form.options" :key="item" type="warning" closable @close="removeOption(index)">
-                {{ item }}
-              </el-tag>
+            <div class="condition-preview">
+              <span class="preview-label">自动命中条件</span>
+              <span>{{ form.conditionText.trim() || autoConditionText }}</span>
             </div>
-            <el-input
-              v-model="optionInput"
-              placeholder="输入 A/B/C 选项后回车添加"
-              @keyup.enter="addOption"
-              @blur="addOption"
-            />
-          </div>
-        </el-form-item>
+          </section>
 
-        <el-form-item label="证据引用">
-          <el-input
-            v-model="form.evidenceRefsText"
-            type="textarea"
-            :rows="5"
-            placeholder='例如：[{"source":"维修手册","section":"发动机故障诊断","page":20}]'
-          />
-        </el-form-item>
+          <el-collapse v-model="advancedPanels" class="advanced-rule-collapse">
+            <el-collapse-item name="advanced">
+              <template #title>
+                <span class="advanced-title">更多规则设置</span>
+              </template>
 
-        <el-form-item label="审核备注">
-          <el-input v-model="form.reviewComment" type="textarea" :rows="2" placeholder="可填写专家修正说明或规则来源" />
-        </el-form-item>
+              <div class="advanced-fields">
+                <el-form-item label="精确命中条件">
+                  <el-input
+                    v-model="form.conditionText"
+                    type="textarea"
+                    :rows="3"
+                    placeholder="不填写则使用上方自动命中条件"
+                  />
+                </el-form-item>
+
+                <el-form-item label="精确症状词">
+                  <div class="tag-editor">
+                    <div class="tag-list">
+                      <el-tag v-for="(item, index) in form.symptomKeys" :key="item" closable @close="removeTag(index)">
+                        {{ item }}
+                      </el-tag>
+                    </div>
+                    <el-input
+                      v-model="tagInput"
+                      placeholder="输入后回车添加"
+                      @keyup.enter="addTag"
+                      @blur="addTag"
+                    />
+                  </div>
+                </el-form-item>
+
+                <el-row :gutter="16">
+                  <el-col :xs="24" :sm="12">
+                    <el-form-item label="区分追问">
+                      <el-input v-model="form.question" placeholder="例如：启动时蓝烟更明显，还是加速时更明显？" />
+                    </el-form-item>
+                  </el-col>
+                  <el-col :xs="24" :sm="12">
+                    <el-form-item label="追问选项">
+                      <div class="tag-editor">
+                        <div class="tag-list">
+                          <el-tag v-for="(item, index) in form.options" :key="item" type="warning" closable @close="removeOption(index)">
+                            {{ item }}
+                          </el-tag>
+                        </div>
+                        <el-input
+                          v-model="optionInput"
+                          placeholder="输入后回车添加"
+                          @keyup.enter="addOption"
+                          @blur="addOption"
+                        />
+                      </div>
+                    </el-form-item>
+                  </el-col>
+                </el-row>
+
+                <el-form-item label="证据引用">
+                  <el-input
+                    v-model="form.evidenceRefsText"
+                    type="textarea"
+                    :rows="3"
+                    placeholder="每行一条：维修手册 ｜ 发动机故障诊断 ｜ 第20页"
+                  />
+                </el-form-item>
+
+                <el-form-item label="审核备注">
+                  <el-input v-model="form.reviewComment" type="textarea" :rows="2" placeholder="可填写专家修正说明或规则来源" />
+                </el-form-item>
+              </div>
+            </el-collapse-item>
+          </el-collapse>
+        </div>
       </el-form>
 
       <template #footer>
@@ -1109,6 +1220,74 @@ onMounted(() => loadList(1))
   margin-top: 24px;
 }
 
+.rule-form-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.rule-form-section {
+  padding-bottom: 4px;
+}
+
+.form-section-title {
+  color: var(--plaza-heading);
+  font-size: 17px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.form-section-subtitle {
+  margin: 2px 0 16px;
+  color: var(--plaza-text-muted);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.condition-preview {
+  display: grid;
+  grid-template-columns: 92px 1fr;
+  gap: 10px;
+  margin-top: 4px;
+  padding: 10px 12px;
+  color: var(--plaza-text);
+  background: var(--plaza-panel-bg);
+  border: 1px solid var(--plaza-border);
+  border-radius: 8px;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+.preview-label {
+  color: var(--plaza-text-muted);
+  font-weight: 700;
+}
+
+.advanced-rule-collapse {
+  border-top: 1px solid var(--plaza-border);
+  border-bottom: none;
+}
+
+.advanced-rule-collapse :deep(.el-collapse-item__header) {
+  height: 44px;
+  color: var(--plaza-heading);
+  background: transparent;
+  border-bottom: none;
+}
+
+.advanced-rule-collapse :deep(.el-collapse-item__wrap) {
+  border-bottom: none;
+}
+
+.advanced-title {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.advanced-fields {
+  padding-top: 4px;
+}
+
 .tag-editor {
   width: 100%;
 }
@@ -1268,6 +1447,11 @@ onMounted(() => loadList(1))
     flex-direction: row;
     border-top: 1px solid var(--plaza-panel-bg);
     border-left: none;
+  }
+
+  .condition-preview {
+    grid-template-columns: 1fr;
+    gap: 4px;
   }
 }
 </style>
