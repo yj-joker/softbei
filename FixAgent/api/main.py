@@ -1929,6 +1929,9 @@ def _manual_clean_content(content: str) -> str:
     text = str(content or "").strip()
     text = re.sub(r"\bsource=[^\s，。；;）)]+", "", text)
     text = re.sub(r"\b(?:doc_id|chunk_id|image_url|top_k)\s*[:=]\s*[^\s，。；;）)]+", "", text)
+    # Drop PDF page-number footers such as "No. 10 / 41" that leak into chunk text.
+    text = re.sub(r"(?im)^\s*no\.?\s*\d+\s*/\s*\d+\s*$", "", text)
+    text = re.sub(r"(?i)\s*no\.?\s*\d+\s*/\s*\d+\s*", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
 
@@ -2045,14 +2048,42 @@ def _manual_group_score(
         for term in query_terms:
             if term and term not in title_matched_terms and term in content:
                 score += min(len(term), 12)
-        if kind == "procedure" and chunk_type == "step_raw":
-            score += 16
         if kind == "parameter" and chunk_type == "table":
             score += 14
         if kind == "parameter" and re.search(r"\d", content):
             score += 8
             if any(anchor and anchor in content for anchor in _manual_parameter_anchor_terms(message)):
                 score += 80
+    # For a procedure query ("how to install/remove X, the steps"), a section that
+    # carries real operation steps (a ``step_raw`` chunk) should outrank a mere part
+    # list, even when the list's title matches the query anchor more literally
+    # ("...装配部件清单" contains "装配" which collides with install-type anchors).
+    # A pure part-list section (only tables, titled "...清单", no step chunk) is
+    # "which parts exist", not "how to do it", so it is de-prioritised here.
+    if kind == "procedure":
+        group_has_step = any(
+            (
+                (record.get("metadata") or {}).get("chunk_type")
+                or (record.get("metadata") or {}).get("source_chunk_type")
+            ) == "step_raw"
+            for record in records
+        )
+        group_has_table = any(
+            (
+                (record.get("metadata") or {}).get("chunk_type")
+                or (record.get("metadata") or {}).get("source_chunk_type")
+            ) == "table"
+            for record in records
+        )
+        group_is_part_list_only = (
+            not group_has_step
+            and group_has_table
+            and any("清单" in title for title in titles)
+        )
+        if group_has_step:
+            score += 120
+        elif group_is_part_list_only:
+            score -= 100
     return score
 
 
