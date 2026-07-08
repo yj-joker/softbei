@@ -2419,7 +2419,26 @@ def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -
     if document_ids:
         metadata["_deterministic_answer_document_ids"] = document_ids
     if titles:
-        metadata["_deterministic_answer_section_title"] = titles[0]
+        # Use the dominant section's title rather than the first record's.  An
+        # expanded cross-page continuation chunk may carry a neighbouring
+        # section's title; picking it as titles[0] mislabels the answer and
+        # misroutes the direct-image lookup.  Choose the title of the section
+        # that contributes the most records.
+        section_counts: dict[str, int] = {}
+        section_first_title: dict[str, str] = {}
+        for record in records:
+            meta = record.get("metadata") or {}
+            sid = str(meta.get("parent_section_id") or "").strip()
+            title = str(meta.get("section_title") or meta.get("chunk_label") or "").strip()
+            if not title:
+                continue
+            section_counts[sid] = section_counts.get(sid, 0) + 1
+            section_first_title.setdefault(sid, title)
+        if section_counts:
+            dominant_sid = max(section_counts, key=lambda s: section_counts[s])
+            metadata["_deterministic_answer_section_title"] = section_first_title[dominant_sid]
+        else:
+            metadata["_deterministic_answer_section_title"] = titles[0]
     if section_ids:
         metadata["_deterministic_answer_section_ids"] = section_ids
 
@@ -3360,7 +3379,19 @@ def _align_evidence_images_to_text_evidence_pages(
             and _evidence_image_matches_query_anchor(query, image)
         )
     ]
-    return filtered or sorted_images
+    if filtered:
+        return filtered
+    # No candidate image falls on the evidence pages (or a valid continuation
+    # page).  Do not fall back to unrelated candidates — that resurrects the
+    # opposite-action / wrong-page images the evidence pages were meant to
+    # exclude.  When every candidate is off the evidence pages, the target page
+    # simply has no figure, so return nothing.
+    candidate_pages = {
+        _evidence_image_page(image) for image in sorted_images
+    }
+    if candidate_pages and candidate_pages.isdisjoint(allowed):
+        return []
+    return sorted_images
 
 
 _IMAGE_TARGET_SPECIFIC_TERMS = (

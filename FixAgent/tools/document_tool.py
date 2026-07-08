@@ -665,6 +665,49 @@ class DocumentParserTool(BaseTool):
         return "\n".join(str(block.get("text", "")).strip() for block in kept if str(block.get("text", "")).strip())
 
     @staticmethod
+    def _strip_trailing_heading(text: str) -> str:
+        """Remove a trailing section heading line (e.g. "3.3 安装发动机").
+
+        Continuation prefixes sometimes include the next section's heading at
+        the end.  Keeping it pollutes the chunk and can trigger opposite-action
+        trimming, so drop a final line that looks like a numbered heading.
+        """
+        lines = [ln for ln in (text or "").splitlines()]
+        while lines:
+            last = lines[-1].strip()
+            if not last:
+                lines.pop()
+                continue
+            if re.fullmatch(r"\d+(?:\.\d+)*\s*[^\n]{0,20}", last):
+                lines.pop()
+                continue
+            break
+        return "\n".join(lines).strip()
+
+    @staticmethod
+    def _prefix_is_continuation_text(prefix: str) -> bool:
+        """Decide whether a page's pre-step prefix is real continuation content.
+
+        We only want to re-emit substantive text that continues the previous
+        page's step (torque values, part specs, notes).  Pure section headings
+        (e.g. "4.3 凸轮轴"), page-number footers ("No. 8 / 41") and other short
+        boilerplate must be excluded so we do not resurrect heading pollution.
+        """
+        text = (prefix or "").strip()
+        if len(text) < 8:
+            return False
+        # Strip page-number footers like "No. 8 / 41".
+        cleaned = re.sub(r"(?i)no\.?\s*\d+\s*/\s*\d+", "", text).strip()
+        if len(cleaned) < 8:
+            return False
+        # A lone section heading such as "4.3 凸轮轴" / "7.3 磁电机" is not content.
+        if re.fullmatch(r"\d+(?:\.\d+)*\s*[^\n]{0,20}", cleaned):
+            return False
+        # Require some substance: a measurement/spec or a reasonable amount of text.
+        has_measure = bool(re.search(r"\d|N·m|N路m|mm|±", cleaned))
+        return has_measure or len(cleaned) >= 16
+
+    @staticmethod
     def _split_page_text(text: str, page_num: int) -> list:
         """Split a page into structured step chunks when numbered steps exist."""
         page_text = text.strip()
@@ -698,13 +741,33 @@ class DocumentParserTool(BaseTool):
 
         prefix = page_text[:matches[0].start()].strip()
         chunks = []
+        # A non-trivial prefix before the first numbered step is often the tail
+        # of the previous page's step that continues onto this page's top (e.g.
+        # "锁止螺母拧紧力矩：95±5 N·m").  Earlier we stopped prepending it to the
+        # first step (to avoid heading pollution), which dropped this text from
+        # the index entirely.  Re-emit it as an independent text chunk anchored
+        # at offset 0 so _assign_toc_paths attributes it to the carried-in
+        # (previous) section, without contaminating any step's own text.
+        if DocumentParserTool._prefix_is_continuation_text(prefix):
+            # Drop a trailing next-section heading (e.g. "3.3 安装发动机") that
+            # sits after the real continuation text, so it neither pollutes the
+            # chunk nor trips opposite-action trimming downstream.
+            continuation_text = DocumentParserTool._strip_trailing_heading(prefix)
+            prefix_uid = f"p{page_num}:text:0000"
+            chunks.append({
+                "chunk_uid": prefix_uid,
+                "text": continuation_text,
+                "page": page_num,
+                "chunk_label": "text",
+                "context_before": "",
+                "context_after": page_text[matches[0].start():matches[0].start() + 300].strip(),
+                "_off": 0,
+            })
         step_group_id = f"p{page_num}:steps:{hashlib.md5(page_text[:120].encode()).hexdigest()[:8]}"
         for index, match in enumerate(matches):
             start = match.start()
             end = matches[index + 1].start() if index + 1 < len(matches) else len(page_text)
             chunk_text = page_text[start:end].strip()
-            if prefix:
-                chunk_text = f"{prefix}\n{chunk_text}"
             chunk_uid = f"{step_group_id}:step:{index:04d}"
             chunks.append({
                 "chunk_uid": chunk_uid,
@@ -717,11 +780,12 @@ class DocumentParserTool(BaseTool):
                 "context_after": page_text[end:end + 300].strip(),
                 "_off": start,
             })
-        for index, chunk in enumerate(chunks):
+        step_chunks = [chunk for chunk in chunks if chunk.get("chunk_label") == "step"]
+        for index, chunk in enumerate(step_chunks):
             if index > 0:
-                chunk["prev_step_id"] = chunks[index - 1]["chunk_uid"]
-            if index + 1 < len(chunks):
-                chunk["next_step_id"] = chunks[index + 1]["chunk_uid"]
+                chunk["prev_step_id"] = step_chunks[index - 1]["chunk_uid"]
+            if index + 1 < len(step_chunks):
+                chunk["next_step_id"] = step_chunks[index + 1]["chunk_uid"]
         return chunks
 
     @staticmethod
