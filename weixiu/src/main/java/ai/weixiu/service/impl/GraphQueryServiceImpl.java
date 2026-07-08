@@ -254,7 +254,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         neo4jClient.query(cypher)
                 .bindAll(params)
                 .fetchAs(DiagnosisPathVO.class)
-                .mappedBy((ctx, record) -> {
+                .mappedBy((__, record) -> {
                     totalHolder[0] = record.get("total").asLong(0);
                     return mapAggregatedPath(record);
                 })
