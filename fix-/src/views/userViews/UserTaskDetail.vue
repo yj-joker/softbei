@@ -5,7 +5,6 @@ import { ElMessage } from 'element-plus'
 import { gsap } from 'gsap'
 import {
   ArrowLeft,
-  ArrowRight,
   Check,
   Clock,
   Close,
@@ -24,6 +23,7 @@ import { taskStatus, urgency, levelLabel, stepActionable } from '@/constants/tas
 import { useStepReadAlong } from '@/composables/useStepReadAlong'
 import TaskStepCard from '@/components/task/TaskStepCard.vue'
 import TaskAssistantPanel from '@/components/task/TaskAssistantPanel.vue'
+import TaskVoiceModePanel from '@/components/task/TaskVoiceModePanel.vue'
 import CaseSubmitDialog from '@/components/case/CaseSubmitDialog.vue'
 
 const route = useRoute()
@@ -35,6 +35,7 @@ const task = ref(null)
 const loading = ref(false)
 const acting = ref(false)
 const panelRef = ref(null)
+const voiceMode = ref(false)
 const caseDialog = ref(false)
 const caseDraft = ref(null)
 const myCasesDrawer = ref(false)
@@ -94,12 +95,23 @@ const readAlong = useStepReadAlong(steps, {
 
 // 「从此步跟读」开关：再次点正在跟读的那一步 = 停止；否则从该步开始（在别处跟读时点别的步=切换过去）
 function startReadAlongFrom(step) {
+  if (voiceMode.value) return
   if (readAlong.active.value && readAlong.currentStepId.value === step.id) {
     readAlong.exit()
     return
   }
   const i = steps.value.findIndex((x) => x.id === step.id)
   if (i >= 0) readAlong.start(i)
+}
+
+function enterVoiceMode() {
+  readAlong.exit()
+  voiceMode.value = true
+  if (activeStepId.value) taskAssistantStore.setFocus(taskId, activeStepId.value)
+}
+
+function exitVoiceMode() {
+  voiceMode.value = false
 }
 
 let verifyPollTimer = null
@@ -146,6 +158,28 @@ async function onRetry() {
 function onChat(step) {
   taskAssistantStore.setFocus(taskId, step.id)
   panelRef.value?.focusInput?.()
+}
+
+async function onVoiceUpdated(data) {
+  if (!data) return
+  if (Array.isArray(data.steps) && task.value) {
+    task.value = { ...task.value, steps: data.steps }
+    scheduleVerifyPoll()
+  } else {
+    await load()
+  }
+  if (data.currentStepId) {
+    taskAssistantStore.setFocus(taskId, data.currentStepId)
+    await nextTick()
+    scrollToStep(data.currentStepId)
+  }
+}
+
+async function onVoiceFocusStep(stepId) {
+  if (!stepId) return
+  taskAssistantStore.setFocus(taskId, stepId)
+  await nextTick()
+  scrollToStep(stepId)
 }
 
 async function openCaseDialog() {
@@ -363,52 +397,60 @@ onUnmounted(() => {
           </div>
         </div>
 
-        <!-- 跟读模式控制条：手上有油污/边看设备边操作时，用「听」代替「盯屏幕」 -->
-        <div v-if="steps.length" class="readalong-bar" :class="{ on: readAlong.active.value }">
-          <button v-if="!readAlong.active.value" type="button" class="ra-start" @click="readAlong.start()">
-            <el-icon><Headset /></el-icon> 跟读检修步骤
+        <!-- 语音检修模式控制条：从步骤区进入，进入后隐藏右侧检修助手。 -->
+        <div v-if="steps.length" class="readalong-bar" :class="{ on: voiceMode }">
+          <button v-if="!voiceMode" type="button" class="ra-start" @click="enterVoiceMode">
+            <el-icon><Headset /></el-icon> 语音检修
           </button>
           <template v-else>
             <span class="ra-status">
               <i class="ra-dot" />
-              正在跟读 · 第 {{ steps[readAlong.index.value]?.sortOrder || '—' }} 步
-              <em v-if="readAlong.waitingNext.value">（已读完，点「下一步」继续）</em>
+              语音检修中 · {{ activeStep ? `第 ${activeStep.sortOrder} 步` : '全部步骤' }}
             </span>
             <div class="ra-actions">
-              <button
-                v-if="readAlong.waitingNext.value && !readAlong.isLast.value"
-                type="button"
-                class="ra-next"
-                @click="readAlong.next()"
-              >
-                下一步 <el-icon><ArrowRight /></el-icon>
-              </button>
-              <button type="button" class="ra-exit" @click="readAlong.exit()">
-                <el-icon><Close /></el-icon> 退出跟读
+              <button type="button" class="ra-exit" @click="exitVoiceMode">
+                <el-icon><Close /></el-icon> 退出语音检修
               </button>
             </div>
           </template>
         </div>
 
-        <div class="work-grid">
+        <div class="work-grid" :class="{ 'voice-mode-grid': voiceMode }">
           <div class="steps-column">
-            <div class="timeline-line" aria-hidden="true" />
-            <TaskStepCard
-              v-for="s in steps"
-              :key="s.id"
-              :id="'step-' + s.id"
-              :step="s"
+            <TaskVoiceModePanel
+              v-if="voiceMode"
+              class="voice-inline-panel"
               :task-id="taskId"
-              :executing="task.status === 'EXECUTING'"
-              :active="s.id === activeStepId"
-              :reading="s.id === readAlong.currentStepId.value"
-              @submitted="load"
-              @chat="onChat"
-              @read-along="startReadAlongFrom"
+              :steps="steps"
+              :active-step-id="activeStepId"
+              @updated="onVoiceUpdated"
+              @focus-step="onVoiceFocusStep"
+              @exit="exitVoiceMode"
             />
+            <div class="step-list-shell">
+              <div class="timeline-line" aria-hidden="true" />
+              <TaskStepCard
+                v-for="s in steps"
+                :key="s.id"
+                :id="'step-' + s.id"
+                :step="s"
+                :task-id="taskId"
+                :executing="task.status === 'EXECUTING'"
+                :active="s.id === activeStepId"
+                :reading="s.id === readAlong.currentStepId.value"
+                @submitted="load"
+                @chat="onChat"
+                @read-along="startReadAlongFrom"
+              />
+            </div>
           </div>
-          <aside class="assistant-column">
-            <TaskAssistantPanel ref="panelRef" :task-id="taskId" :steps="steps" :active-step-id="activeStepId" />
+          <aside v-if="!voiceMode" class="assistant-column">
+            <TaskAssistantPanel
+              ref="panelRef"
+              :task-id="taskId"
+              :steps="steps"
+              :active-step-id="activeStepId"
+            />
           </aside>
         </div>
       </section>
@@ -611,15 +653,15 @@ onUnmounted(() => {
 .ra-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--plaza-accent); box-shadow: 0 0 0 4px var(--plaza-accent-soft); animation: ra-pulse 1.4s ease-in-out infinite; }
 @keyframes ra-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
 .ra-actions { display: inline-flex; align-items: center; gap: 8px; }
-.ra-next, .ra-exit { display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 0 13px; border-radius: 8px; font-size: 11px; font-weight: 800; cursor: pointer; }
-.ra-next { border: 1px solid transparent; color: #fff; background: var(--plaza-accent-grad); box-shadow: 0 6px 16px var(--plaza-accent-soft-strong); }
-.ra-next:hover { filter: brightness(1.05); }
+.ra-exit { display: inline-flex; min-height: 36px; align-items: center; gap: 5px; padding: 0 13px; border-radius: 8px; font-size: 11px; font-weight: 800; cursor: pointer; }
 .ra-exit { border: 1px solid var(--plaza-border-strong); color: var(--plaza-text-muted); background: var(--plaza-bg-card); }
 .ra-exit:hover { border-color: var(--plaza-accent); color: var(--plaza-accent); }
 @media (prefers-reduced-motion: reduce) { .ra-dot { animation: none; } }
 
 .work-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(350px, 0.38fr); align-items: start; gap: 14px; }
-.steps-column { position: relative; display: flex; min-width: 0; flex-direction: column; gap: 10px; }
+.work-grid.voice-mode-grid { grid-template-columns: minmax(0, 1fr); }
+.steps-column { display: flex; min-width: 0; flex-direction: column; gap: 10px; }
+.step-list-shell { position: relative; display: flex; min-width: 0; flex-direction: column; gap: 10px; }
 .timeline-line { position: absolute; top: 28px; bottom: 28px; left: 27px; width: 1px; background: linear-gradient(var(--plaza-accent), var(--plaza-border) 45%, var(--plaza-border)); }
 .assistant-column { position: sticky; top: 8px; height: calc(100vh - 104px); min-height: 610px; max-height: 880px; }
 
@@ -666,11 +708,13 @@ onUnmounted(() => {
 @media (max-width: 1280px) {
   .task-command { grid-template-columns: minmax(0, 1fr) 350px; }
   .work-grid { grid-template-columns: minmax(0, 1fr) 360px; }
+  .work-grid.voice-mode-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 1080px) {
   .task-command { grid-template-columns: 1fr; }
   .command-readout { grid-template-columns: 82px minmax(0, 1fr); }
   .work-grid { grid-template-columns: 1fr; }
+  .work-grid.voice-mode-grid { grid-template-columns: 1fr; }
   .assistant-column { position: static; width: 100%; height: 620px; min-height: 620px; }
 }
 @media (max-width: 680px) {

@@ -60,6 +60,15 @@
   --plaza-link: #c4602f;
   --plaza-grid-light: #fffdf8;
   --plaza-grid-dark: #f4ecdf;
+  --plaza-atmosphere-a: rgba(219, 133, 86, 0.16);
+  --plaza-atmosphere-b: rgba(224, 152, 47, 0.12);
+  --plaza-atmosphere-c: rgba(196, 96, 47, 0.08);
+  --plaza-scroll-thumb: #d6c8b2;
+  --plaza-scroll-thumb-hover: #c2a98a;
+  --plaza-decor-line: rgba(196, 96, 47, 0.035);
+  --plaza-decor-wash: rgba(196, 96, 47, 0.06);
+  --plaza-decor-wash-soft: rgba(196, 96, 47, 0.03);
+  --plaza-cta-shadow: rgba(196, 96, 47, 0.24);
 
   /* —— 语义色（暖偏向）—— */
   --plaza-success: #5e8c3e;
@@ -199,6 +208,15 @@
   --plaza-link: #2f7488;
   --plaza-grid-light: #ffffff;
   --plaza-grid-dark: #eef1f4;
+  --plaza-atmosphere-a: rgba(74, 147, 166, 0.13);
+  --plaza-atmosphere-b: rgba(47, 116, 136, 0.08);
+  --plaza-atmosphere-c: rgba(36, 93, 110, 0.06);
+  --plaza-scroll-thumb: #c4cfd7;
+  --plaza-scroll-thumb-hover: #9fb4c1;
+  --plaza-decor-line: rgba(47, 116, 136, 0.035);
+  --plaza-decor-wash: rgba(47, 116, 136, 0.055);
+  --plaza-decor-wash-soft: rgba(47, 116, 136, 0.028);
+  --plaza-cta-shadow: rgba(47, 116, 136, 0.22);
   --plaza-info: #2f7488;
   --plaza-info-soft: rgba(47, 116, 136, 0.10);
   --plaza-shadow-organic: 0 1px 2px rgba(30, 45, 60, 0.05), 0 3px 12px rgba(30, 50, 70, 0.08);
@@ -275,7 +293,7 @@
   --atmospheric-bg-from: #f1f4ea;
   --atmospheric-bg-to: #e8efdf;
   --plaza-bg: #eef2e8;
-  --plaza-bg-card: #fffef9;
+  --plaza-bg-card: #fbfdf8;
   --plaza-bg-input: #eef2e6;
   --plaza-accent: #4f7d3a;
   --plaza-accent-hover: #3e6630;
@@ -290,27 +308,36 @@
   --plaza-border-strong: #c9d3b9;
   --plaza-panel-bg: #eef2e6;
   --plaza-link: #4f7d3a;
-  --plaza-grid-light: #fffef9;
+  --plaza-grid-light: #fbfdf8;
   --plaza-grid-dark: #eef2e8;
+  --plaza-atmosphere-a: rgba(111, 161, 79, 0.12);
+  --plaza-atmosphere-b: rgba(79, 125, 58, 0.07);
+  --plaza-atmosphere-c: rgba(62, 102, 48, 0.05);
+  --plaza-scroll-thumb: #c9d3b9;
+  --plaza-scroll-thumb-hover: #9fb08d;
+  --plaza-decor-line: rgba(79, 125, 58, 0.035);
+  --plaza-decor-wash: rgba(79, 125, 58, 0.055);
+  --plaza-decor-wash-soft: rgba(79, 125, 58, 0.028);
+  --plaza-cta-shadow: rgba(79, 125, 58, 0.22);
   --plaza-info: #4f7d3a;
   --plaza-info-soft: rgba(79, 125, 58, 0.10);
   --plaza-shadow-organic: 0 1px 2px rgba(45, 60, 30, 0.05), 0 3px 12px rgba(50, 70, 30, 0.08);
   --plaza-shadow-organic-hover: 0 14px 34px rgba(50, 70, 30, 0.16), 0 3px 8px rgba(50, 70, 30, 0.06);
   --home-btn-sage: #4f7d3a;
   --home-btn-sage-hover: #3e6630;
-  --home-btn-text: #fffef9;
-  --dialog-dark-bg: #fffef9;
+  --home-btn-text: #fbfdf8;
+  --dialog-dark-bg: #fbfdf8;
   --dialog-dark-header: rgba(240, 243, 233, 0.98);
   --dialog-dark-border: #dce3d1;
   --dialog-dark-text: #27331d;
   --dialog-dark-muted: #7c876c;
-  --el-bg-color: #fffef9;
-  --el-bg-color-overlay: #fffef9;
+  --el-bg-color: #fbfdf8;
+  --el-bg-color-overlay: #fbfdf8;
   --el-bg-color-page: #eef2e8;
   --el-fill-color: #eef2e6;
   --el-fill-color-light: #f1f5ea;
   --el-fill-color-lighter: #eef2e6;
-  --el-fill-color-blank: #fffef9;
+  --el-fill-color-blank: #fbfdf8;
   --el-text-color-primary: #27331d;
   --el-text-color-regular: #34402c;
   --el-text-color-secondary: #7c876c;
@@ -322,7 +349,7 @@
   --el-border-color-dark: #c9d3b9;
   --el-border-color-hover: #9bb583;
   --el-fill-color-dark: #e4eada;
-  --el-color-white: #fffef9;
+  --el-color-white: #fbfdf8;
   --el-color-primary: #4f7d3a;
   --el-color-primary-light-3: #769e62;
   --el-color-primary-light-5: #97b889;
@@ -382,11 +409,11 @@ body {
   height: 100%;
   color: var(--plaza-text);
   background-color: var(--plaza-bg);
-  /* 暖色氛围：赤陶与琥珀的柔光在奶油纸上晕开 */
+  /* 主题氛围光：必须跟随 data-theme，避免非暖色主题残留琥珀泛黄。 */
   background-image:
-    radial-gradient(900px 540px at 8% -6%, rgba(219, 133, 86, 0.16), transparent 60%),
-    radial-gradient(760px 520px at 102% 6%, rgba(224, 152, 47, 0.12), transparent 58%),
-    radial-gradient(820px 680px at 50% 116%, rgba(196, 96, 47, 0.08), transparent 62%);
+    radial-gradient(900px 540px at 8% -6%, var(--plaza-atmosphere-a), transparent 60%),
+    radial-gradient(760px 520px at 102% 6%, var(--plaza-atmosphere-b), transparent 58%),
+    radial-gradient(820px 680px at 50% 116%, var(--plaza-atmosphere-c), transparent 62%);
   background-attachment: fixed;
   line-height: 1.55;
   font-family: var(--font-body);
@@ -420,13 +447,13 @@ h1, h2, h3, .display-font {
   height: 10px;
 }
 *::-webkit-scrollbar-thumb {
-  background: #d6c8b2;
+  background: var(--plaza-scroll-thumb);
   border-radius: 8px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 *::-webkit-scrollbar-thumb:hover {
-  background: #c2a98a;
+  background: var(--plaza-scroll-thumb-hover);
   background-clip: content-box;
 }
 *::-webkit-scrollbar-track {

@@ -116,7 +116,7 @@ const goTo = (path) => {
   color: #fff;
   width: 40%;
   height: 40%;
-  filter: drop-shadow(0 0 4px rgba(255, 215, 0, 0.8));
+  filter: drop-shadow(0 0 4px var(--plaza-accent-soft-strong));
 }
 
 @keyframes pulse-ring {

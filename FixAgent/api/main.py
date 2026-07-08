@@ -25,6 +25,7 @@ from schemas.request import (
     CaseExtractRequest,
     ValidateRequest,
 )
+from schemas.voice_task import VoiceTaskDecision, VoiceTaskRequest
 from schemas.response import (
     BaseResponse,
     ChatResponse,
@@ -41,6 +42,7 @@ from schemas.response import (
 )
 from services.case.case_agent import draft_case, check_compliance, extract_material, validate_task_text, validate_graph_entities
 from agents.fix_agent import get_fix_agent
+from agents.voice_task_agent import get_voice_task_agent
 from guardrails import get_review_agent
 from agents.memory_agent import get_memory_agent
 from agents.base_agent import AgentInput, AgentOutput
@@ -577,6 +579,16 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
 
 # ==================== 检修助手出口兜底 ====================
+
+@app.post("/ai/task/voice/decide", response_model=VoiceTaskDecision)
+async def task_voice_decide(request: VoiceTaskRequest) -> VoiceTaskDecision:
+    """Structured voice-maintenance decision endpoint used by Java."""
+    try:
+        return await get_voice_task_agent().decide(request)
+    except Exception as e:
+        logger.exception("[task_voice_decide] session=%s error", request.session_id)
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 _MAINT_REFUSAL_HINTS = (
     "暂不能生成", "无法形成可确认", "无法给出", "资料不足以",

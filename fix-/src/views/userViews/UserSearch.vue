@@ -1320,8 +1320,8 @@ function getRankBadgeClass(index) {
 
 /* 高亮 */
 .highlight {
-  background: rgba(249,115,22,0.15);
-  color: #ea580c;
+  background: var(--plaza-accent-soft-strong);
+  color: var(--plaza-accent-hover);
   border-radius: 2px;
   padding: 0 2px;
 }

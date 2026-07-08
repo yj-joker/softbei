@@ -56,6 +56,7 @@ public class TaskStepRecord implements Serializable {
     /** 工人填写的备注 */
     private String note;
 
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime completedAt;
     private LocalDateTime createdAt;
 

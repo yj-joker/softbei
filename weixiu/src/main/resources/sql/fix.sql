@@ -481,3 +481,46 @@ CREATE TABLE IF NOT EXISTS `expiration_review` (
     `updated_at`            DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX `idx_review_status` (`review_status`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '知识过期判定待审表';
+-- =============================================
+-- 语音检修协作
+-- =============================================
+CREATE TABLE IF NOT EXISTS `maintenance_voice_session` (
+    `id`                  BIGINT       NOT NULL COMMENT '雪花ID',
+    `task_id`             BIGINT       NOT NULL COMMENT '检修任务ID',
+    `user_id`             BIGINT       NOT NULL COMMENT '工人ID',
+    `current_step_id`     BIGINT       NULL COMMENT '当前语音聚焦步骤',
+    `status`              VARCHAR(32)  NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE/COMPLETED/ENDED',
+    `compressed_summary`  TEXT         NULL COMMENT '语音会话压缩摘要',
+    `pending_action`      VARCHAR(64)  NULL COMMENT '等待确认的动作',
+    `pending_step_id`     BIGINT       NULL COMMENT '等待确认的目标步骤',
+    `pending_reply`       TEXT         NULL COMMENT '等待确认时的上一轮回复',
+    `pending_agent_json`  TEXT         NULL COMMENT '等待确认时的模型原始决策',
+    `last_active_at`      DATETIME     NOT NULL COMMENT '最后活跃时间',
+    `created_at`          DATETIME     NOT NULL COMMENT '创建时间',
+    `updated_at`          DATETIME     NOT NULL COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_voice_session_task_user` (`task_id`, `user_id`, `status`),
+    KEY `idx_voice_session_last_active` (`last_active_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检修任务语音会话';
+
+CREATE TABLE IF NOT EXISTS `maintenance_voice_event` (
+    `id`                BIGINT       NOT NULL COMMENT '雪花ID',
+    `session_id`        BIGINT       NOT NULL COMMENT '语音会话ID',
+    `task_id`           BIGINT       NOT NULL COMMENT '检修任务ID',
+    `user_id`           BIGINT       NOT NULL COMMENT '工人ID',
+    `transcript`        TEXT         NOT NULL COMMENT 'ASR最终转写文本',
+    `focused_step_id`   BIGINT       NULL COMMENT '前端当时聚焦步骤',
+    `agent_action`      VARCHAR(64)  NULL COMMENT 'VoiceTaskAgent动作英文值',
+    `action_label`      VARCHAR(64)  NULL COMMENT 'VoiceTaskAgent动作中文名',
+    `target_step_id`    BIGINT       NULL COMMENT '目标步骤ID',
+    `reply_text`        TEXT         NULL COMMENT '最终播报回复',
+    `agent_raw_json`    TEXT         NULL COMMENT '模型结构化决策JSON',
+    `execution_result`  VARCHAR(64)  NULL COMMENT 'Java实际执行结果',
+    `execution_detail`  TEXT         NULL COMMENT 'Java执行说明',
+    `override_flag`     TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否人工覆盖/强制通过',
+    `audit_reason`      TEXT         NULL COMMENT '审计理由',
+    `created_at`        DATETIME     NOT NULL COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_voice_event_session_time` (`session_id`, `created_at`),
+    KEY `idx_voice_event_task_step` (`task_id`, `target_step_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检修任务语音事件';

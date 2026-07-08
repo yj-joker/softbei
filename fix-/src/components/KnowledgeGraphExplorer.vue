@@ -523,12 +523,12 @@ onBeforeUnmount(() => { clearTimeout(renderTimer); cancelAnimationFrame(raf); gr
 .kg-root{
   --bg:var(--plaza-bg); --card:var(--plaza-bg-card); --line:var(--plaza-border); --line-soft:var(--plaza-panel-bg);
   --primary:var(--plaza-accent); --slate:var(--plaza-heading); --mut:var(--plaza-text-muted); --amber:#df9226;
-  --shadow:0 2px 12px rgba(120,70,30,.07),0 1px 3px rgba(120,70,30,.04);
-  --shadow-lg:0 10px 32px rgba(120,70,30,.14);
+  --shadow:var(--plaza-shadow-organic);
+  --shadow-lg:var(--plaza-shadow-organic-hover);
   position:absolute; inset:0; display:flex; flex-direction:column;
   background:
     radial-gradient(900px 500px at 78% -8%, var(--plaza-accent-soft), transparent 60%),
-    radial-gradient(700px 460px at 6% 112%, rgba(224,152,47,.09), transparent 60%),
+    radial-gradient(700px 460px at 6% 112%, var(--plaza-decor-wash-soft), transparent 60%),
     var(--bg);
   color:var(--slate);
   font-family:var(--font-body);

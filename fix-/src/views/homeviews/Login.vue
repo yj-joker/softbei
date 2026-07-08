@@ -246,7 +246,7 @@ const goToForgotPassword = () => {
   position: absolute;
   border-radius: 50%;
   filter: blur(8px);
-  background: radial-gradient(circle at 30% 30%, var(--plaza-accent-soft-strong) 0%, rgba(224, 152, 47, 0.10) 45%, transparent 70%);
+  background: radial-gradient(circle at 30% 30%, var(--plaza-accent-soft-strong) 0%, var(--plaza-atmosphere-b) 45%, transparent 70%);
 }
 
 .circle-1 {
@@ -328,7 +328,7 @@ const goToForgotPassword = () => {
   color: #fff;
   width: 40%;
   height: 40%;
-  filter: drop-shadow(0 0 4px rgba(255, 215, 0, 0.8));
+  filter: drop-shadow(0 0 4px var(--plaza-accent-soft-strong));
 }
 
 @keyframes pulse-ring {
