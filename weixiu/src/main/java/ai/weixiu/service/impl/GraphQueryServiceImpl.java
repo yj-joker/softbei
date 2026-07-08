@@ -134,7 +134,14 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         }
 
         // ===== 6. OR Cypher + matchScore 排序（单次查询同时返回 records 和 total）=====
-        QueryResult queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, skip, safeSize);
+        QueryResult queryResult;
+        try {
+            queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, skip, safeSize);
+        } catch (Exception e) {
+            log.error("Cypher查询失败: devices={} components={} faults={} skip={} limit={} err={}",
+                    deviceIds, componentIds, faultIds, skip, safeSize, e.getMessage(), e);
+            throw e;
+        }
         List<DiagnosisPathVO> records = queryResult.records;
         Long total = queryResult.total;
 
