@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS `maintenance_task` (
     `graph_extraction`    JSON         DEFAULT NULL COMMENT 'AI提取的图谱线索(设备/部件/故障/方案)，沉淀时供管理员确认编辑',
     `promoted_procedure`  VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '规程沉淀状态: PENDING=待处理, PROMOTED=已沉淀, SKIPPED=已跳过',
     `promoted_graph`      VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '图谱沉淀状态: PENDING=待处理, PROMOTED=已沉淀, SKIPPED=已跳过',
+    `voice_summary`       TEXT         NULL COMMENT '语音检修AI对话压缩摘要',
     `created_at`          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at`          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
@@ -456,3 +457,52 @@ CREATE TABLE IF NOT EXISTS `memory_dedup_state` (
                                                     `last_dedup_at` DATETIME NULL     COMMENT '上次语义去重时间',
                                                     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='记忆语义去重进度';
+
+-- =============================================
+-- 知识过期判定待审表
+-- =============================================
+CREATE TABLE IF NOT EXISTS `expiration_review` (
+    `id`                    BIGINT       PRIMARY KEY COMMENT '雪花ID',
+    `trigger_type`          VARCHAR(20)  NOT NULL COMMENT 'TASK_PROMOTION / MANUAL_UPGRADE',
+    `device_name`           VARCHAR(200) NULL COMMENT '设备名称',
+    `manual_name`           VARCHAR(200) NULL COMMENT '手册名称',
+    `new_fault_name`        VARCHAR(200) NULL COMMENT '新故障名',
+    `new_solution_title`    VARCHAR(200) NULL COMMENT '新方案标题',
+    `new_solution_summary`  TEXT         NULL COMMENT '新方案摘要',
+    `candidate_node_id`     VARCHAR(100) NOT NULL COMMENT '候选旧节点 Neo4j ID',
+    `candidate_fault_name`  VARCHAR(200) NULL COMMENT '旧故障名',
+    `candidate_solution_title` VARCHAR(200) NULL COMMENT '旧方案标题',
+    `verdict`               VARCHAR(30)  NOT NULL COMMENT 'LLM判定: REPLACE/SUPPLEMENT/UNRELATED',
+    `confidence`            DECIMAL(4,3) NULL COMMENT '置信度 0~1',
+    `llm_reason`            TEXT         NULL COMMENT 'LLM判定理由',
+    `review_status`         VARCHAR(20)  DEFAULT 'PENDING' COMMENT 'PENDING/APPROVED/REJECTED',
+    `reviewed_by`           VARCHAR(100) NULL COMMENT '审核人',
+    `reviewed_at`           DATETIME     NULL COMMENT '审核时间',
+    `created_at`            DATETIME     DEFAULT CURRENT_TIMESTAMP,
+    `updated_at`            DATETIME     DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX `idx_review_status` (`review_status`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '知识过期判定待审表';
+-- =============================================
+-- 语音检修协作
+-- =============================================
+CREATE TABLE IF NOT EXISTS `maintenance_voice_event` (
+    `id`                BIGINT       NOT NULL COMMENT '雪花ID',
+    `session_id`        BIGINT       NOT NULL COMMENT '语音会话ID',
+    `task_id`           BIGINT       NOT NULL COMMENT '检修任务ID',
+    `user_id`           BIGINT       NOT NULL COMMENT '工人ID',
+    `transcript`        TEXT         NOT NULL COMMENT 'ASR最终转写文本',
+    `focused_step_id`   BIGINT       NULL COMMENT '前端当时聚焦步骤',
+    `agent_action`      VARCHAR(64)  NULL COMMENT 'VoiceTaskAgent动作英文值',
+    `action_label`      VARCHAR(64)  NULL COMMENT 'VoiceTaskAgent动作中文名',
+    `target_step_id`    BIGINT       NULL COMMENT '目标步骤ID',
+    `reply_text`        TEXT         NULL COMMENT '最终播报回复',
+    `agent_raw_json`    TEXT         NULL COMMENT '模型结构化决策JSON',
+    `execution_result`  VARCHAR(64)  NULL COMMENT 'Java实际执行结果',
+    `execution_detail`  TEXT         NULL COMMENT 'Java执行说明',
+    `override_flag`     TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '是否人工覆盖/强制通过',
+    `audit_reason`      TEXT         NULL COMMENT '审计理由',
+    `created_at`        DATETIME     NOT NULL COMMENT '创建时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_voice_event_session_time` (`session_id`, `created_at`),
+    KEY `idx_voice_event_task_step` (`task_id`, `target_step_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检修任务语音事件';

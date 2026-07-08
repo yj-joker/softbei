@@ -64,3 +64,46 @@ export function taskChatStream(taskId, { message, images = [], focusedStepId = n
 export function getTaskChatHistory(taskId) {
   return request({ url: `${BASE}/${taskId}/chat/history`, method: 'GET' })
 }
+
+export function startTaskVoiceSession(taskId, { focusedStepId = null } = {}) {
+  return request({
+    url: `${BASE}/${taskId}/voice/start`,
+    method: 'POST',
+    data: { focusedStepId },
+    throwOnError: true,
+  })
+}
+
+export function sendTaskVoiceTurn(taskId, {
+  transcript,
+  focusedStepId = null,
+  confirmed = false,
+  override = false,
+  images = [],
+  note = '',
+  checkpointConfirmed = false,
+} = {}) {
+  return request({
+    url: `${BASE}/${taskId}/voice/turn`,
+    method: 'POST',
+    data: {
+      transcript,
+      focusedStepId,
+      confirmed,
+      override,
+      images,
+      note,
+      checkpointConfirmed,
+    },
+    throwOnError: true,
+    timeout: 180000,
+  })
+}
+
+export function endTaskVoiceSession(taskId) {
+  return request({
+    url: `${BASE}/${taskId}/voice/end`,
+    method: 'POST',
+    throwOnError: true,
+  })
+}

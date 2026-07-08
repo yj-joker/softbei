@@ -329,15 +329,15 @@ const goBack = () => {
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(249, 115, 22, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(249, 115, 22, 0.03) 1px, transparent 1px);
+    linear-gradient(var(--plaza-decor-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--plaza-decor-line) 1px, transparent 1px);
   background-size: 48px 48px;
 }
 
 .bg-circle {
   position: absolute;
   border-radius: 50%;
-  background: linear-gradient(135deg, rgba(249, 115, 22, 0.06) 0%, transparent 60%);
+  background: linear-gradient(135deg, var(--plaza-decor-wash) 0%, transparent 60%);
 }
 
 .circle-1 {
@@ -517,7 +517,7 @@ const goBack = () => {
 
 .code-input-wrapper:focus-within {
   border-color: var(--plaza-accent) !important;
-  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.1) !important;
+  box-shadow: 0 0 0 3px var(--plaza-accent-soft) !important;
 }
 
 .code-input {
@@ -605,7 +605,7 @@ const goBack = () => {
 
 .forgot-input :deep(.el-input.is-focus .el-input__wrapper) {
   border-color: var(--plaza-accent) !important;
-  box-shadow: 0 0 0 3px rgba(249, 115, 22, 0.1) !important;
+  box-shadow: 0 0 0 3px var(--plaza-accent-soft) !important;
 }
 
 .forgot-input :deep(.el-input__inner) {

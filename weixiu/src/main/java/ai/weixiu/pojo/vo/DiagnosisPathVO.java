@@ -42,5 +42,6 @@ public class DiagnosisPathVO {
         private String title;
         private Integer estimatedTime;
         private Boolean verified;
+        private String status;
     }
 }

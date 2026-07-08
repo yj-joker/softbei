@@ -134,7 +134,14 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         }
 
         // ===== 6. OR Cypher + matchScore 排序（单次查询同时返回 records 和 total）=====
-        QueryResult queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, skip, safeSize);
+        QueryResult queryResult;
+        try {
+            queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, skip, safeSize);
+        } catch (Exception e) {
+            log.error("Cypher查询失败: devices={} components={} faults={} skip={} limit={} err={}",
+                    deviceIds, componentIds, faultIds, skip, safeSize, e.getMessage(), e);
+            throw e;
+        }
         List<DiagnosisPathVO> records = queryResult.records;
         Long total = queryResult.total;
 
@@ -180,7 +187,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
     ) {
         Map<String, Object> params = new HashMap<>();
         params.put("skip", skip);
-        params.put("limit", skip + limit);
+        params.put("endIdx", skip + limit);
 
         // 构建 OR 条件
         List<String> orConditions = new ArrayList<>();
@@ -193,7 +200,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             params.put("faultIds", faultIds);
         }
 
-        String whereClause = String.join(" OR ", orConditions);
+        String whereClause = "(" + String.join(" OR ", orConditions) + ")"
+                + " AND (f.status IS NULL OR f.status <> 'deprecated')";
 
         // 确保评分参数存在（即使为空列表）
         params.putIfAbsent("componentIds", List.of());
@@ -214,16 +222,18 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 ORDER BY matchScore DESC, hasHistory DESC
                 WITH collect({d: d, c: c, f: f, hasHistory: hasHistory, matchScore: matchScore}) AS allPaths
                 WITH allPaths, size(allPaths) AS total
-                UNWIND allPaths[$skip..$limit] AS path
+                UNWIND allPaths[$skip..$endIdx] AS path
                 WITH path.d AS d, path.c AS c, path.f AS f,
                      path.hasHistory AS hasHistory, path.matchScore AS matchScore, total
                 OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
+                WHERE (s.status IS NULL OR s.status <> 'deprecated')
                 WITH d, c, f, hasHistory, matchScore, total,
                      collect(DISTINCT {
                          id: s.id,
                          title: s.title,
                          estimatedTime: s.estimated_time,
-                         verified: s.verified
+                         verified: s.verified,
+                         status: coalesce(s.status, 'active')
                      }) AS solutions
                 RETURN d.id AS deviceId,
                        d.name AS deviceName,
@@ -244,7 +254,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         neo4jClient.query(cypher)
                 .bindAll(params)
                 .fetchAs(DiagnosisPathVO.class)
-                .mappedBy((ctx, record) -> {
+                .mappedBy((__, record) -> {
                     totalHolder[0] = record.get("total").asLong(0);
                     return mapAggregatedPath(record);
                 })
@@ -278,7 +288,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                         id.toString(),
                         map.get("title") != null ? map.get("title").toString() : null,
                         map.get("estimatedTime") != null ? ((Number) map.get("estimatedTime")).intValue() : null,
-                        map.get("verified") != null ? (Boolean) map.get("verified") : null
+                        map.get("verified") != null ? (Boolean) map.get("verified") : null,
+                        map.get("status") != null ? map.get("status").toString() : "active"
                 ));
             }
         }

@@ -68,6 +68,9 @@ public class MaintenanceTask implements Serializable {
     /** 图谱沉淀状态: PENDING / PROMOTED / SKIPPED */
     private String promotedGraph;
 
+    /** 语音检修AI对话压缩摘要 */
+    private String voiceSummary;
+
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 }

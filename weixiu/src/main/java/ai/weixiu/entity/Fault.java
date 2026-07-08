@@ -52,6 +52,17 @@ public class Fault {
     @Property("multimodal_embedding")
     private List<Double> multimodalEmbedding;
 
+    // ===== 知识过期字段 =====
+    @Property("status")
+    @Builder.Default
+    private String status = "active";  // "active" | "deprecated" | "review"
+
+    @Property("deprecated_at")
+    private LocalDateTime deprecatedAt;  // 标记过期的时刻
+
+    @Property("deprecated_by")
+    private String deprecatedBy;  // "auto" | "admin"
+
     // 关系 涉及哪些部件（多对多，部件 --> 故障，故障端是 INCOMING）
 //    @Relationship(type = "CAUSES", direction = Relationship.Direction.INCOMING)
 //    @Builder.Default

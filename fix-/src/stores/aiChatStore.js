@@ -79,6 +79,7 @@ function createSession(welcomeMessage, mode = 'maintenance') {
     title: '新对话',
     updatedAt: Date.now(),
     messages: [createWelcomeMessage(welcomeMessage)],
+    streaming: false,
   }
 }
 
@@ -98,7 +99,6 @@ function ensure(storageKey, welcomeMessage) {
       sessions: [],
       currentSessionIds: { chat: '', maintenance: '' },
       currentSessionId: '',
-      streaming: false,
       loading: false,
       loaded: false,
     }
@@ -226,6 +226,11 @@ export const aiChatStore = {
   deleteSession(storageKey, sessionId, mode = 'maintenance') {
     const state = ensure(storageKey)
     const sessionMode = normalizeMode(mode)
+    // 如果正在流式输出，先中止
+    if (controllers[sessionId]) {
+      controllers[sessionId].abort()
+      delete controllers[sessionId]
+    }
     state.sessions = state.sessions.filter((session) => session.id !== sessionId)
     if (state.currentSessionIds[sessionMode] === sessionId) {
       const nextSession = state.sessions.find((session) => inferSessionMode(session) === sessionMode)
@@ -254,12 +259,12 @@ export const aiChatStore = {
     const sessionMode = normalizeMode(mode)
     const session = ensureModeSession(state, sessionMode)
     const trimmedText = (text || '').trim()
-    if (!session || state.streaming || (!trimmedText && !files.length)) return
+    if (!session || session.streaming || (!trimmedText && !files.length)) return
     const content = trimmedText
 
     const controller = new AbortController()
-    controllers[storageKey] = controller
-    state.streaming = true
+    controllers[session.id] = controller
+    session.streaming = true
     let fullContent = ''
     let typeTimer = null
     let assistant = null
@@ -450,14 +455,14 @@ export const aiChatStore = {
       }
     } finally {
       if (typeTimer) clearInterval(typeTimer)
-      state.streaming = false
-      delete controllers[storageKey]
+      session.streaming = false
+      delete controllers[session.id]
       touchSession(state, session)
     }
   },
 
-  stop(storageKey) {
-    const controller = controllers[storageKey]
+  stop(storageKey, sessionId) {
+    const controller = controllers[sessionId]
     if (controller) controller.abort()
   },
 }

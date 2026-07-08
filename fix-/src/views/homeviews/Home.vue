@@ -282,7 +282,7 @@ const steps = [
   color: #fff;
   width: 16px;
   height: 16px;
-  filter: drop-shadow(0 0 4px rgba(255, 215, 0, 0.8));
+  filter: drop-shadow(0 0 4px var(--plaza-accent-soft-strong));
 }
 
 @keyframes pulse-ring {
@@ -324,8 +324,8 @@ const steps = [
   position: absolute;
   inset: 0;
   background-image:
-    linear-gradient(rgba(249, 115, 22, 0.03) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(249, 115, 22, 0.03) 1px, transparent 1px);
+    linear-gradient(var(--plaza-decor-line) 1px, transparent 1px),
+    linear-gradient(90deg, var(--plaza-decor-line) 1px, transparent 1px);
   background-size: 48px 48px;
   pointer-events: none;
 }
@@ -338,7 +338,7 @@ const steps = [
 .bg-circle {
   position: absolute;
   border-radius: 50%;
-  background: linear-gradient(135deg, rgba(249, 115, 22, 0.06) 0%, transparent 60%);
+  background: linear-gradient(135deg, var(--plaza-decor-wash) 0%, transparent 60%);
 }
 .circle-1 {
   width: 500px;
@@ -357,7 +357,7 @@ const steps = [
   height: 300px;
   top: 40%;
   left: 10%;
-  background: linear-gradient(135deg, rgba(132, 204, 22, 0.04) 0%, transparent 60%);
+  background: linear-gradient(135deg, var(--plaza-decor-wash-soft) 0%, transparent 60%);
 }
 .hero-content {
   position: relative;
@@ -548,7 +548,7 @@ const steps = [
 /* CTA */
 .cta {
   padding: clamp(50px, 8vw, 100px) 5vw;
-  background: linear-gradient(135deg, rgba(249, 115, 22, 0.04) 0%, rgba(249, 115, 22, 0.02) 100%);
+  background: linear-gradient(135deg, var(--plaza-decor-wash-soft) 0%, transparent 100%);
 }
 .cta-content {
   max-width: 600px;
@@ -581,7 +581,7 @@ const steps = [
 .cta-btn:hover {
   background: var(--plaza-accent-hover) !important;
   transform: translateY(-2px);
-  box-shadow: 0 8px 24px rgba(249, 115, 22, 0.25);
+  box-shadow: 0 8px 24px var(--plaza-cta-shadow);
 }
 .cta-features {
   display: flex;

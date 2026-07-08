@@ -5,6 +5,7 @@ import { Search, Refresh, DocumentAdd, Share, CloseBold, Right } from '@element-
 import { getTaskList, promoteToProcedure, promoteToGraph, skipPromotion } from '@/api/task'
 import DistillationReviewPanel from '@/components/DistillationReviewPanel.vue'
 import CaseReviewPanel from '@/components/case/CaseReviewPanel.vue'
+import ExpirationReviewSection from '@/components/ExpirationReviewSection.vue'
 
 /* ========== Tab ========== */
 const activeTab = ref('list')
@@ -543,6 +544,16 @@ onMounted(() => loadTasks(1))
           </span>
         </template>
         <CaseReviewPanel />
+      </el-tab-pane>
+
+      <el-tab-pane name="expiration-review">
+        <template #label>
+          <span class="tab-label-custom">
+            过期判定
+            <span class="tab-badge">过期</span>
+          </span>
+        </template>
+        <ExpirationReviewSection />
       </el-tab-pane>
     </el-tabs>
   </div>
