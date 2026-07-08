@@ -487,7 +487,7 @@ CREATE TABLE IF NOT EXISTS `expiration_review` (
 -- =============================================
 CREATE TABLE IF NOT EXISTS `maintenance_voice_event` (
     `id`                BIGINT       NOT NULL COMMENT '雪花ID',
-    `session_id`        BIGINT       NOT NULL COMMENT '语音会话ID',
+    `session_id`        BIGINT       NULL COMMENT '语音会话ID（已废弃，用taskId替代）',
     `task_id`           BIGINT       NOT NULL COMMENT '检修任务ID',
     `user_id`           BIGINT       NOT NULL COMMENT '工人ID',
     `transcript`        TEXT         NOT NULL COMMENT 'ASR最终转写文本',
@@ -503,6 +503,6 @@ CREATE TABLE IF NOT EXISTS `maintenance_voice_event` (
     `audit_reason`      TEXT         NULL COMMENT '审计理由',
     `created_at`        DATETIME     NOT NULL COMMENT '创建时间',
     PRIMARY KEY (`id`),
-    KEY `idx_voice_event_session_time` (`session_id`, `created_at`),
+    KEY `idx_voice_event_task_time` (`task_id`, `created_at`),
     KEY `idx_voice_event_task_step` (`task_id`, `target_step_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检修任务语音事件';
