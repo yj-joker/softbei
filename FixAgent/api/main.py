@@ -1,7 +1,9 @@
 import json
+import hashlib
 import logging
 import os
 import re
+import tempfile
 import time
 from functools import partial
 from typing import Any, List
@@ -641,6 +643,15 @@ def _is_inventory_table_query(message: str) -> bool:
     text = (message or "").strip()
     if not text:
         return False
+    strong_keywords = ("清单", "BOM", "bom", "明细", "列表")
+    if any(keyword in text for keyword in strong_keywords):
+        return True
+    procedure_hints = (
+        "怎么", "如何", "步骤", "流程", "拆卸", "拆下", "取下", "取出",
+        "安装", "装上", "放入", "依次",
+    )
+    if any(hint in text for hint in procedure_hints):
+        return False
     return any(keyword in text for keyword in _INVENTORY_QUERY_KEYWORDS)
 
 
@@ -781,11 +792,119 @@ def _dedupe_inventory_rows(rows: list[dict]) -> list[dict]:
     return deduped
 
 
+def _inventory_int(value: Any, default: int | None = None) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _inventory_rows_have_duplicate_sequence(rows: list[dict]) -> bool:
+    seen: set[str] = set()
+    for row in rows:
+        seq = str(row.get("seq") or "").strip()
+        if not seq:
+            continue
+        if seq in seen:
+            return True
+        seen.add(seq)
+    return False
+
+
+def _select_inventory_primary_table_candidates(candidates: list[dict]) -> list[dict]:
+    """Drop likely auxiliary/diagram tables while keeping true multi-page BOM continuations.
+
+    Some imported manuals assign a broad section range to an inventory chapter.
+    In that case a later page may contain a small figure-callout table with the
+    same headers and section title, but it is not the requested BOM body.  True
+    continuation tables are usually structurally continuous: their sequence
+    numbers keep increasing and do not restart/duplicate within the later table.
+    """
+    full_tables = [
+        candidate for candidate in candidates
+        if candidate.get("chunk_label") == "table_full" and candidate.get("rows")
+    ]
+    if len(full_tables) <= 1:
+        return candidates
+
+    ordered_full = sorted(
+        full_tables,
+        key=lambda candidate: (
+            _inventory_int(candidate.get("page"), 9999) or 9999,
+            _inventory_int(candidate.get("source_index"), 9999) or 9999,
+            str(candidate.get("source_id") or ""),
+        ),
+    )
+    primary = ordered_full[0]
+    primary_rows = primary.get("rows") or []
+    primary_seqs = [
+        seq for seq in (_inventory_int(row.get("seq")) for row in primary_rows)
+        if seq is not None
+    ]
+    if not primary_seqs:
+        return candidates
+    primary_max_seq = max(primary_seqs)
+    primary_row_count = len(primary_rows)
+
+    kept_full_ids = {id(primary)}
+    for candidate in ordered_full[1:]:
+        rows = candidate.get("rows") or []
+        seqs = [
+            seq for seq in (_inventory_int(row.get("seq")) for row in rows)
+            if seq is not None
+        ]
+        if not seqs:
+            kept_full_ids.add(id(candidate))
+            continue
+        starts_after_primary = min(seqs) > primary_max_seq
+        overlaps_primary_tail = min(seqs) <= primary_max_seq < max(seqs)
+        has_duplicate_seq = _inventory_rows_have_duplicate_sequence(rows)
+        small_later_table = len(rows) <= max(3, primary_row_count // 2)
+        if overlaps_primary_tail:
+            kept_full_ids.add(id(candidate))
+            continue
+        if starts_after_primary and not (has_duplicate_seq and small_later_table):
+            kept_full_ids.add(id(candidate))
+
+    parent_ids_to_keep: set[str] = {
+        str(candidate.get("source_id") or "")
+        for candidate in candidates
+        if id(candidate) in kept_full_ids and candidate.get("source_id")
+    }
+    selected: list[dict] = []
+    for candidate in candidates:
+        if candidate.get("chunk_label") == "table_full":
+            if id(candidate) in kept_full_ids:
+                selected.append(candidate)
+            continue
+        parent_id = str(candidate.get("parent_table_chunk_id") or "")
+        if parent_ids_to_keep and parent_id and parent_id not in parent_ids_to_keep:
+            continue
+        selected.append(candidate)
+    return selected or candidates
+
+
 def _inventory_sort_key(row: dict) -> tuple[int, str]:
     seq = str(row.get("seq") or "").strip()
     if seq.isdigit():
         return (int(seq), "")
     return (10_000, seq)
+
+
+def _inventory_torque_from_remark(remark: str) -> str:
+    text = str(remark or "")
+    match = re.search(
+        r"(\d+(?:\.\d+)?\s*(?:±|卤|\+/-)\s*\d+(?:\.\d+)?\s*N\s*[·路.]\s*m|\d+(?:\.\d+)?\s*N\s*[·路.]\s*m)",
+        text,
+        re.IGNORECASE,
+    )
+    if not match:
+        return ""
+    torque = match.group(1)
+    torque = torque.replace("卤", "±")
+    torque = re.sub(r"\s*(?:±|\+/-)\s*", "±", torque)
+    torque = re.sub(r"\s*N\s*[·路.]\s*m", " N·m", torque, flags=re.IGNORECASE)
+    return torque.strip()
 
 
 def _inventory_subject_from_title(title: str) -> str:
@@ -795,6 +914,182 @@ def _inventory_subject_from_title(title: str) -> str:
             subject = subject[: -len(suffix)].strip()
             break
     return subject or "该装配"
+
+
+def _compact_inventory_text(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).replace("－", "-").replace("．", ".")
+
+
+def _inventory_row_terms(name: str) -> list[str]:
+    text = _compact_inventory_text(name)
+    terms: list[str] = []
+    for pattern in (r"[A-Za-z]+\d+(?:[×x*.]\d+(?:\.\d+)?)*", r"\d+(?:\.\d+)?(?:[×x*]\d+(?:\.\d+)?)+", r"[一-鿿]{2,}"):
+        for term in re.findall(pattern, text):
+            if term and term not in terms:
+                terms.append(term)
+    for term in (
+        "O型圈",
+        "O形圈",
+        "空心定位销",
+        "定位销",
+        "圆柱销",
+        "螺栓",
+        "螺母",
+        "挡圈",
+        "垫圈",
+        "垫片",
+        "拉玛",
+        "规格",
+    ):
+        if term in text and term not in terms:
+            terms.append(term)
+    if text and text not in terms:
+        terms.append(text)
+    return terms
+
+
+def _inventory_query_requests_specific_rows(message: str) -> bool:
+    text = message or ""
+    full_list_hints = ("有哪些", "都有哪些", "完整", "全部", "全量", "列一下", "列出", "展示", "看看")
+    asks_value = any(term in text for term in ("数量", "多少", "扭矩", "扭力", "力矩", "是多少", "要求", "规格", "是什么", "校正力", "锁紧"))
+    scoped = any(term in text for term in ("中", "里", "其中", "的数量", "的扭矩", "的扭力"))
+    if asks_value and scoped:
+        return True
+    if any(term in text for term in ("M", "GB", "φ", "Φ", "×", "O型圈", "螺母", "垫片", "挡圈", "摩擦片")) and asks_value:
+        return True
+    if _is_inventory_table_query(text):
+        return False
+    return not any(hint in text for hint in full_list_hints)
+
+
+def _inventory_row_query_score(
+    message: str,
+    row: dict,
+    sibling_names: list[str] | None = None,
+) -> tuple[int, int, int]:
+    query = _compact_inventory_text(message)
+    name = _compact_inventory_text(row.get("name") or "")
+    remark = _compact_inventory_text(row.get("remark") or "")
+    name_score = 0
+    remark_score = 0
+    total = 0
+    if name and name in query:
+        # Prefix suppression: if a longer sibling row name (e.g. "水泵盖") also
+        # appears in the query and starts with this name (e.g. "水泵"), the user
+        # is asking about the more specific part.  Do not let the short name win
+        # on the full-name match bonus.
+        overridden_by_longer = False
+        for sibling in sibling_names or ():
+            sibling_norm = _compact_inventory_text(sibling)
+            if not sibling_norm or sibling_norm == name:
+                continue
+            # Compare against the sibling's main term (e.g. "水泵盖" from
+            # "水泵盖（钛金）") so a parenthetical suffix does not hide the match.
+            sibling_variants = {sibling_norm, *_inventory_row_terms(sibling_norm)}
+            for variant in sibling_variants:
+                if (
+                    variant != name
+                    and variant.startswith(name)
+                    and variant in query
+                ):
+                    overridden_by_longer = True
+                    break
+            if overridden_by_longer:
+                break
+        if not overridden_by_longer:
+            name_score += 80
+    for term in _inventory_row_terms(name):
+        if len(term) < 2:
+            continue
+        if term in query:
+            weight = min(len(term), 12)
+            if re.search(r"\d|[A-Za-z]", term):
+                weight += 10
+            name_score += weight
+    # Reverse match: an alphanumeric part code from the query (e.g. "M10") that
+    # appears inside the row name (e.g. "M10×1.25盖形法兰面螺母") should score,
+    # even though the row's own token "M10×1.25" is not a query substring.
+    for q_term in _inventory_row_terms(query):
+        if len(q_term) < 2 or not re.match(r"^[A-Za-z]+\d", q_term):
+            continue
+        if q_term in name:
+            name_score += min(len(q_term), 12) + 10
+    for term in _inventory_row_terms(remark):
+        if len(term) < 2:
+            continue
+        if term in query:
+            weight = min(len(term), 12)
+            if re.search(r"\d|[A-Za-z]", term):
+                weight += 10
+            remark_score += weight
+    if "拉玛" in query and "拉玛" in remark:
+        remark_score += 24
+    if "规格" in query and "规格" in remark:
+        remark_score += 10
+    if "组件" in query and name in {"水泵", "机油泵"}:
+        name_score += 8
+    total += name_score
+    total += remark_score
+    asks_torque = any(term in query for term in ("扭矩", "扭力", "力矩", "锁紧", "校验"))
+    if asks_torque and re.search(r"N[·.路]?\s*m|N·m|N路m", remark, re.IGNORECASE):
+        total += 20
+    asks_quantity = any(term in query for term in ("数量", "多少", "几", "数目"))
+    if asks_quantity and row.get("quantity"):
+        total += 4
+    return total, name_score, remark_score
+
+
+def _filter_inventory_rows_for_query(message: str, rows: list[dict]) -> list[dict]:
+    """For targeted inventory questions, return only matching rows.
+
+    Full-list questions still return the whole table.  This keeps the
+    deterministic BOM path useful for "展示清单", while avoiding unrelated row
+    quantities/torques when the user asks about a specific part.
+    """
+    if len(rows) <= 1 or not _inventory_query_requests_specific_rows(message):
+        return rows
+    all_names = [str(row.get("name") or "") for row in rows]
+    scored = [
+        (index, *_inventory_row_query_score(message, row, all_names), row)
+        for index, row in enumerate(rows)
+    ]
+    candidates = [
+        (index, total, name_score, remark_score, row)
+        for index, total, name_score, remark_score, row in scored
+        if name_score >= 4 or remark_score >= 4
+    ]
+    if not candidates:
+        return rows
+    best = max(total for _, total, _, _, _ in candidates)
+    if best < 10:
+        return rows
+    filtered = [
+        row
+        for index, total, name_score, remark_score, row in candidates
+        if total >= 10
+    ]
+    compact_message = _compact_inventory_text(message)
+    if (
+        "组件" in compact_message
+        and any(term in compact_message for term in ("扭矩", "扭力", "力矩", "锁紧", "校验"))
+        and filtered
+    ):
+        selected_indexes = {
+            index for index, total, _name_score, _remark_score, _row in candidates if total >= 10
+        }
+        adjacent_indexes = {
+            adjacent
+            for index in selected_indexes
+            for adjacent in (index - 1, index, index + 1)
+            if 0 <= adjacent < len(rows)
+        }
+        expanded: list[dict] = []
+        for index, _total, _name_score, _remark_score, row in scored:
+            if index in adjacent_indexes and row not in expanded:
+                expanded.append(row)
+        if expanded:
+            return expanded
+    return filtered or rows
 
 
 def _format_inventory_table_answer_from_metadata(
@@ -831,6 +1126,7 @@ def _format_inventory_table_answer_from_metadata(
         content = item.get("content") or item.get("text") or ""
         section_id = str(meta.get("parent_section_id") or "")
         section_title = str(meta.get("section_title") or meta.get("chunk_label") or "").strip()
+        document_id = str(meta.get("document_id") or "")
         page = meta.get("page_number") or meta.get("page")
 
         rows = _inventory_rows_from_table_full(meta.get("table_full"))
@@ -838,30 +1134,46 @@ def _format_inventory_table_answer_from_metadata(
             rows = _inventory_rows_from_pipe_table(content)
 
         if rows:
+            for row in rows:
+                row.setdefault("_source_page", page)
+                row.setdefault("_source_table_id", str(item.get("id") or item.get("doc_id") or ""))
+                row.setdefault("_source_table_rows", len(rows))
             candidates.append({
                 "rows": rows,
                 "section_id": section_id,
                 "section_title": section_title,
+                "document_id": document_id,
                 "page": page,
                 "chunk_label": chunk_label,
+                "source_id": str(item.get("id") or item.get("doc_id") or ""),
+                "source_index": meta.get("source_index"),
+                "parent_table_chunk_id": meta.get("parent_table_chunk_id"),
             })
             continue
 
         row = _inventory_row_from_key_values(content)
         if row:
+            row.setdefault("_source_page", page)
+            row.setdefault("_source_table_id", str(meta.get("parent_table_chunk_id") or ""))
+            row.setdefault("_source_table_rows", meta.get("table_rows"))
             group_key = (section_id, section_title, str(page or ""))
             group = row_groups.setdefault(group_key, {
                 "rows": [],
                 "section_id": section_id,
                 "section_title": section_title,
+                "document_id": document_id,
                 "page": page,
                 "chunk_label": chunk_label,
+                "source_id": str(meta.get("parent_table_chunk_id") or item.get("id") or item.get("doc_id") or ""),
+                "source_index": meta.get("source_index"),
+                "parent_table_chunk_id": meta.get("parent_table_chunk_id"),
             })
             group["rows"].append(row)
 
     candidates.extend(row_groups.values())
     if not candidates:
         return None
+    candidates = _select_inventory_primary_table_candidates(candidates)
 
     groups: dict[tuple[str, str], dict] = {}
     for candidate in candidates:
@@ -872,6 +1184,7 @@ def _format_inventory_table_answer_from_metadata(
         group = groups.setdefault(group_key, {
             "rows": [],
             "pages": [],
+            "document_ids": [],
             "section_id": candidate.get("section_id") or "",
             "section_title": candidate.get("section_title") or "",
             "full_table_count": 0,
@@ -880,15 +1193,35 @@ def _format_inventory_table_answer_from_metadata(
         page = candidate.get("page")
         if page and page not in group["pages"]:
             group["pages"].append(page)
+        document_id = candidate.get("document_id")
+        if document_id and document_id not in group["document_ids"]:
+            group["document_ids"].append(document_id)
         if candidate.get("chunk_label") == "table_full":
             group["full_table_count"] += 1
+
+    compact_query = _compact_inventory_text(message)
+
+    def _content_hit_score(group: dict) -> int:
+        # Count distinct row names that appear verbatim in the query.  When the
+        # user asks about specific parts (e.g. 离合器弹簧) that live in a table
+        # whose *title* does not match the query wording, this lets the table
+        # actually containing the parts win over a title-only match.
+        hits = 0
+        seen: set[str] = set()
+        for row in group.get("rows") or []:
+            name = _compact_inventory_text(row.get("name") or "")
+            if len(name) >= 3 and name in compact_query and name not in seen:
+                seen.add(name)
+                hits += 1
+        return hits
 
     def score(group: dict) -> int:
         section_id = group.get("section_id") or ""
         section_score = 1000 if section_id and section_id in section_match_ids else 0
         full_table_score = 200 * int(group.get("full_table_count") or 0)
         title_score = 100 if "清单" in (group.get("section_title") or "") else 0
-        return section_score + full_table_score + title_score + len(group.get("rows") or []) * 10
+        content_hit_score = 600 * _content_hit_score(group)
+        return section_score + full_table_score + title_score + content_hit_score + len(group.get("rows") or []) * 10
 
     best = max(groups.values(), key=score)
     rows = _dedupe_inventory_rows(best.get("rows") or [])
@@ -896,9 +1229,27 @@ def _format_inventory_table_answer_from_metadata(
         return None
 
     rows = sorted(rows, key=_inventory_sort_key)
+    filtered_rows = _filter_inventory_rows_for_query(message, rows)
+    rows_were_filtered = len(filtered_rows) < len(rows)
+    rows = filtered_rows
     title = best.get("section_title") or "部件清单"
+    section_id = str(best.get("section_id") or "")
+    if title:
+        metadata["_deterministic_answer_section_title"] = title
+    if section_id:
+        metadata["_deterministic_answer_section_ids"] = [section_id]
     pages = best.get("pages") or []
-    numeric_pages = sorted({int(page) for page in pages if str(page).isdigit()})
+    row_pages = {
+        int(row.get("_source_page"))
+        for row in rows
+        if str(row.get("_source_page") or "").isdigit()
+    }
+    numeric_pages = sorted(row_pages or {int(page) for page in pages if str(page).isdigit()})
+    if numeric_pages:
+        metadata["_deterministic_answer_evidence_pages"] = numeric_pages
+    document_ids = [doc for doc in (best.get("document_ids") or []) if doc]
+    if document_ids:
+        metadata["_deterministic_answer_document_ids"] = document_ids
     if len(numeric_pages) == 1:
         page_text = f"第{numeric_pages[0]}页"
     elif len(numeric_pages) > 1:
@@ -907,9 +1258,10 @@ def _format_inventory_table_answer_from_metadata(
         page_text = "对应表格"
     subject = _inventory_subject_from_title(title)
 
-    lines = [
-        f"根据手册{page_text}“{title}”，{subject}所用部件如下（按序号排列）："
-    ]
+    if rows_were_filtered:
+        lines = [f"根据手册{page_text}“{title}”，与问题匹配的清单条目如下："]
+    else:
+        lines = [f"根据手册{page_text}“{title}”，{subject}所用部件如下（按序号排列）："]
     for index, row in enumerate(rows, start=1):
         seq = str(row.get("seq") or index).strip()
         name = str(row.get("name") or "").strip()
@@ -922,9 +1274,1174 @@ def _format_inventory_table_answer_from_metadata(
             line += f"；数量：{quantity}"
         if remark:
             line += f"；备注：{remark}"
+        torque = _inventory_torque_from_remark(remark)
+        if torque:
+            line += f"；扭矩：{torque}"
         lines.append(line)
 
     return "\n".join(lines).strip()
+
+
+_MANUAL_PROCEDURE_TERMS = ("怎么", "如何", "步骤", "流程", "拆卸", "拆", "安装", "装", "更换", "调整", "操作")
+_MANUAL_PARAMETER_TERMS = ("多少", "标准", "范围", "扭矩", "扭力", "力矩", "间隙", "压力", "容量", "数量")
+_MANUAL_LOCATION_EVIDENCE_TERMS = (
+    "哪些地方",
+    "什么地方",
+    "哪里",
+    "位置",
+    "涂抹",
+    "涂",
+    "密封胶",
+    "密封硅胶",
+    "平面密封",
+    "润滑油",
+)
+_MANUAL_BROAD_LOCATION_EVIDENCE_TERMS = (
+    "哪些地方",
+    "什么地方",
+    "哪里",
+    "涂抹",
+    "涂",
+    "密封胶",
+    "密封硅胶",
+    "平面密封",
+    "润滑油",
+)
+_MANUAL_ACTION_SYNONYMS = {
+    "拆卸": ("拆卸", "拆下", "取下", "松开", "断开", "拉出", "取出"),
+    "安装": ("安装", "装上", "装入", "放入", "合上", "拧紧", "套入", "旋入"),
+    "检查": ("检查", "测量", "拨动", "转动", "校验"),
+}
+_MANUAL_OPPOSITE_ACTIONS = {
+    "拆卸": _MANUAL_ACTION_SYNONYMS["安装"],
+    "安装": _MANUAL_ACTION_SYNONYMS["拆卸"],
+}
+
+
+def _manual_query_kind(message: str) -> str:
+    text = message or ""
+    if _is_inventory_table_query(text):
+        return ""
+    if any(term in text for term in _MANUAL_LOCATION_EVIDENCE_TERMS):
+        return "evidence"
+    if any(term in text for term in ("判断", "原因", "是不是", "是否", "为何", "为什么")):
+        return "evidence"
+    if any(term in text for term in _MANUAL_PROCEDURE_TERMS):
+        return "procedure"
+    if any(term in text for term in _MANUAL_PARAMETER_TERMS):
+        return "parameter"
+    if any(term in text for term in ("检查", "项目", "技术要求")):
+        return "evidence"
+    return ""
+
+
+def _manual_query_action(message: str) -> str:
+    text = message or ""
+    for action in ("拆卸", "安装", "检查"):
+        if any(word in text for word in _MANUAL_ACTION_SYNONYMS[action]):
+            return action
+    return ""
+
+
+def _manual_content_has_action(text: str, action: str) -> bool:
+    return bool(action and any(word in (text or "") for word in _MANUAL_ACTION_SYNONYMS.get(action, ())))
+
+
+def _manual_content_has_opposite_action(text: str, action: str) -> bool:
+    return bool(action and any(word in (text or "") for word in _MANUAL_OPPOSITE_ACTIONS.get(action, ())))
+
+
+def _manual_action_target(message: str, action: str) -> str:
+    text = str(message or "")
+    if not action or action not in text:
+        return ""
+    tail = text.split(action, 1)[1]
+    tail = re.split(r"[时的，,？?：:；;、\s]", tail, 1)[0]
+    target = tail.strip()
+    if target:
+        return target
+    head = text.split(action, 1)[0]
+    head = re.sub(r"(?:怎么|如何|怎样|怎么进行|如何进行)$", "", head).strip()
+    head = re.sub(r"[，,？?：:；;、\s]+$", "", head).strip()
+    return head
+
+
+def _manual_query_anchor_terms(message: str) -> list[str]:
+    """Return exact entity anchors from the user's manual question.
+
+    Section titles are often broader than the user's target sub-step
+    (for example, a chapter may be titled "安装活塞环" while the question asks
+    about "安装活塞销挡圈").  These anchors are used as a generic reranking
+    signal: a section containing the exact target entity should beat a broader
+    title-only match.
+    """
+    action = _manual_query_action(message)
+    raw_terms: list[str] = []
+    if action:
+        target = _manual_action_target(message, action)
+        if target:
+            raw_terms.append(target)
+            for separator in ("并", "以及", "和", "及"):
+                if separator in target:
+                    raw_terms.extend(part for part in target.split(separator) if part)
+    text = str(message or "")
+    if "时" in text:
+        after_when = text.split("时", 1)[1]
+        after_when = re.split(
+            r"(?:要|有什么|哪些|什么|怎么|如何|是多少|多少|要求|注意|[？?：:；;，,])",
+            after_when,
+            1,
+        )[0]
+        if after_when:
+            raw_terms.append(after_when)
+            for separator in ("并", "以及", "和", "及", "、"):
+                if separator in after_when:
+                    raw_terms.extend(part for part in after_when.split(separator) if part)
+
+    anchors: list[str] = []
+    for raw in raw_terms:
+        term = _compact_inventory_text(raw)
+        term = re.sub(r"(?:要求|步骤|流程|方法|位置|顺序|规范|标准)$", "", term)
+        if len(term) < 3:
+            continue
+        if term in {"怎么", "如何", "安装", "拆卸", "检查", "装配"}:
+            continue
+        if term not in anchors:
+            anchors.append(term)
+    return anchors
+
+
+def _manual_parameter_anchor_terms(message: str) -> list[str]:
+    """Return entity+field anchors for parameter-style manual questions."""
+    text = _compact_inventory_text(message)
+    if not text:
+        return []
+    candidates: list[str] = []
+
+    trimmed = text
+    for suffix in (
+        "是多少",
+        "为多少",
+        "多少",
+        "标准值",
+        "标准范围",
+        "标准",
+        "范围",
+        "要求",
+    ):
+        if trimmed.endswith(suffix):
+            trimmed = trimmed[: -len(suffix)]
+    if trimmed:
+        candidates.append(trimmed)
+
+    for term in _MANUAL_PARAMETER_TERMS:
+        if not term or term not in text:
+            continue
+        before = text.split(term, 1)[0]
+        if before:
+            candidates.append(before + term)
+        candidates.append(term)
+
+    anchors: list[str] = []
+    stop_terms = {
+        "多少", "标准", "范围", "扭矩", "扭力", "力矩", "间隙", "压力", "容量", "数量",
+        "是多少", "什么", "哪些",
+    }
+    for raw in candidates:
+        term = re.sub(r"(?:是多少|为多少|多少|标准值|标准范围|标准|范围|要求)$", "", raw)
+        if len(term) < 2:
+            continue
+        if term in stop_terms:
+            continue
+        if term not in anchors:
+            anchors.append(term)
+    return anchors
+
+
+def _manual_evidence_anchor_terms(message: str) -> list[str]:
+    """Return condition/object anchors for diagnostic evidence questions."""
+    text = _compact_inventory_text(message)
+    if not text:
+        return []
+    candidates: list[str] = []
+
+    if "时" in text:
+        before_when = text.split("时", 1)[0]
+        if before_when:
+            candidates.append(before_when)
+            for relation in ("低于", "小于", "高于", "大于", "等于", "超过", "低", "高"):
+                if relation in before_when:
+                    candidates.extend(part for part in before_when.split(relation) if part)
+
+    for pattern in (
+        r"是不是(.+?)(?:问题|故障|缺陷|原因)?$",
+        r"是否(.+?)(?:问题|故障|缺陷|原因)?$",
+        r"判断(.+?)(?:问题|故障|缺陷|原因)?$",
+    ):
+        match = re.search(pattern, text)
+        if match:
+            candidates.append(match.group(1))
+
+    anchors: list[str] = []
+    stop_terms = {"怎么", "如何", "判断", "是不是", "是否", "问题", "故障", "原因", "缺陷"}
+    for raw in candidates:
+        term = re.sub(r"(?:怎么判断|如何判断|判断|是不是|是否|问题|故障|缺陷|原因)+", "", raw)
+        if len(term) < 2:
+            continue
+        if term in stop_terms:
+            continue
+        if term not in anchors:
+            anchors.append(term)
+    return anchors
+
+
+_MANUAL_ATOMIC_ENTITY_TERMS = (
+    "塞尺",
+    "拉玛",
+    "螺栓",
+    "螺母",
+    "O型圈",
+    "O形圈",
+    "定位销",
+    "圆柱销",
+    "挡圈",
+    "垫圈",
+    "垫片",
+    "线束",
+    "油封",
+    "挺柱",
+    "密封胶",
+    "密封硅胶",
+)
+
+
+def _manual_atomic_entity_anchor_terms(message: str) -> list[str]:
+    """Return short exact entities that should bind a query to body evidence.
+
+    These are intentionally page-agnostic and case-agnostic.  They cover tools,
+    standard parts and small visual entities that often appear only in the body
+    text rather than in the section title.
+    """
+    text = _compact_inventory_text(message)
+    if not text:
+        return []
+    anchors: list[str] = []
+    for term in _MANUAL_ATOMIC_ENTITY_TERMS:
+        if term in text and term not in anchors:
+            anchors.append(term)
+    for pattern in (
+        r"[A-Za-z]\s*(?:孔|段|标记)",
+        r"[A-Za-z]\/[A-Za-z]",
+        r"[A-Za-z]\-[A-Za-z]",
+        r"[Mｍ]\d+(?:[×x*.]\d+(?:\.\d+)?)+",
+        r"\d+(?:\.\d+)?[×x*]\d+(?:\.\d+)?(?:[×x*]\d+(?:\.\d+)?)*",
+    ):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            anchor = _compact_inventory_text(match.group(0))
+            if len(anchor) >= 2 and anchor not in anchors:
+                anchors.append(anchor)
+    return anchors
+
+
+def _manual_tail_entity_candidates(prefix: str) -> list[str]:
+    text = _compact_inventory_text(prefix)
+    candidates: list[str] = []
+    for size in (4, 3, 2):
+        if len(text) >= size:
+            candidate = text[-size:]
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+    return candidates
+
+
+def _manual_flexible_anchor_token_groups(message: str) -> list[tuple[str, ...]]:
+    """Return token groups that may not appear contiguously in OCR text.
+
+    Example: the query says "曲柄C标记", while the manual OCR says
+    "曲柄上的标记（图示“C”）".  Exact substring matching misses this, but the
+    evidence is strong when "曲柄" + "C" + "标记" occur together.
+    """
+    text = _compact_inventory_text(message)
+    if not text:
+        return []
+    groups: list[tuple[str, ...]] = []
+
+    def add(tokens: tuple[str, ...]) -> None:
+        normalized = tuple(
+            _compact_inventory_text(token).lower()
+            for token in tokens
+            if _compact_inventory_text(token)
+        )
+        if not normalized:
+            return
+        if normalized not in groups:
+            groups.append(normalized)
+
+    for match in re.finditer(r"([\u4e00-\u9fff]{0,12})([A-Za-z])标记", text, flags=re.IGNORECASE):
+        prefix, letter = match.group(1), match.group(2)
+        add((letter, "标记"))
+        for entity in _manual_tail_entity_candidates(prefix):
+            add((entity, letter, "标记"))
+
+    for match in re.finditer(r"([\u4e00-\u9fff]{0,12})([A-Za-z])(?:孔|段)", text, flags=re.IGNORECASE):
+        prefix, letter = match.group(1), match.group(2)
+        suffix = match.group(0)[-1:]
+        add((letter, suffix))
+        for entity in _manual_tail_entity_candidates(prefix):
+            add((entity, letter, suffix))
+
+    return groups
+
+
+def _manual_target_action_heading_index(content: str, action: str, target: str) -> int:
+    if not action or not target:
+        return -1
+    compact_target = _compact_inventory_text(target)
+    lines = str(content or "").splitlines()
+    offset = 0
+    for line in lines:
+        compact_line = _compact_inventory_text(line)
+        needle = f"{action}{compact_target}"
+        index = compact_line.find(needle)
+        while index >= 0:
+            prefix = compact_line[:index]
+            if not _manual_heading_prefix_allowed(prefix):
+                index = compact_line.find(needle, index + 1)
+                continue
+            end = index + len(needle)
+            next_char = compact_line[end:end + 1]
+            if not next_char or not re.match(r"[\u4e00-\u9fffA-Za-z0-9]", next_char):
+                return offset
+            index = compact_line.find(needle, index + 1)
+        offset += len(line) + 1
+    return -1
+
+
+def _manual_heading_prefix_allowed(prefix: str) -> bool:
+    if not prefix:
+        return True
+    return bool(
+        re.fullmatch(r"\d+(?:\.\d+)+", prefix)
+        or re.fullmatch(r"\d+[、．.]", prefix)
+        or re.fullmatch(r"[（(]\d+[）)]", prefix)
+    )
+
+
+def _manual_opposite_target_action_heading_index(content: str, action: str, target: str) -> int:
+    opposite_actions = {
+        "拆卸": ("安装",),
+        "安装": ("拆卸",),
+    }.get(action, ())
+    indexes = [
+        _manual_target_action_heading_index(content, opposite_action, target)
+        for opposite_action in opposite_actions
+    ]
+    indexes = [index for index in indexes if index >= 0]
+    return min(indexes) if indexes else -1
+
+
+def _manual_target_family_terms(target: str) -> list[str]:
+    compact = _compact_inventory_text(target)
+    if not compact:
+        return []
+    terms = [compact]
+    for suffix in ("单向器", "分部件", "组件", "部件", "总成", "装配"):
+        if compact.endswith(suffix) and len(compact) > len(suffix) + 2:
+            terms.append(compact[: -len(suffix)])
+    if len(compact) >= 8:
+        terms.append(compact[:8])
+    deduped: list[str] = []
+    for term in terms:
+        if len(term) >= 3 and term not in deduped:
+            deduped.append(term)
+    return deduped
+
+
+def _manual_related_other_action_heading_index(content: str, action: str, target: str) -> int:
+    if action != "检查" or not target:
+        return -1
+    related_terms = _manual_target_family_terms(target)
+    if not related_terms:
+        return -1
+    other_actions = ("安装", "拆卸")
+    lines = str(content or "").splitlines()
+    offset = 0
+    for line in lines:
+        stripped = line.strip()
+        compact_line = _compact_inventory_text(stripped)
+        if not _manual_starts_with_numbered_step(stripped):
+            if any(compact_line.startswith(other_action) for other_action in other_actions):
+                if any(term in compact_line for term in related_terms):
+                    return offset
+        offset += len(line) + 1
+    return -1
+
+
+def _manual_slice_content_to_action_span(content: str, action: str, target: str) -> str:
+    heading_index = _manual_target_action_heading_index(content, action, target)
+    start = heading_index if heading_index >= 0 else 0
+    sliced = str(content or "")[start:].strip()
+    stop_index = _manual_opposite_target_action_heading_index(sliced, action, target)
+    if stop_index > 0:
+        sliced = sliced[:stop_index].strip()
+    return sliced
+
+
+def _manual_trim_records_to_target_action(records: list[dict], message: str, action: str) -> list[dict]:
+    target = _manual_action_target(message, action)
+    if not target:
+        return records
+    heading_orders = [
+        _manual_item_order(record)
+        for record in records
+        if _manual_target_action_heading_index(record.get("content") or "", action, target) >= 0
+    ]
+    if not heading_orders:
+        return records
+    first_heading_order = min(heading_orders)
+    compact_target = _compact_inventory_text(target)
+    pre_heading_anchor_terms = [
+        anchor for anchor in _manual_query_anchor_terms(message)
+        if anchor and anchor != compact_target
+    ]
+    related_stop_orders = [
+        _manual_item_order(record)
+        for record in records
+        if _manual_item_order(record) >= first_heading_order
+        and _manual_related_other_action_heading_index(record.get("content") or "", action, target) >= 0
+    ]
+    related_stop_order = min(related_stop_orders) if related_stop_orders else None
+    trimmed: list[dict] = []
+    for record in records:
+        content = record.get("content") or ""
+        record_order = _manual_item_order(record)
+        if related_stop_order is not None and record_order > related_stop_order:
+            continue
+        heading_index = _manual_target_action_heading_index(content, action, target)
+        if heading_index >= 0:
+            sliced = _manual_slice_content_to_action_span(content, action, target)
+            related_index = _manual_related_other_action_heading_index(sliced, action, target)
+            if related_index == 0:
+                continue
+            if related_index > 0:
+                sliced = sliced[:related_index].strip()
+            if sliced:
+                record = {**record, "content": sliced}
+                trimmed.append(record)
+            continue
+        if record_order < first_heading_order:
+            compact_content = _compact_inventory_text(content)
+            if any(anchor in compact_content for anchor in pre_heading_anchor_terms):
+                trimmed.append({**record, "content": content})
+            continue
+        if record_order >= first_heading_order:
+            opposite_index = _manual_opposite_target_action_heading_index(content, action, target)
+            if opposite_index == 0:
+                continue
+            if opposite_index > 0:
+                opposite_tail = content[opposite_index:]
+                if not any(
+                    anchor in _compact_inventory_text(opposite_tail)
+                    for anchor in pre_heading_anchor_terms
+                ):
+                    content = content[:opposite_index].strip()
+            related_index = _manual_related_other_action_heading_index(content, action, target)
+            if related_index == 0:
+                continue
+            if related_index > 0:
+                content = content[:related_index].strip()
+            if content:
+                trimmed.append({**record, "content": content})
+    return trimmed
+
+
+def _manual_should_trim_to_action(message: str, kind: str) -> bool:
+    text = message or ""
+    if any(term in text for term in _MANUAL_BROAD_LOCATION_EVIDENCE_TERMS):
+        return False
+    if kind == "procedure":
+        return True
+    action = _manual_query_action(text)
+    target = _manual_action_target(text, action)
+    return bool(kind in {"evidence", "parameter"} and len(_compact_inventory_text(target)) >= 3)
+
+
+def _manual_starts_with_numbered_step(content: str) -> bool:
+    first_line = str(content or "").splitlines()[0].strip()
+    return bool(re.match(r"^\s*\d+\s*(?:[、．)）]|\.(?!\d))", first_line))
+
+
+def _manual_has_numbered_step_line(content: str) -> bool:
+    for line in str(content or "").splitlines():
+        if re.match(r"^\s*\d+\s*(?:[、．)）]|\.(?!\d))", line.strip()):
+            return True
+    return False
+
+
+def _manual_looks_like_part_list_continuation(content: str) -> bool:
+    lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+    if len(lines) < 2:
+        return False
+    if any(_manual_has_numbered_step_line(line) for line in lines):
+        return False
+    if any(len(line) > 48 for line in lines):
+        return False
+    joined = "\n".join(lines)
+    if any(
+        word in joined
+        for action in _MANUAL_ACTION_SYNONYMS
+        for word in _MANUAL_ACTION_SYNONYMS[action]
+    ):
+        return False
+    part_markers = (
+        "垫圈", "轴承", "半圆键", "齿", "螺栓", "螺母", "挡圈", "销",
+        "密封圈", "O型圈", "弹簧", "衬套", "压盘", "从动片", "摩擦片",
+        "组件", "分组件", "泵", "盖", "轴", "盘", "片", "圈",
+    )
+    return bool(
+        any(marker in joined for marker in part_markers)
+        or re.search(r"(?:φ|Φ|M\d|GB\d|K\d|\d+(?:\.\d+)?\s*[×x]\s*\d)", joined)
+    )
+
+
+def _manual_is_next_section_heading_noise(content: str, message: str) -> bool:
+    lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+    if not lines or len(lines) > 3:
+        return False
+    first_line = lines[0]
+    if not re.match(r"^\s*\d+(?:\.\d+)+\s+\S+", first_line):
+        return False
+    action = _manual_query_action(message)
+    target = _manual_action_target(message, action)
+    if action and target and _manual_target_action_heading_index(first_line, action, target) >= 0:
+        return False
+    return True
+
+
+def _manual_strip_embedded_tail_heading(content: str, current_title: str = "") -> str:
+    """Remove a short standalone heading accidentally glued to the end of a chunk."""
+    lines = str(content or "").splitlines()
+    while len(lines) >= 2:
+        tail = lines[-1].strip()
+        if not tail:
+            lines.pop()
+            continue
+        compact_tail = _compact_inventory_text(tail)
+        compact_title = _compact_inventory_text(current_title)
+        if not compact_tail:
+            lines.pop()
+            continue
+        if compact_title and compact_tail in compact_title:
+            break
+        if _manual_has_numbered_step_line(tail):
+            break
+        if len(compact_tail) > 12:
+            break
+        if re.search(r"[，,。；;：:、]|(?:mm|N·m|N路m)|(?:M\d|GB\d|φ|Φ|×|\d)", tail, flags=re.IGNORECASE):
+            break
+        if any(
+            word in tail
+            for words in _MANUAL_ACTION_SYNONYMS.values()
+            for word in words
+        ):
+            break
+        # A short noun phrase after a complete sentence is usually the next
+        # section title leaked by page/section-boundary OCR chunking.  Do not
+        # trim short noun phrases after another short noun phrase: those are
+        # often valid exploded-view part-list continuations.
+        previous = lines[-2].strip()
+        if previous.endswith(("。", "；", ";", ".", "！", "!", "？", "?")):
+            lines.pop()
+            continue
+        break
+    return "\n".join(lines).strip()
+
+
+def _manual_is_outline_navigation_noise(content: str, metadata: dict | None = None) -> bool:
+    """Return True for TOC/navigation chunks that only list nearby headings.
+
+    Some OCR chunks carry a section outline such as "7.3 ... / 拆卸... / 检查... /
+    安装..." but keep stale metadata from a different page/section.  These chunks
+    contain the query words yet have no actionable evidence, so they should not
+    compete with real step/check records.
+    """
+    lines = [line.strip() for line in str(content or "").splitlines() if line.strip()]
+    if len(lines) < 3 or len(lines) > 8:
+        return False
+    first_line = lines[0]
+    if not re.match(r"^\s*\d+(?:\.\d+)+\s+\S+", first_line):
+        return False
+
+    compact_first = _compact_inventory_text(first_line)
+    compact_title = _compact_inventory_text((metadata or {}).get("section_title") or "")
+    if compact_title and (compact_first in compact_title or compact_title in compact_first):
+        return False
+
+    heading_actions = tuple(
+        word
+        for action in _MANUAL_ACTION_SYNONYMS
+        for word in _MANUAL_ACTION_SYNONYMS[action]
+    )
+    detail_markers = (
+        "：", ":", "。", "；", ";", "，", ",", "、",
+        "应", "必须", "不得", "不能", "否则", "注意", "要求", "标准", "扭矩", "扭力",
+        "±", "≤", "≥", "mm", "N·m", "M6", "M8", "M10", "φ", "Φ", "×",
+    )
+    body_lines = lines[1:]
+    if any(any(marker in line for marker in detail_markers) for line in body_lines):
+        return False
+    if any(_manual_has_numbered_step_line(line) for line in body_lines):
+        return False
+    if any(len(_compact_inventory_text(line)) > 28 for line in body_lines):
+        return False
+    return all(
+        re.match(r"^\s*(?:\d+(?:\.\d+)+\s*)?\S{2,32}$", line)
+        and (
+            any(line.startswith(action) for action in heading_actions)
+            or re.match(r"^\s*\d+(?:\.\d+)+\s+\S+", line)
+        )
+        for line in body_lines
+    )
+
+
+def _manual_first_line_has_opposite_action(content: str, action: str) -> bool:
+    first_line = str(content or "").splitlines()[0].strip()
+    return _manual_content_has_opposite_action(first_line, action)
+
+
+def _manual_item_order(item: dict) -> tuple[int, int, str]:
+    meta = item.get("metadata") or {}
+    try:
+        page = int(meta.get("page_number") or meta.get("page") or 9999)
+    except (TypeError, ValueError):
+        page = 9999
+    source_value = meta.get("source_index")
+    if source_value is None:
+        source_value = meta.get("chunk_index")
+    try:
+        source_index = int(source_value) if source_value is not None else 9999
+    except (TypeError, ValueError):
+        source_index = 9999
+    return page, source_index, str(item.get("id") or item.get("doc_id") or "")
+
+
+def _manual_clean_content(content: str) -> str:
+    text = str(content or "").strip()
+    text = re.sub(r"\bsource=[^\s，。；;）)]+", "", text)
+    text = re.sub(r"\b(?:doc_id|chunk_id|image_url|top_k)\s*[:=]\s*[^\s，。；;）)]+", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _manual_evidence_records(metadata: dict) -> list[dict]:
+    records: list[dict] = []
+    for item in _iter_trace_result_items(metadata):
+        meta = dict(item.get("metadata") or {})
+        chunk_type = meta.get("chunk_type") or meta.get("source_chunk_type") or ""
+        if chunk_type in {"image", "image_summary", "outline"}:
+            continue
+        content = _manual_clean_content(item.get("content") or item.get("text") or "")
+        if not content:
+            continue
+        if re.fullmatch(r"\d+(?:\.\d+)+\s+.{1,30}", content):
+            continue
+        if _manual_is_outline_navigation_noise(content, meta):
+            continue
+        records.append({**item, "content": content, "metadata": meta})
+    return records
+
+
+def _manual_title_section_match_scores(message: str) -> dict[str, int]:
+    try:
+        from services.knowledge.vector_service import get_vector_service
+        from services.retrieval.section_index import SectionTitleIndex
+
+        vector_service = get_vector_service()
+        section_index = SectionTitleIndex.get_instance()
+        section_index.build(vector_service)
+        scores: dict[str, int] = {}
+        for rank, ref in enumerate(section_index.find(message or "")[:5]):
+            section_id = str(getattr(ref, "section_id", "") or "")
+            if not section_id:
+                continue
+            core_title = str(getattr(ref, "core_title", "") or "")
+            full_title = str(getattr(ref, "full_title", "") or "")
+            specificity = max(len(core_title), len(full_title))
+            scores[section_id] = max(scores.get(section_id, 0), 320 - rank * 45 + min(specificity * 8, 80))
+        return scores
+    except Exception:
+        return {}
+
+
+def _manual_group_score(
+    message: str,
+    kind: str,
+    records: list[dict],
+    section_match_ids: set[str],
+    title_section_scores: dict[str, int] | None = None,
+) -> int:
+    query = _compact_inventory_text(message)
+    score = 0
+    title_section_scores = title_section_scores or {}
+    section_ids = {
+        str((record.get("metadata") or {}).get("parent_section_id") or "")
+        for record in records
+    }
+    titles = {
+        _compact_inventory_text((record.get("metadata") or {}).get("section_title") or (record.get("metadata") or {}).get("chunk_label") or "")
+        for record in records
+    }
+    group_text = _compact_inventory_text(
+        "\n".join(
+            [*titles]
+            + [str(record.get("content") or "") for record in records]
+        )
+    )
+    group_text_lower = group_text.lower()
+    anchor_terms = _manual_query_anchor_terms(message)
+    for anchor in _manual_atomic_entity_anchor_terms(message):
+        if anchor not in anchor_terms:
+            anchor_terms.append(anchor)
+    if kind == "parameter":
+        for anchor in _manual_parameter_anchor_terms(message):
+            if anchor not in anchor_terms:
+                anchor_terms.append(anchor)
+    if kind == "evidence":
+        for anchor in _manual_evidence_anchor_terms(message):
+            if anchor not in anchor_terms:
+                anchor_terms.append(anchor)
+    for anchor in anchor_terms:
+        anchor_text = _compact_inventory_text(anchor)
+        if not anchor_text:
+            continue
+        anchor_lower = anchor_text.lower()
+        if anchor_text in group_text or anchor_lower in group_text_lower:
+            score += 500 + min(len(anchor) * 20, 180)
+            if any(anchor_text in title or anchor_lower in title.lower() for title in titles):
+                score += 80
+    for token_group in _manual_flexible_anchor_token_groups(message):
+        if all(token and token in group_text_lower for token in token_group):
+            score += 220 + min(sum(len(token) for token in token_group) * 18, 180)
+            if any(all(token in title.lower() for token in token_group) for title in titles):
+                score += 60
+    for section_id in section_ids:
+        if section_id and section_id in title_section_scores:
+            score += title_section_scores[section_id]
+        if section_id and section_id in section_match_ids:
+            score += 80
+    for title in titles:
+        if title and (title in query or query in title):
+            score += 30
+    query_terms = re.findall(r"[一-鿿A-Za-z0-9×.±/-]{2,}", query)
+    title_matched_terms: set[str] = set()
+    for term in query_terms:
+        if term and any(term in title for title in titles):
+            score += min(len(term), 12)
+            title_matched_terms.add(term)
+    for record in records:
+        meta = record.get("metadata") or {}
+        content = _compact_inventory_text(record.get("content") or "")
+        chunk_type = meta.get("chunk_type") or meta.get("source_chunk_type") or ""
+        for term in query_terms:
+            if term and term not in title_matched_terms and term in content:
+                score += min(len(term), 12)
+        if kind == "procedure" and chunk_type == "step_raw":
+            score += 16
+        if kind == "parameter" and chunk_type == "table":
+            score += 14
+        if kind == "parameter" and re.search(r"\d", content):
+            score += 8
+            if any(anchor and anchor in content for anchor in _manual_parameter_anchor_terms(message)):
+                score += 80
+    return score
+
+
+def _manual_record_from_raw(raw: dict, section_match_ids: set[str] | None = None) -> dict | None:
+    item = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw)
+    meta = dict(item.get("metadata") or {})
+    chunk_type = meta.get("chunk_type") or meta.get("source_chunk_type") or ""
+    if chunk_type in {"image", "image_summary", "outline"}:
+        return None
+    content = _manual_clean_content(item.get("content") or item.get("text") or "")
+    if not content:
+        return None
+    if re.fullmatch(r"\d+(?:\.\d+)+\s+.{1,30}", content):
+        return None
+    if _manual_is_outline_navigation_noise(content, meta):
+        return None
+    if section_match_ids:
+        meta.setdefault("section_match_ids", list(section_match_ids))
+    return {**item, "content": content, "metadata": meta}
+
+
+def _manual_expand_same_section_records(best_group: list[dict], section_match_ids: set[str]) -> list[dict]:
+    if not best_group:
+        return best_group
+    first_meta = best_group[0].get("metadata") or {}
+    document_id = str(first_meta.get("document_id") or "")
+    section_id = str(first_meta.get("parent_section_id") or "")
+    if not document_id or not section_id:
+        return best_group
+    try:
+        from services.knowledge.vector_service import get_vector_service
+
+        vector_service = get_vector_service()
+        raw_records = vector_service.get_section_records(
+            document_id,
+            section_id,
+            limit=200,
+            chunk_type=None,
+        )
+    except Exception:
+        return best_group
+
+    expanded: list[dict] = list(best_group)
+    seen_ids = {str(item.get("id") or item.get("doc_id") or "") for item in expanded}
+    seen_content = {str(item.get("content") or "") for item in expanded}
+    for raw in raw_records:
+        record = _manual_record_from_raw(raw, section_match_ids)
+        if not record:
+            continue
+        record_id = str(record.get("id") or record.get("doc_id") or "")
+        content = str(record.get("content") or "")
+        if record_id and record_id in seen_ids:
+            continue
+        if content and content in seen_content:
+            continue
+        if record_id:
+            seen_ids.add(record_id)
+        if content:
+            seen_content.add(content)
+        expanded.append(record)
+    return expanded
+
+
+def _manual_expand_page_boundary_records(best_group: list[dict], section_match_ids: set[str]) -> list[dict]:
+    if not best_group:
+        return best_group
+    document_id = str((best_group[0].get("metadata") or {}).get("document_id") or "")
+    if not document_id:
+        return best_group
+    titles = [
+        _compact_inventory_text((record.get("metadata") or {}).get("section_title") or "")
+        for record in best_group
+    ]
+    titles = [title for title in dict.fromkeys(titles) if len(title) >= 4]
+    if not titles:
+        return best_group
+    pages: list[int] = []
+    for record in best_group:
+        meta = record.get("metadata") or {}
+        try:
+            page = int(meta.get("page_number") or meta.get("page"))
+        except (TypeError, ValueError):
+            continue
+        if page not in pages:
+            pages.append(page)
+    if not pages:
+        return best_group
+    try:
+        from services.knowledge.vector_service import get_vector_service
+
+        vector_service = get_vector_service()
+    except Exception:
+        return best_group
+
+    extra: list[dict] = []
+    seen_ids = {str(item.get("id") or item.get("doc_id") or "") for item in best_group}
+    seen_content = {str(item.get("content") or "") for item in best_group}
+    for page in pages[:4]:
+        try:
+            raw_records = vector_service.get_page_records(
+                document_id,
+                page,
+                chunk_type=None,
+                limit=120,
+            )
+        except Exception:
+            continue
+        for raw in raw_records:
+            record = _manual_record_from_raw(raw, section_match_ids)
+            if not record:
+                continue
+            record_id = str(record.get("id") or record.get("doc_id") or "")
+            content = str(record.get("content") or "")
+            compact_content = _compact_inventory_text(content)
+            if not any(title and title in compact_content for title in titles):
+                continue
+            if record_id and record_id in seen_ids:
+                continue
+            if content and content in seen_content:
+                continue
+            if record_id:
+                seen_ids.add(record_id)
+            if content:
+                seen_content.add(content)
+            extra.append(record)
+    return best_group + extra
+
+
+def _manual_title_match_records(message: str) -> tuple[list[dict], set[str]]:
+    try:
+        from services.knowledge.vector_service import get_vector_service
+        from services.retrieval.section_index import SectionTitleIndex
+
+        vector_service = get_vector_service()
+        section_index = SectionTitleIndex.get_instance()
+        section_index.build(vector_service)
+        refs = section_index.find(message or "")[:2]
+    except Exception:
+        return [], set()
+
+    records: list[dict] = []
+    section_ids = {str(getattr(ref, "section_id", "") or "") for ref in refs if getattr(ref, "section_id", "")}
+    for ref in refs:
+        document_id = str(getattr(ref, "document_id", "") or "")
+        section_id = str(getattr(ref, "section_id", "") or "")
+        if not document_id or not section_id:
+            continue
+        try:
+            raw_records = vector_service.get_section_records(
+                document_id,
+                section_id,
+                limit=80,
+                chunk_type=None,
+            )
+        except Exception:
+            continue
+        for raw in raw_records:
+            record = _manual_record_from_raw(raw, section_ids)
+            if not record:
+                continue
+            meta = dict(record.get("metadata") or {})
+            meta["original_title_match"] = True
+            record["metadata"] = meta
+            records.append(record)
+    return records, section_ids
+
+
+def _manual_append_unique_records(records: list[dict], extra_records: list[dict]) -> list[dict]:
+    if not extra_records:
+        return records
+    merged = list(records)
+    seen_ids = {str(item.get("id") or item.get("doc_id") or "") for item in merged}
+    seen_content = {str(item.get("content") or "") for item in merged}
+    for record in extra_records:
+        record_id = str(record.get("id") or record.get("doc_id") or "")
+        content = str(record.get("content") or "")
+        if record_id and record_id in seen_ids:
+            continue
+        if content and content in seen_content:
+            continue
+        if record_id:
+            seen_ids.add(record_id)
+        if content:
+            seen_content.add(content)
+        merged.append(record)
+    return merged
+
+
+def _manual_best_section_records(message: str, kind: str, metadata: dict) -> list[dict]:
+    records = _manual_evidence_records(metadata)
+    if not records:
+        records = []
+    section_match_ids: set[str] = set()
+    for record in records:
+        for sid in (record.get("metadata") or {}).get("section_match_ids") or []:
+            if sid:
+                section_match_ids.add(str(sid))
+    title_match_records, title_match_section_ids = _manual_title_match_records(message)
+    if title_match_section_ids:
+        section_match_ids.update(title_match_section_ids)
+    records = _manual_append_unique_records(records, title_match_records)
+    if not records:
+        return []
+    title_section_scores = _manual_title_section_match_scores(message)
+    groups: dict[tuple[str, str], list[dict]] = {}
+    for record in records:
+        meta = record.get("metadata") or {}
+        key = (
+            str(meta.get("parent_section_id") or ""),
+            str(meta.get("section_title") or meta.get("chunk_label") or ""),
+        )
+        groups.setdefault(key, []).append(record)
+    scored = [
+        (_manual_group_score(message, kind, group, section_match_ids, title_section_scores), key, group)
+        for key, group in groups.items()
+    ]
+    if not scored:
+        return []
+    best_score, _, best_group = max(scored, key=lambda item: item[0])
+    if best_score < 18:
+        return []
+    best_group = _manual_expand_same_section_records(best_group, section_match_ids)
+    best_group = _manual_expand_page_boundary_records(best_group, section_match_ids)
+    action = _manual_query_action(message)
+    if action and _manual_should_trim_to_action(message, kind):
+        best_group = _manual_trim_records_to_target_action(best_group, message, action)
+        action_hits = [
+            record for record in best_group
+            if _manual_content_has_action(record.get("content") or "", action)
+        ]
+        if action_hits:
+            anchor_terms = _manual_query_anchor_terms(message)
+            best_group = [
+                record for record in best_group
+                if (
+                    _manual_content_has_action(record.get("content") or "", action)
+                    or (
+                        _manual_has_numbered_step_line(record.get("content") or "")
+                        and not _manual_first_line_has_opposite_action(record.get("content") or "", action)
+                    )
+                    or _manual_looks_like_part_list_continuation(record.get("content") or "")
+                    or (
+                        kind in {"evidence", "parameter"}
+                        and any(
+                            anchor in _compact_inventory_text(record.get("content") or "")
+                            for anchor in anchor_terms
+                        )
+                    )
+                )
+            ]
+    deduped: list[dict] = []
+    seen: set[str] = set()
+    for record in sorted(best_group, key=_manual_item_order):
+        content = record.get("content") or ""
+        if _manual_is_next_section_heading_noise(content, message):
+            continue
+        if content in seen:
+            continue
+        seen.add(content)
+        deduped.append(record)
+    return deduped
+
+
+def _manual_requested_detail_terms(message: str) -> list[str]:
+    text = message or ""
+    required_terms = []
+    if "型号" in text:
+        required_terms.append("型号")
+    if "材料" in text:
+        required_terms.append("材料")
+    if "公差" in text:
+        required_terms.append("公差")
+    if "扩张器" in text:
+        required_terms.append("扩张器")
+    return required_terms
+
+
+def _manual_answer_should_refuse_detail_query(message: str, records: list[dict]) -> bool:
+    evidence = "\n".join(record.get("content") or "" for record in records)
+    required_terms = _manual_requested_detail_terms(message)
+    return bool(required_terms and not all(term in evidence for term in required_terms))
+
+
+def _format_manual_detail_refusal_answer(message: str, records: list[dict]) -> str:
+    requested_terms = _manual_requested_detail_terms(message)
+    missing_terms = []
+    evidence = "\n".join(record.get("content") or "" for record in records)
+    for term in requested_terms:
+        if term not in evidence and term not in missing_terms:
+            missing_terms.append(term)
+    if not missing_terms:
+        missing_terms = requested_terms
+    if "扩张器" in missing_terms and "型号" in missing_terms:
+        missing_terms = [
+            term for term in missing_terms
+            if term not in {"扩张器", "型号"}
+        ]
+        missing_terms.insert(0, "扩张器型号")
+    pages: list[int] = []
+    titles: list[str] = []
+    for record in records:
+        meta = record.get("metadata") or {}
+        try:
+            page = int(meta.get("page_number") or meta.get("page"))
+            if page not in pages:
+                pages.append(page)
+        except (TypeError, ValueError):
+            pass
+        title = str(meta.get("section_title") or meta.get("chunk_label") or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+    page_text = ""
+    if pages:
+        ordered_pages = sorted(pages)
+        page_text = f"第{ordered_pages[0]}页" if len(ordered_pages) == 1 else f"第{ordered_pages[0]}-{ordered_pages[-1]}页"
+    title_text = f"“{titles[0]}”" if titles else "相关章节"
+    missing_text = "、".join(missing_terms)
+    return (
+        f"根据手册{page_text}{title_text}，当前可检索到相关装配/检查内容，"
+        f"但手册未提供{missing_text}。请以原厂手册、配件清单或实物标识为准。"
+    )
+
+
+def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -> str | None:
+    """Build a concise answer directly from retrieved manual evidence.
+
+    This is the non-table counterpart of the deterministic inventory path:
+    when the retrieved evidence already contains ordered manual text, prefer a
+    faithful evidence summary over a free-form rewrite.
+    """
+    kind = _manual_query_kind(message)
+    if not kind:
+        return None
+    records = _manual_best_section_records(message, kind, metadata)
+    if not records:
+        return None
+    if _manual_answer_should_refuse_detail_query(message, records):
+        return _format_manual_detail_refusal_answer(message, records)
+
+    pages: list[int] = []
+    titles: list[str] = []
+    section_ids: list[str] = []
+    document_ids: list[str] = []
+    for record in records:
+        meta = record.get("metadata") or {}
+        try:
+            page = int(meta.get("page_number") or meta.get("page"))
+            if page not in pages:
+                pages.append(page)
+        except (TypeError, ValueError):
+            pass
+        document_id = str(meta.get("document_id") or "")
+        if document_id and document_id not in document_ids:
+            document_ids.append(document_id)
+        title = str(meta.get("section_title") or meta.get("chunk_label") or "").strip()
+        if title and title not in titles:
+            titles.append(title)
+        section_id = str(meta.get("parent_section_id") or "").strip()
+        if section_id and section_id not in section_ids:
+            section_ids.append(section_id)
+
+    if pages:
+        metadata["_deterministic_answer_evidence_pages"] = sorted(pages)
+    if document_ids:
+        metadata["_deterministic_answer_document_ids"] = document_ids
+    if titles:
+        metadata["_deterministic_answer_section_title"] = titles[0]
+    if section_ids:
+        metadata["_deterministic_answer_section_ids"] = section_ids
+
+    page_text = "对应页"
+    if pages:
+        ordered_pages = sorted(pages)
+        page_text = f"第{ordered_pages[0]}页" if len(ordered_pages) == 1 else f"第{ordered_pages[0]}-{ordered_pages[-1]}页"
+    title_text = titles[0] if titles else "相关章节"
+    lead = "原文步骤如下" if kind == "procedure" else "原文相关内容如下"
+    lines = [f"根据手册{page_text}“{title_text}”，{lead}："]
+
+    for index, record in enumerate(records[:12], start=1):
+        content = _manual_clean_content(record.get("content") or "")
+        content = _manual_strip_embedded_tail_heading(content, title_text)
+        if not content:
+            continue
+        first_line = content.splitlines()[0].strip()
+        if _manual_starts_with_numbered_step(first_line):
+            lines.append(content)
+        else:
+            lines.append(f"{index}. {content}")
+    return "\n".join(lines).strip() if len(lines) > 1 else None
 
 
 def _extract_evidence_images(metadata: dict) -> List[EvidenceImage]:
@@ -968,6 +2485,7 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
         plan_intent = ""
         document_id = ""
         section_match_ids: List[str] = []
+        title_section_ids: List[str] = []
         evidence_section_ids: List[str] = []
         lookup_queries: List[str] = []
         vector_service = None
@@ -997,20 +2515,24 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
             if parent_section_id and chunk_type not in {"image", "image_summary"}:
                 append_unique(evidence_section_ids, parent_section_id)
 
-        if not section_match_ids and lookup_queries:
+        if lookup_queries:
             try:
                 from services.knowledge.vector_service import get_vector_service
                 from services.retrieval.section_index import SectionTitleIndex
 
-                vector_service = get_vector_service()
+                if vector_service is None:
+                    vector_service = get_vector_service()
                 section_index = SectionTitleIndex.get_instance()
                 section_index.build(vector_service)
                 for query in lookup_queries:
                     for ref in section_index.find(query):
+                        ref_title = f"{getattr(ref, 'core_title', '')} {getattr(ref, 'full_title', '')}"
+                        if "清单" in ref_title:
+                            append_unique(title_section_ids, str(ref.section_id))
                         append_unique(section_match_ids, str(ref.section_id))
                         if not document_id and ref.document_id:
                             document_id = str(ref.document_id)
-                    if section_match_ids:
+                    if title_section_ids:
                         break
             except Exception:
                 pass
@@ -1027,14 +2549,20 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
             except Exception:
                 pass
 
+        if title_section_ids and not plan_intent:
+            plan_intent = "outline"
+
         if plan_intent not in ("outline", "procedure"):
             return []
 
         target_section_ids: List[str] = []
-        for sid in evidence_section_ids:
-            if section_match_ids and sid not in section_match_ids:
-                continue
+        for sid in title_section_ids:
             append_unique(target_section_ids, sid)
+        if not target_section_ids:
+            for sid in evidence_section_ids:
+                if section_match_ids and sid not in section_match_ids:
+                    continue
+                append_unique(target_section_ids, sid)
         if not target_section_ids and section_match_ids:
             # 清单标题匹配通常把目标清单节排在首位。
             target_section_ids = section_match_ids[:1]
@@ -1238,6 +2766,1007 @@ def _merge_evidence_images(
     return merged
 
 
+def _evidence_image_page(image: EvidenceImage) -> int | None:
+    try:
+        return int(image.page)
+    except (TypeError, ValueError):
+        return None
+
+
+def _sort_unique_evidence_images(images: List[EvidenceImage]) -> List[EvidenceImage]:
+    seen: set[str] = set()
+    unique: List[EvidenceImage] = []
+    for image in sorted(
+        list(images or []),
+        key=lambda img: (
+            _evidence_image_page(img) if _evidence_image_page(img) is not None else 9999,
+            img.source_chunk_id or "",
+            img.image_url or "",
+        ),
+    ):
+        key = image.image_url or image.source_chunk_id or f"page:{image.page}:{len(unique)}"
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(image)
+    return unique
+
+
+_IMAGE_QUERY_STOP_TERMS = {
+    "怎么", "如何", "步骤", "流程", "安装", "拆卸", "装配", "部件", "零件", "清单",
+    "数量", "扭矩", "扭力", "力矩", "标准", "范围", "多少", "哪些", "什么",
+    "应该", "时候", "进行", "查看", "展示", "看看", "对应", "相关", "原文",
+    "install", "remove", "check", "show", "list", "parts", "step", "steps",
+}
+
+
+def _image_query_terms(message: str) -> list[str]:
+    raw = str(message or "").lower()
+    compact = _compact_inventory_text(message).lower()
+    terms: set[str] = set()
+    for term in re.findall(r"[a-z]+\d*|\d+(?:\.\d+)?[a-z]*", raw):
+        if len(term) >= 2 and term not in _IMAGE_QUERY_STOP_TERMS:
+            terms.add(term)
+    chinese_runs = re.findall(r"[\u4e00-\u9fff]+", compact)
+    for run in chinese_runs:
+        max_len = min(8, len(run))
+        for size in range(max_len, 1, -1):
+            for start in range(0, len(run) - size + 1):
+                term = run[start:start + size]
+                if term in _IMAGE_QUERY_STOP_TERMS:
+                    continue
+                if any(stop in term and len(term) <= len(stop) + 1 for stop in _IMAGE_QUERY_STOP_TERMS):
+                    continue
+                terms.add(term)
+    return sorted(terms, key=lambda value: (-len(value), value))
+
+
+def _page_image_matches_query(message: str, record: dict) -> bool:
+    terms = _image_query_terms(message)
+    if not terms:
+        return True
+    meta = dict(record.get("metadata") or {})
+    target = _compact_inventory_text(
+        " ".join(
+            str(value or "")
+            for value in (
+                meta.get("section_title"),
+                meta.get("caption"),
+                meta.get("image_title"),
+                meta.get("image_name"),
+                meta.get("visual_context_text"),
+                meta.get("contextual_text"),
+                record.get("content"),
+                record.get("text"),
+            )
+        )
+    ).lower()
+    if not target:
+        return True
+    return any(term in target for term in terms)
+
+
+def _evidence_image_matches_query_anchor(message: str, image: EvidenceImage) -> bool:
+    target = _compact_inventory_text(
+        " ".join(
+            str(value or "")
+            for value in (
+                image.section_title,
+                image.caption,
+                image.source_chunk_id,
+            )
+        )
+    ).lower()
+    if not target:
+        return False
+    anchors = _manual_query_anchor_terms(message)
+    if anchors:
+        return any(anchor.lower() in target for anchor in anchors)
+    return _page_image_matches_query(
+        message,
+        {
+            "content": image.caption or "",
+            "metadata": {
+                "section_title": image.section_title or "",
+                "caption": image.caption or "",
+            },
+        },
+    )
+
+
+def _section_match_variants(title: str) -> list[str]:
+    compact = _compact_inventory_text(title).lower()
+    if not compact:
+        return []
+    variants = [compact]
+    without_number = re.sub(r"^\d+(?:\.\d+)*", "", compact).strip()
+    if without_number and without_number not in variants:
+        variants.append(without_number)
+    for suffix in ("部件清单", "零件清单", "料件清单", "配件清单", "清单"):
+        if without_number.endswith(suffix):
+            subject = without_number[: -len(suffix)].strip()
+            if len(subject) >= 3 and subject not in variants:
+                variants.append(subject)
+            break
+    return variants
+
+
+def _image_matches_target_section(image: EvidenceImage, target_title: str) -> bool:
+    target_variants = _section_match_variants(target_title)
+    if not target_variants:
+        return False
+    image_text = _compact_inventory_text(
+        " ".join(
+            str(value or "")
+            for value in (
+                image.section_title,
+                image.caption,
+                image.source_chunk_id,
+            )
+        )
+    ).lower()
+    if not image_text:
+        return False
+    return any(
+        variant and (variant in image_text or image_text in variant)
+        for variant in target_variants
+    )
+
+
+def _filter_evidence_images_to_target_section(
+    images: List[EvidenceImage],
+    metadata: dict,
+) -> List[EvidenceImage]:
+    """Keep images bound to the final deterministic answer section.
+
+    Same PDF pages can contain the tail of one section and the beginning of the
+    next.  Page-level image lookup intentionally closes recall gaps, but final
+    response images must be re-bound to the section that actually supplied the
+    text/table answer.  Do not use visual_context_text here: it often contains
+    neighboring OCR text and is the source of cross-section leakage.
+    """
+    sorted_images = _sort_unique_evidence_images(images)
+    target_title = str((metadata or {}).get("_deterministic_answer_section_title") or "").strip()
+    if not sorted_images or not target_title:
+        return sorted_images
+    matched = [
+        image for image in sorted_images
+        if _image_matches_target_section(image, target_title)
+    ]
+    return matched or sorted_images
+
+
+def _deterministic_document_ids(metadata: dict) -> list[str]:
+    document_ids: list[str] = []
+
+    def append(value) -> None:
+        value = str(value or "").strip()
+        if value and value not in document_ids:
+            document_ids.append(value)
+
+    for doc_id in (metadata or {}).get("_deterministic_answer_document_ids") or []:
+        append(doc_id)
+    for item in _iter_trace_result_items(metadata):
+        item_meta = dict(item.get("metadata") or {})
+        chunk_type = item_meta.get("chunk_type") or item_meta.get("source_chunk_type") or ""
+        if chunk_type in {"image", "image_summary"}:
+            continue
+        append(item_meta.get("document_id"))
+    return document_ids
+
+
+def _document_source_hints(metadata: dict) -> dict[str, dict[str, str]]:
+    hints: dict[str, dict[str, str]] = {}
+    for item in _iter_trace_result_items(metadata):
+        item_meta = dict(item.get("metadata") or {})
+        chunk_type = item_meta.get("chunk_type") or item_meta.get("source_chunk_type") or ""
+        if chunk_type in {"image", "image_summary"}:
+            continue
+        document_id = str(item_meta.get("document_id") or "").strip()
+        if not document_id:
+            continue
+        current = hints.setdefault(document_id, {})
+        for key in ("source_file_url", "file_name", "local_path"):
+            value = str(item_meta.get(key) or "").strip()
+            if value and not current.get(key):
+                current[key] = value
+    return hints
+
+
+def _resolve_pdf_source_path(source_file_url: str = "", file_name: str = "", local_path: str = "") -> str:
+    candidates: list[str] = []
+
+    def append(value: str) -> None:
+        value = str(value or "").strip().strip('"')
+        if value and value not in candidates:
+            candidates.append(value)
+
+    append(local_path)
+    append(source_file_url)
+    if file_name:
+        append(os.path.join(tempfile.gettempdir(), file_name))
+    if source_file_url.startswith(("http://", "https://")):
+        parsed = hashlib.md5(source_file_url.encode()).hexdigest()[:12]
+        append(os.path.join(tempfile.gettempdir(), f"docparser_{parsed}.pdf"))
+
+    for candidate in candidates:
+        if os.path.exists(candidate) and candidate.lower().endswith(".pdf"):
+            return candidate
+    return ""
+
+
+def _safe_path_segment(value: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(value or "").strip())
+    return text.strip("._") or hashlib.md5(str(value or "").encode()).hexdigest()[:12]
+
+
+def _text_evidence_title_for_page(metadata: dict, page: int, document_id: str = "") -> str:
+    for item in _iter_trace_result_items(metadata):
+        item_meta = dict(item.get("metadata") or {})
+        chunk_type = item_meta.get("chunk_type") or item_meta.get("source_chunk_type") or ""
+        if chunk_type in {"image", "image_summary"}:
+            continue
+        if document_id and str(item_meta.get("document_id") or "") != document_id:
+            continue
+        try:
+            item_page = int(item_meta.get("page_number") or item_meta.get("page"))
+        except (TypeError, ValueError):
+            continue
+        if item_page == page:
+            return str(item_meta.get("section_title") or item_meta.get("chunk_label") or "")
+    return ""
+
+
+def _render_evidence_pdf_page_image(metadata: dict, document_id: str, page: int) -> EvidenceImage | None:
+    source_hints = _document_source_hints(metadata)
+    hint = source_hints.get(document_id) or (next(iter(source_hints.values()), {}) if source_hints else {})
+    pdf_path = _resolve_pdf_source_path(
+        source_file_url=hint.get("source_file_url", ""),
+        file_name=hint.get("file_name", ""),
+        local_path=hint.get("local_path", ""),
+    )
+    if not pdf_path or page <= 0:
+        return None
+    try:
+        import fitz
+
+        doc = fitz.open(pdf_path)
+        if page > len(doc):
+            doc.close()
+            return None
+        storage_root = _settings.local_file_storage_dir
+        doc_key = _safe_path_segment(document_id or os.path.basename(pdf_path))
+        render_dir = os.path.join(storage_root, "rendered_pages", doc_key)
+        os.makedirs(render_dir, exist_ok=True)
+        image_name = f"page_{page:03d}.png"
+        image_path = os.path.join(render_dir, image_name)
+        if not os.path.exists(image_path):
+            pix = doc[page - 1].get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+            pix.save(image_path)
+        doc.close()
+    except Exception:
+        return None
+
+    public_base = _settings.file_public_base_url.rstrip("/")
+    return EvidenceImage(
+        image_url=f"{public_base}/rendered_pages/{doc_key}/{image_name}",
+        caption=f"第{page}页页面截图",
+        page=page,
+        section_title=_text_evidence_title_for_page(metadata, page, document_id),
+        document_id=document_id,
+        source_chunk_id=f"rendered-page:{document_id}:{page}",
+        context_role="page_render",
+    )
+
+
+def _collect_direct_evidence_page_images(
+    metadata: dict,
+    vector_service=None,
+) -> List[EvidenceImage]:
+    """Fetch images by the pages that supplied the final text/table evidence.
+
+    Some PDF pages contain multiple manual sections.  The image chunk may be
+    attached to a neighboring section while the text evidence is attached to the
+    precise operation section.  Page-level lookup closes that gap without
+    hard-coding page numbers or case ids.
+    """
+    pages = _text_evidence_pages(metadata)
+    if not pages:
+        return []
+    document_ids = _deterministic_document_ids(metadata)
+    if not document_ids:
+        return []
+    query = str(
+        (metadata or {}).get("original_user_message")
+        or (metadata or {}).get("user_message")
+        or (metadata or {}).get("message")
+        or ""
+    )
+    try:
+        if vector_service is None:
+            from services.knowledge.vector_service import get_vector_service
+            vector_service = get_vector_service()
+    except Exception:
+        return []
+
+    images: List[EvidenceImage] = []
+    seen_urls: set[str] = set()
+    for document_id in document_ids[:2]:
+        for page in pages[:8]:
+            try:
+                records = vector_service.get_page_records(
+                    document_id,
+                    page,
+                    chunk_type="image",
+                    limit=20,
+                )
+            except Exception:
+                continue
+            page_had_indexed_image = False
+            page_had_matched_image = False
+            for rec in records:
+                page_had_indexed_image = True
+                rec = rec.model_dump() if hasattr(rec, "model_dump") else dict(rec)
+                if not _page_image_matches_query(query, rec):
+                    continue
+                page_had_matched_image = True
+                meta = dict(rec.get("metadata") or {})
+                image_url = meta.get("image_url") or rec.get("image_url")
+                if not image_url or image_url in seen_urls:
+                    continue
+                seen_urls.add(image_url)
+                images.append(EvidenceImage(
+                    image_url=image_url,
+                    caption=meta.get("caption") or meta.get("image_title") or rec.get("content", ""),
+                    page=meta.get("page_number") or meta.get("page"),
+                    section_title=meta.get("section_title", ""),
+                    document_id=meta.get("document_id", ""),
+                    source_chunk_id=str(rec.get("id") or rec.get("doc_id") or ""),
+                    context_role="page_lookup",
+                ))
+            if not page_had_indexed_image or not page_had_matched_image:
+                rendered = _render_evidence_pdf_page_image(metadata, document_id, page)
+                if rendered and rendered.image_url not in seen_urls:
+                    seen_urls.add(rendered.image_url)
+                    images.append(rendered)
+    return _sort_unique_evidence_images(images)
+
+
+def _text_evidence_pages(metadata: dict) -> list[int]:
+    """Return page order from non-image evidence in the active target section.
+
+    This is a response-level guardrail: pictures should follow the same pages
+    that supplied text/table/step evidence.  It prevents a same-section direct
+    image lookup from leaking adjacent opposite-action pages into the UI.
+    """
+    override_pages = (metadata or {}).get("_deterministic_answer_evidence_pages") or []
+    pages: list[int] = []
+    for page in override_pages:
+        try:
+            page_int = int(page)
+        except (TypeError, ValueError):
+            continue
+        if page_int not in pages:
+            pages.append(page_int)
+    if pages:
+        return pages
+
+    section_match_ids: set[str] = set()
+    non_image_items: list[dict] = []
+    for item in _iter_trace_result_items(metadata):
+        item_meta = dict(item.get("metadata") or {})
+        for sid in item_meta.get("section_match_ids") or []:
+            if sid:
+                section_match_ids.add(str(sid))
+        chunk_type = item_meta.get("chunk_type") or item_meta.get("source_chunk_type") or ""
+        if chunk_type in {"image", "image_summary"}:
+            continue
+        non_image_items.append(item)
+
+    pages: list[int] = []
+    for item in non_image_items:
+        item_meta = dict(item.get("metadata") or {})
+        parent_section_id = str(item_meta.get("parent_section_id") or "")
+        if section_match_ids and parent_section_id and parent_section_id not in section_match_ids:
+            continue
+        page = item_meta.get("page_number") or item_meta.get("page")
+        try:
+            page_int = int(page)
+        except (TypeError, ValueError):
+            continue
+        if page_int not in pages:
+            pages.append(page_int)
+    return pages
+
+
+_EXPLICIT_SINGLE_PAGE_PATTERNS = (
+    "只要这一步",
+    "只要这一页",
+    "只要这页",
+    "只返回这一步",
+    "只返回这一页",
+    "对应图只要",
+    "对应图片只要",
+    "那一页的",
+    "那一步对应",
+    "这一步对应的图",
+    "这一页对应的图",
+    "只返回检查对应图",
+    "只返回",
+)
+
+
+def _query_explicit_single_page_intent(query: str) -> bool:
+    """True when the user explicitly asks for only one step/page's image.
+
+    Examples: "只要这一步对应的图", "对应图片只要安装右盖那一页的",
+    "检查凸轮轴...只返回检查对应图".  These override same-section image
+    expansion — adjacent pages of the same section must not be shown.
+    """
+    text = (query or "").replace(" ", "")
+    return any(pattern in text for pattern in _EXPLICIT_SINGLE_PAGE_PATTERNS)
+
+
+def _page_action_scores(
+    metadata: dict,
+    pages: list[int],
+    action: str,
+) -> dict[int, int]:
+    """Score each page by how strongly its *text* context matches the action.
+
+    Image captions are often empty for this manual, so the opposite-action
+    filter that relies on image context fails.  The per-page step/text chunks
+    do carry the action verbs (拆卸 vs 安装), so we use those instead.
+    """
+    if not action or not pages:
+        return {}
+    text_by_page = _text_context_by_page_for_image_narrowing(metadata, set(pages))
+    # The react trace does not always carry text result_data (e.g. direct image
+    # lookup path).  Fall back to reading each page's text/step chunks from the
+    # index so the action direction can still be scored.
+    if not any(text_by_page.get(page) for page in pages):
+        text_by_page = _page_text_context_from_index(metadata, pages)
+    action_words = _MANUAL_ACTION_SYNONYMS.get(action, ())
+    opposite_words = _MANUAL_OPPOSITE_ACTIONS.get(action, ())
+    scores: dict[int, int] = {}
+    for page in pages:
+        context = text_by_page.get(page, "")
+        score = sum(2 for word in action_words if word and word in context)
+        score -= sum(2 for word in opposite_words if word and word in context)
+        scores[page] = score
+    return scores
+
+
+def _page_text_context_from_index(metadata: dict, pages: list[int]) -> dict[int, str]:
+    """Read each page's non-image text/step chunks directly from the index.
+
+    Used when the react trace lacks text result_data.  Concatenates the section
+    step/text content so action verbs (拆卸 vs 安装) can be detected per page.
+    """
+    document_ids = (metadata or {}).get("_deterministic_answer_document_ids") or []
+    if not document_ids:
+        return {}
+    try:
+        from services.knowledge.vector_service import get_vector_service
+        vector_service = get_vector_service()
+    except Exception:
+        return {}
+    result: dict[int, str] = {}
+    for page in pages:
+        parts: list[str] = []
+        for document_id in document_ids:
+            if not document_id:
+                continue
+            try:
+                records = vector_service.get_page_records(document_id, page, limit=30)
+            except Exception:
+                continue
+            for raw in records or []:
+                record = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw)
+                meta = dict(record.get("metadata") or {})
+                chunk_type = meta.get("chunk_type") or meta.get("source_chunk_type") or ""
+                if chunk_type in {"image", "image_summary"}:
+                    continue
+                parts.append(str(record.get("text") or record.get("content") or ""))
+        result[page] = " ".join(part for part in parts if part)
+    return result
+
+
+def _narrow_evidence_pages_by_action(
+    metadata: dict,
+    evidence_pages: list[int],
+    query: str,
+) -> list[int]:
+    """When the answer section spans pages that split 拆卸/安装 across pages,
+    keep only the pages whose text context matches the query action.
+
+    Also honours an explicit single-page request by collapsing to the single
+    best-matching page.  Returns evidence_pages unchanged when the signal is
+    ambiguous (all pages score equally) so we never drop legitimate evidence.
+    """
+    if len(evidence_pages) <= 1:
+        return evidence_pages
+    action = _manual_query_action(query)
+    if not action:
+        return evidence_pages
+    scores = _page_action_scores(metadata, evidence_pages, action)
+    if not scores:
+        return evidence_pages
+    best = max(scores.values())
+    worst = min(scores.values())
+    # Ambiguous: every page matches the action equally -> keep all.
+    if best == worst:
+        return evidence_pages
+    explicit_single = _query_explicit_single_page_intent(query)
+    if explicit_single:
+        # User asked for only one step/page: collapse to the best-matching page,
+        # but only when a positive-scoring page exists (otherwise keep all).
+        if best > 0:
+            best_pages = [p for p in evidence_pages if scores[p] == best]
+            return best_pages or evidence_pages
+        return evidence_pages
+    # Non-explicit: never drop a page that positively matches the action just
+    # because another page scores higher (multi-page same-action procedures are
+    # common).  Only drop pages where the opposite action strictly dominates
+    # (negative score) AND at least one positive-scoring page remains.
+    has_positive = any(score > 0 for score in scores.values())
+    has_negative = any(score < 0 for score in scores.values())
+    if not (has_positive and has_negative):
+        return evidence_pages
+    kept = [p for p in evidence_pages if scores[p] >= 0]
+    return kept or evidence_pages
+
+
+def _align_evidence_images_to_text_evidence_pages(
+    images: List[EvidenceImage],
+    metadata: dict,
+) -> List[EvidenceImage]:
+    """Filter and order evidence images using text/table/step evidence pages.
+
+    The retrieval stage may return all images from a matched section.  For
+    manuals, adjacent pages often contain the opposite action (拆卸 vs 安装).
+    The text evidence pages are a stronger binding signal for what the answer
+    actually used, so the UI images should be aligned to those pages.
+    """
+    sorted_images = _sort_unique_evidence_images(images)
+    if not sorted_images:
+        return []
+    evidence_pages = _text_evidence_pages(metadata)
+    if not evidence_pages:
+        return sorted_images
+    query = str(
+        (metadata or {}).get("original_user_message")
+        or (metadata or {}).get("user_message")
+        or (metadata or {}).get("message")
+        or ""
+    )
+    # When the answer section spans pages that split 拆卸/安装, or the user asks
+    # for only one step/page's image, narrow evidence pages by action direction
+    # using per-page text context (image captions are usually empty here).
+    evidence_pages = _narrow_evidence_pages_by_action(metadata, evidence_pages, query)
+    allowed = set(evidence_pages)
+    explicit_single = _query_explicit_single_page_intent(query)
+    max_evidence_page = max(evidence_pages)
+    allow_adjacent_continuation = (
+        _manual_query_kind(query) == "procedure" and not explicit_single
+    )
+    filtered = [
+        image for image in sorted_images
+        if (_evidence_image_page(image) in allowed)
+        or (
+            allow_adjacent_continuation
+            and
+            _evidence_image_page(image) == max_evidence_page + 1
+            and _evidence_image_matches_query_anchor(query, image)
+        )
+    ]
+    return filtered or sorted_images
+
+
+_IMAGE_TARGET_SPECIFIC_TERMS = (
+    "标记",
+    "朝向",
+    "朝下",
+    "朝上",
+    "朝外",
+    "开口",
+    "缺口",
+    "错开",
+    "a孔",
+    "b段",
+    "d段",
+    "塞尺",
+    "组别",
+    "放油",
+    "放水",
+    "水箱盖",
+    "负极线",
+    "正极线",
+    "线束",
+    "导出线束",
+    "圆柱销",
+    "定位销",
+    "o型圈",
+    "螺栓",
+    "螺母",
+    "数量",
+    "扭矩",
+    "扭力",
+    "力矩",
+    "间隙",
+    "拉玛",
+)
+
+
+def _image_query_has_specific_target(query: str) -> bool:
+    compact_query = _compact_inventory_text(query).lower()
+    if not compact_query:
+        return False
+    if any(term in compact_query for term in _IMAGE_TARGET_SPECIFIC_TERMS):
+        return True
+    if re.search(r"[a-z]\d*|[a-z][/\-]?[a-z]|\d+(?:\.\d+)?", compact_query):
+        return True
+    return False
+
+
+def _image_specific_anchor_terms(query: str) -> list[str]:
+    compact_query = _compact_inventory_text(query).lower()
+    anchors: list[str] = []
+
+    def add(term: str) -> None:
+        value = _compact_inventory_text(term).lower()
+        value = re.sub(r"^(?:哪两个|哪些|哪个|哪张|什么|几个|多少|要拆|要装|应当|应该)+", "", value)
+        value = re.sub(r"(?:是多少|是什么|怎么做|怎么装|怎么拆|要求|步骤|方法|位置)$", "", value)
+        if len(value) < 2:
+            return
+        if value in {"安装", "拆卸", "检查", "装配", "清单", "步骤", "发动机"}:
+            return
+        if value not in anchors:
+            anchors.append(value)
+
+    for term in (
+        "排放机油",
+        "放油螺栓",
+        "排放冷却液",
+        "放水螺栓",
+        "右水箱盖",
+        "IN标记",
+        "EX标记",
+        "A孔",
+        "B段",
+        "D段",
+        "C标记",
+        "D标记",
+        "塞尺",
+        "组别",
+        "导出线束",
+        "负极线",
+        "正极线",
+    ):
+        if term.lower() in compact_query:
+            add(term)
+
+    for pattern in (
+        r"[a-z]+标记",
+        r"[a-z]孔",
+        r"[a-z]段",
+        r"[\u4e00-\u9fffA-Za-z0-9φΦ×.\-]+(?:螺栓|螺母|o型圈|定位销|圆柱销|挡圈|垫圈|线束|拉玛)",
+    ):
+        for match in re.finditer(pattern, compact_query):
+            add(match.group(0))
+    return anchors
+
+
+def _text_context_by_page_for_image_narrowing(metadata: dict, candidate_pages: set[int]) -> dict[int, str]:
+    page_parts: dict[int, list[str]] = {page: [] for page in candidate_pages}
+    for item in _iter_trace_result_items(metadata):
+        item_meta = dict(item.get("metadata") or {})
+        chunk_type = item_meta.get("chunk_type") or item_meta.get("source_chunk_type") or ""
+        if chunk_type in {"image", "image_summary"}:
+            continue
+        try:
+            page = int(item_meta.get("page_number") or item_meta.get("page"))
+        except (TypeError, ValueError):
+            continue
+        if page not in candidate_pages:
+            continue
+        page_parts.setdefault(page, []).extend(
+            str(value or "")
+            for value in (
+                item_meta.get("section_title"),
+                item_meta.get("chunk_label"),
+                item.get("content"),
+                item.get("text"),
+            )
+        )
+    return {
+        page: " ".join(part for part in parts if part)
+        for page, parts in page_parts.items()
+    }
+
+
+def _narrow_evidence_images_to_query_target_pages(
+    images: List[EvidenceImage],
+    metadata: dict,
+    vector_service=None,
+) -> List[EvidenceImage]:
+    """Narrow over-expanded image evidence to the pages that match the query target.
+
+    Text answers intentionally expand same-section/page-boundary evidence for
+    completeness.  Images need stricter binding: when a user asks for one
+    specific visual/parameter/sub-step, adjacent pages from the same expanded
+    text section should not automatically be shown.
+    """
+    sorted_images = _sort_unique_evidence_images(images)
+    image_pages = {
+        page for image in sorted_images
+        for page in [_evidence_image_page(image)]
+        if page is not None
+    }
+    if len(image_pages) <= 1:
+        return sorted_images
+
+    query = str(
+        (metadata or {}).get("original_user_message")
+        or (metadata or {}).get("user_message")
+        or (metadata or {}).get("message")
+        or ""
+    )
+    if not _image_query_has_specific_target(query):
+        return sorted_images
+
+    try:
+        from services.retrieval.image_selector import PageEvidence, score_pages_for_image_query
+    except Exception:
+        return sorted_images
+
+    text_by_page = _text_context_by_page_for_image_narrowing(metadata, image_pages)
+    images_by_page: dict[int, list[EvidenceImage]] = {}
+    for image in sorted_images:
+        page = _evidence_image_page(image)
+        if page is None:
+            continue
+        images_by_page.setdefault(page, []).append(image)
+
+    page_evidence = []
+    for page in sorted(image_pages):
+        page_images = images_by_page.get(page, [])
+        image_context = " ".join(
+            " ".join(
+                str(value or "")
+                for value in (
+                    image.caption,
+                    image.section_title,
+                    image.source_chunk_id,
+                )
+            )
+            for image in page_images
+        )
+        group_key = " ".join(
+            dict.fromkeys(
+                str(image.section_title or "")
+                for image in page_images
+                if str(image.section_title or "").strip()
+            )
+        )
+        page_evidence.append(
+            PageEvidence(
+                page=page,
+                text=text_by_page.get(page, ""),
+                image_text=image_context,
+                group_key=group_key,
+                images=[
+                    {
+                        "doc_id": image.source_chunk_id or image.image_url or f"image:{page}",
+                        "content": image.caption or "",
+                        "metadata": {
+                            "chunk_type": "image",
+                            "page": page,
+                            "section_title": image.section_title or "",
+                        },
+                    }
+                    for image in page_images
+                ],
+            )
+        )
+
+    anchors = _image_specific_anchor_terms(query)
+    if anchors:
+        anchor_hits: dict[int, int] = {}
+        for page in sorted(image_pages):
+            page_text = _compact_inventory_text(
+                f"{text_by_page.get(page, '')} "
+                f"{' '.join(str(image.caption or '') + ' ' + str(image.section_title or '') for image in images_by_page.get(page, []))}"
+            ).lower()
+            anchor_hits[page] = sum(1 for anchor in anchors if anchor and anchor in page_text)
+        max_hits = max(anchor_hits.values(), default=0)
+        if max_hits > 0:
+            selected_pages = {
+                page for page, hits in anchor_hits.items()
+                if hits == max_hits
+            }
+            if selected_pages and selected_pages != image_pages:
+                narrowed = [
+                    image for image in sorted_images
+                    if _evidence_image_page(image) in selected_pages
+                ]
+                if narrowed:
+                    return narrowed
+
+    scores = score_pages_for_image_query(query, page_evidence)
+    if not scores:
+        return sorted_images
+    best = scores[0]
+    if best.score < 18:
+        return sorted_images
+    second_score = scores[1].score if len(scores) > 1 else 0.0
+    dominant = best.score >= second_score + 18 or best.score >= max(second_score * 1.55, 1.0)
+    if not dominant:
+        return sorted_images
+
+    threshold = max(best.score - 8.0, best.score * 0.86)
+    selected_pages = {
+        score.page for score in scores
+        if score.score >= threshold
+    }
+    if not selected_pages or selected_pages == image_pages:
+        return sorted_images
+    narrowed = [
+        image for image in sorted_images
+        if _evidence_image_page(image) in selected_pages
+    ]
+    return narrowed or sorted_images
+
+
+def _image_context_for_action_filter(image: EvidenceImage, vector_service=None) -> str:
+    parts = [image.caption or "", image.section_title or ""]
+    try:
+        if vector_service is None:
+            from services.knowledge.vector_service import get_vector_service
+            vector_service = get_vector_service()
+        page = _evidence_image_page(image)
+        if not image.document_id or page is None:
+            return " ".join(parts)
+        records = vector_service.get_page_records(
+            image.document_id,
+            page,
+            chunk_type="image",
+            limit=20,
+        )
+    except Exception:
+        return " ".join(parts)
+
+    for raw in records or []:
+        record = raw.model_dump() if hasattr(raw, "model_dump") else dict(raw)
+        meta = dict(record.get("metadata") or {})
+        record_url = meta.get("image_url") or record.get("image_url")
+        record_id = str(record.get("id") or record.get("doc_id") or "")
+        if image.image_url and record_url and image.image_url != record_url:
+            continue
+        if image.source_chunk_id and record_id and image.source_chunk_id != record_id:
+            continue
+        parts.extend(
+            str(value or "")
+            for value in (
+                record.get("content"),
+                record.get("text"),
+                meta.get("caption"),
+                meta.get("image_title"),
+                meta.get("visual_context_text"),
+                meta.get("contextual_text"),
+            )
+        )
+        break
+    return " ".join(parts)
+
+
+def _action_context_score(query: str, context: str) -> int:
+    action = _manual_query_action(query)
+    if not action:
+        return 0
+    target = _manual_action_target(query, action)
+    compact_context = _compact_inventory_text(context)
+    if not compact_context:
+        return 0
+    action_words = _MANUAL_ACTION_SYNONYMS.get(action, ())
+    opposite_words = _MANUAL_OPPOSITE_ACTIONS.get(action, ())
+    score = sum(2 for word in action_words if word and word in compact_context)
+    score -= sum(2 for word in opposite_words if word and word in compact_context)
+    if target:
+        compact_target = _compact_inventory_text(target)
+        if f"{action}{compact_target}" in compact_context:
+            score += 4
+        for opposite_word in opposite_words:
+            if f"{opposite_word}{compact_target}" in compact_context:
+                score -= 4
+    return score
+
+
+def _image_context_is_inventory_noise_for_query(query: str, context: str, score: int) -> bool:
+    if _is_inventory_table_query(query):
+        return False
+    if _manual_query_kind(query) != "procedure":
+        return False
+    compact_context = _compact_inventory_text(context)
+    if score > 0:
+        return False
+    action = _manual_query_action(query)
+    if action and any(word and word in compact_context for word in _MANUAL_ACTION_SYNONYMS.get(action, ())):
+        return False
+    inventory_markers = ("清单", "BOM", "料件名称", "数量", "序号", "部件清单", "零件清单")
+    return any(marker in compact_context for marker in inventory_markers)
+
+
+def _filter_evidence_images_by_action_context(
+    images: List[EvidenceImage],
+    metadata: dict,
+    vector_service=None,
+) -> List[EvidenceImage]:
+    sorted_images = _sort_unique_evidence_images(images)
+    if len({_evidence_image_page(image) for image in sorted_images}) <= 1:
+        return sorted_images
+    query = str(
+        (metadata or {}).get("original_user_message")
+        or (metadata or {}).get("user_message")
+        or (metadata or {}).get("message")
+        or ""
+    )
+    if not _manual_query_action(query):
+        return sorted_images
+    scored: list[tuple[int, EvidenceImage, str]] = []
+    for image in sorted_images:
+        context = _image_context_for_action_filter(image, vector_service=vector_service)
+        scored.append((_action_context_score(query, context), image, context))
+    evidence_pages = set(_text_evidence_pages(metadata))
+    has_positive_action_image = any(score > 0 for score, _, _ in scored)
+    action = _manual_query_action(query)
+    compact_target = _compact_inventory_text(_manual_action_target(query, action))
+    positive_pages = [
+        page
+        for score, image, _ in scored
+        if score > 0
+        for page in [_evidence_image_page(image)]
+        if page is not None
+    ]
+    positive: list[EvidenceImage] = []
+    for score, image, context in scored:
+        if score > 0:
+            positive.append(image)
+            continue
+        image_page = _evidence_image_page(image)
+        if image_page not in evidence_pages:
+            continue
+        compact_context = _compact_inventory_text(context)
+        later_positive_page_exists = (
+            image_page is not None
+            and len(evidence_pages) > 1
+            and any(positive_page > image_page for positive_page in positive_pages)
+        )
+        overridden_by_stronger_action_image = (
+            has_positive_action_image
+            and score < 0
+            and len(compact_target) >= 2
+            and compact_target in compact_context
+            and later_positive_page_exists
+        )
+        if overridden_by_stronger_action_image:
+            continue
+        if _image_context_is_inventory_noise_for_query(query, context, score):
+            continue
+        positive.append(image)
+    if not positive:
+        evidence_page_images = [
+            image for image in sorted_images
+            if _evidence_image_page(image) in evidence_pages
+        ]
+        if evidence_page_images:
+            return _sort_unique_evidence_images(evidence_page_images)
+        return sorted_images
+    if len(positive) < len(sorted_images):
+        return _sort_unique_evidence_images(positive)
+    return sorted_images
+
+
 async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
     """执行 RAG -> 单次 LLM 生成的轻量链路；失败时返回 None 交给 ReAct 回退。"""
     total_t0 = time.time()
@@ -1281,6 +3810,27 @@ async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
     )
     if table_answer:
         total_ms = int((time.time() - total_t0) * 1000)
+        fast_metadata = {
+            "execution_mode": "rag_table_direct",
+            "react_trace": trace,
+            "react_iterations": 1,
+            "deterministic_table_answer": True,
+            "user_message": request.message,
+            "original_user_message": request.message,
+            "phase_timings_ms": {
+                "retrieval": retrieval_ms,
+                "llm_generation": 0,
+                "fast_path_total": total_ms,
+            },
+        }
+        for key in (
+            "_deterministic_answer_evidence_pages",
+            "_deterministic_answer_document_ids",
+            "_deterministic_answer_section_title",
+            "_deterministic_answer_section_ids",
+        ):
+            if key in table_metadata:
+                fast_metadata[key] = table_metadata[key]
         logger.info(
             "[chat][fast_path] session=%s direct_table_answer retrieval_ms=%s total_ms=%s evidence_count=%s",
             request.session_id,
@@ -1292,19 +3842,7 @@ async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
             agent_name="fix_agent",
             message=table_answer,
             tools_used=["knowledge_retrieval"],
-            metadata={
-                "execution_mode": "rag_table_direct",
-                "react_trace": trace,
-                "react_iterations": 1,
-                "deterministic_table_answer": True,
-                "user_message": request.message,
-                "original_user_message": request.message,
-                "phase_timings_ms": {
-                    "retrieval": retrieval_ms,
-                    "llm_generation": 0,
-                    "fast_path_total": total_ms,
-                },
-            },
+            metadata=fast_metadata,
             latency_ms=total_ms,
             raw_response={"content": table_answer},
         )
@@ -1465,8 +4003,20 @@ async def chat(request: ChatRequest) -> ChatResponse:
             verification = {}
             has_issues = False
         else:
-            response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
-            if not _is_deterministic_direct_output(final_result):
+            manual_evidence_answer = _format_manual_evidence_answer_from_metadata(
+                request.message,
+                final_result.metadata,
+            )
+            if manual_evidence_answer:
+                final_result.metadata["deterministic_manual_evidence_answer"] = True
+                final_result.metadata["deterministic_manual_evidence_answer_source"] = "api_response_override"
+                response_message = manual_evidence_answer
+                diagnosis_items = None
+                verification = {}
+                has_issues = False
+            else:
+                response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
+            if not manual_evidence_answer and not _is_deterministic_direct_output(final_result):
                 follow_up = build_follow_up(input_data.user_message, diagnosis_items, final_result.metadata)
                 if follow_up:
                     final_result.metadata["execution_mode"] = "causal_follow_up_question"
@@ -1484,6 +4034,13 @@ async def chat(request: ChatRequest) -> ChatResponse:
         direct_images = await _collect_direct_section_images(final_result.metadata)
         if direct_images:
             evidence_images = _merge_evidence_images(evidence_images, direct_images)
+        page_images = _collect_direct_evidence_page_images(final_result.metadata)
+        if page_images:
+            evidence_images = _merge_evidence_images(evidence_images, page_images)
+        evidence_images = _align_evidence_images_to_text_evidence_pages(evidence_images, final_result.metadata)
+        evidence_images = _narrow_evidence_images_to_query_target_pages(evidence_images, final_result.metadata)
+        evidence_images = _filter_evidence_images_by_action_context(evidence_images, final_result.metadata)
+        evidence_images = _filter_evidence_images_to_target_section(evidence_images, final_result.metadata)
 
         return ChatResponse(
             session_id=request.session_id,
@@ -1820,6 +4377,14 @@ async def chat_stream(request: ChatRequest):
             if table_answer:
                 stream_metadata["deterministic_table_answer"] = True
                 stream_metadata["deterministic_table_answer_source"] = "stream_response_override"
+                for key in (
+                    "_deterministic_answer_evidence_pages",
+                    "_deterministic_answer_document_ids",
+                    "_deterministic_answer_section_title",
+                    "_deterministic_answer_section_ids",
+                ):
+                    if key in table_metadata:
+                        stream_metadata[key] = table_metadata[key]
                 final_message = table_answer
                 diagnosis_items = None
                 verification = {}
@@ -1827,6 +4392,34 @@ async def chat_stream(request: ChatRequest):
                 markers = []
 
             if not table_answer:
+                manual_metadata = {
+                    **stream_metadata,
+                    "react_trace": stream_react_trace,
+                    "user_message": input_data.user_message,
+                    "original_user_message": request.message,
+                }
+                manual_evidence_answer = _format_manual_evidence_answer_from_metadata(
+                    request.message,
+                    manual_metadata,
+                )
+                if manual_evidence_answer:
+                    stream_metadata["deterministic_manual_evidence_answer"] = True
+                    stream_metadata["deterministic_manual_evidence_answer_source"] = "stream_response_override"
+                    for key in (
+                        "_deterministic_answer_evidence_pages",
+                        "_deterministic_answer_document_ids",
+                        "_deterministic_answer_section_title",
+                        "_deterministic_answer_section_ids",
+                    ):
+                        if key in manual_metadata:
+                            stream_metadata[key] = manual_metadata[key]
+                    final_message = manual_evidence_answer
+                    diagnosis_items = None
+                    verification = {}
+                    has_issues = False
+                    markers = []
+
+            if not table_answer and not stream_metadata.get("deterministic_manual_evidence_answer"):
                 diagnostic_follow_up = build_follow_up(
                     input_data.user_message,
                     diagnosis_items,
@@ -1851,6 +4444,20 @@ async def chat_stream(request: ChatRequest):
                 final_message = _MAINT_SAFE_FALLBACK_LINE
                 diagnosis_items = None
                 markers = []
+
+            image_metadata = {
+                **stream_metadata,
+                "react_trace": stream_react_trace,
+                "user_message": input_data.user_message,
+                "original_user_message": request.message,
+            }
+            page_images = _collect_direct_evidence_page_images(image_metadata)
+            if page_images:
+                evidence_images = _merge_evidence_images(evidence_images, page_images)
+            evidence_images = _align_evidence_images_to_text_evidence_pages(evidence_images, image_metadata)
+            evidence_images = _narrow_evidence_images_to_query_target_pages(evidence_images, image_metadata)
+            evidence_images = _filter_evidence_images_by_action_context(evidence_images, image_metadata)
+            evidence_images = _filter_evidence_images_to_target_section(evidence_images, image_metadata)
 
             if diagnostic_follow_up:
                 yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '存在多个相近根因，正在生成区分性追问', 'mode': 'causal_follow_up'}})}\n\n"
