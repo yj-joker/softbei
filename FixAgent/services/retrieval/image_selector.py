@@ -323,10 +323,6 @@ def _base_score_page(query: str, page: PageEvidence) -> float:
     return score
 
 
-def _score_page(query: str, page: PageEvidence) -> float:
-    return _base_score_page(query, page)
-
-
 def _unique_pages(pages: Iterable[int]) -> List[int]:
     seen: set[int] = set()
     result: List[int] = []

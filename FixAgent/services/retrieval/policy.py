@@ -5,26 +5,9 @@ from __future__ import annotations
 from typing import Any, Dict, Iterable, List
 
 
-_IMAGE_HINTS = ("图片", "图", "示意图", "结构图", "位置图", "照片", "插图")
-_TABLE_HINTS = ("参数", "规格", "型号", "扭矩", "数量", "表", "清单")
-_TEXT_HINTS = ("怎么", "步骤", "原因", "故障", "拆", "装", "维修", "检查")
-
-
 def cosine_distance_to_relevance(distance: float) -> float:
     """Convert Redis cosine distance into a bounded relevance score."""
     return round(max(0.0, min(1.0, 1.0 - float(distance))), 6)
-
-
-def detect_query_intent(query: str) -> str:
-    """Return the dominant retrieval intent for a user query."""
-    text = query or ""
-    if any(hint in text for hint in _IMAGE_HINTS):
-        return "image"
-    if any(hint in text for hint in _TABLE_HINTS):
-        return "table"
-    if any(hint in text for hint in _TEXT_HINTS):
-        return "text"
-    return "mixed"
 
 
 def _chunk_type(candidate: Dict[str, Any]) -> str:

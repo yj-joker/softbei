@@ -229,12 +229,3 @@ def confidence_intent(plan: RetrievalPlan) -> str:
     if plan.intent == "outline":
         return "text"
     return "mixed"
-
-
-def debug_trace_plan(plan: RetrievalPlan) -> dict:
-    """返回 plan 的关键信息用于调试 trace."""
-    return {
-        "intent": plan.intent,
-        "routes": plan.routes,
-        "section_match_ids": plan.section_match_ids,
-    }

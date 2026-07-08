@@ -320,32 +320,6 @@ class DocumentParserTool(BaseTool):
 
     # ==================== 图注匹配 ====================
 
-    @staticmethod
-    def _attach_captions_legacy(images: list, page_text: str) -> None:
-        """
-        从页面文字中找图注（图X-X 格式），按文字位置匹配图片。
-
-        规则：一本书里的插图图注通常在图片正下方，
-        文本中 "图2-1 ..." 出现在图片坐标下方且最近的文字即为图注。
-        由于我们没有精确的文字坐标，这里用简单策略：
-        按图片在页面上从上到下的顺序，匹配文本中出现的图注顺序。
-        """
-        caption_pattern = re.compile(r'图\s*\d+[-–—]\s*\d+\s*[：:，,\s]*(.+?)(?:\n|图\s*\d+|\Z)', re.DOTALL)
-        captions = caption_pattern.findall(page_text)
-
-        if not captions or not images:
-            return
-
-        # 按从上到下排列图片（如果有坐标信息）
-        sorted_images = sorted(
-            images,
-            key=lambda x: (x.get("top") if x.get("top") is not None else 9999)
-        )
-
-        for i, img in enumerate(sorted_images):
-            if i < len(captions):
-                img["caption"] = captions[i].strip()
-
     # ==================== 表格清理 ====================
 
     @staticmethod
@@ -859,74 +833,6 @@ class DocumentParserTool(BaseTool):
             and not operation_lines
             and (has_outline_title or len(outline_lines) >= max(6, len(lines) // 2))
         )
-
-    # ==================== 章节合并 ====================
-
-    @staticmethod
-    def _group_into_sections_legacy(pages_data: list) -> list:
-        """
-        将逐页数据按"第X章"标题合并为章节。
-
-        在一页里发现章节标题 → 新建 section。
-        后续页跟在当前 section 里，直到下一个章节标题出现。
-        """
-        chapter_pattern = re.compile(r'第[一二三四五六七八九十\d]+章')
-
-        sections = []
-        current_section = {
-            "section_title": "前言",
-            "page_range": "",
-            "text_chunks": [],
-            "images": [],
-            "tables": []
-        }
-        start_page = 1
-        sections.append(current_section)
-
-        for page_data in pages_data:
-            page_num = page_data["page"]
-            text = page_data["text"]
-
-            # 检测章节标题
-            match = chapter_pattern.search(text)
-            if match and page_num > 1:
-                current_section["page_range"] = f"{start_page}-{page_num - 1}"
-                start_page = page_num
-                current_section = {
-                    "section_title": match.group(),
-                    "page_range": "",
-                    "text_chunks": [],
-                    "images": [],
-                    "tables": []
-                }
-                sections.append(current_section)
-
-            # 将当前页内容归入当前章节
-            if text.strip():
-                current_section["text_chunks"].extend(
-                    DocumentParserTool._split_page_text(text, page_num)
-                )
-            current_section["images"].extend(page_data["images"])
-            for table in page_data["tables"]:
-                label = f"第{page_num}页表格"
-                current_section["tables"].append({
-                    "page": page_num,
-                    "caption": label,
-                    "rows": table
-                })
-
-        # 最后一个章节的页码范围
-        if sections:
-            last_page = pages_data[-1]["page"] if pages_data else 1
-            for sec in sections:
-                if not sec["page_range"]:
-                    sec["page_range"] = f"{start_page}-{last_page}"
-
-        # 过滤掉空章节
-        return [
-            s for s in sections
-            if s["text_chunks"] or s["images"] or s["tables"]
-        ]
 
     # ==================== 文件下载 ====================
 
