@@ -1,9 +1,7 @@
 package ai.weixiu.controller;
 
 import ai.weixiu.pojo.Result;
-import ai.weixiu.pojo.dto.TaskVoiceSessionStartDTO;
 import ai.weixiu.pojo.dto.TaskVoiceTurnDTO;
-import ai.weixiu.pojo.vo.TaskVoiceSessionVO;
 import ai.weixiu.pojo.vo.TaskVoiceTurnVO;
 import ai.weixiu.service.MaintenanceTaskVoiceService;
 import ai.weixiu.utils.BaseContext;
@@ -15,6 +13,8 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.Map;
+
 @RestController
 @RequestMapping("/weixiu/task/{taskId}/voice")
 @RequiredArgsConstructor
@@ -23,14 +23,22 @@ public class MaintenanceTaskVoiceController {
 
     private final MaintenanceTaskVoiceService voiceService;
 
-    @PostMapping("/session/start")
-    public Result<TaskVoiceSessionVO> startSession(
+    /**
+     * 开始语音协作——返回任务上下文。
+     */
+    @PostMapping("/start")
+    public Result<TaskVoiceTurnVO> startVoice(
             @PathVariable Long taskId,
-            @RequestBody(required = false) TaskVoiceSessionStartDTO dto) {
+            @RequestBody(required = false) Map<String, Object> body) {
         Long userId = BaseContext.getCurrentId();
-        return Result.success(voiceService.startSession(taskId, userId, dto));
+        Long focusedStepId = body != null && body.get("focusedStepId") != null
+                ? Long.valueOf(body.get("focusedStepId").toString()) : null;
+        return Result.success(voiceService.startVoice(taskId, userId, focusedStepId));
     }
 
+    /**
+     * 语音对话轮次。
+     */
     @PostMapping("/turn")
     public Result<TaskVoiceTurnVO> voiceTurn(
             @PathVariable Long taskId,
@@ -39,10 +47,13 @@ public class MaintenanceTaskVoiceController {
         return Result.success(voiceService.turn(taskId, userId, dto));
     }
 
-    @PostMapping("/session/end")
-    public Result<TaskVoiceSessionVO> endSession(@PathVariable Long taskId) {
+    /**
+     * 结束语音协作。
+     */
+    @PostMapping("/end")
+    public Result<String> endVoice(@PathVariable Long taskId) {
         Long userId = BaseContext.getCurrentId();
-        return Result.success(voiceService.endSession(taskId, userId));
+        voiceService.endVoice(taskId, userId);
+        return Result.success("ok");
     }
 }
-

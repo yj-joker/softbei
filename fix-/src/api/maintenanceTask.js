@@ -67,7 +67,7 @@ export function getTaskChatHistory(taskId) {
 
 export function startTaskVoiceSession(taskId, { focusedStepId = null } = {}) {
   return request({
-    url: `${BASE}/${taskId}/voice/session/start`,
+    url: `${BASE}/${taskId}/voice/start`,
     method: 'POST',
     data: { focusedStepId },
     throwOnError: true,
@@ -102,7 +102,7 @@ export function sendTaskVoiceTurn(taskId, {
 
 export function endTaskVoiceSession(taskId) {
   return request({
-    url: `${BASE}/${taskId}/voice/session/end`,
+    url: `${BASE}/${taskId}/voice/end`,
     method: 'POST',
     throwOnError: true,
   })

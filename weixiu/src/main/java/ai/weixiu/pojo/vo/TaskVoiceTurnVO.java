@@ -7,7 +7,6 @@ import java.util.Map;
 
 @Data
 public class TaskVoiceTurnVO {
-    private Long sessionId;
     private String replyText;
     private String action;
     private String actionLabel;
@@ -19,6 +18,7 @@ public class TaskVoiceTurnVO {
     private String executionResult;
     private String executionDetail;
     private String auditReason;
+    private String voiceSummary;  // 对话压缩摘要（更新后）
     private Map<String, Object> agentDecision;
     private List<TaskStepRecordVO> steps;
 }

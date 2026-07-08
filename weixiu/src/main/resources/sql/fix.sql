@@ -155,6 +155,7 @@ CREATE TABLE IF NOT EXISTS `maintenance_task` (
     `graph_extraction`    JSON         DEFAULT NULL COMMENT 'AI提取的图谱线索(设备/部件/故障/方案)，沉淀时供管理员确认编辑',
     `promoted_procedure`  VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '规程沉淀状态: PENDING=待处理, PROMOTED=已沉淀, SKIPPED=已跳过',
     `promoted_graph`      VARCHAR(20)  NOT NULL DEFAULT 'PENDING' COMMENT '图谱沉淀状态: PENDING=待处理, PROMOTED=已沉淀, SKIPPED=已跳过',
+    `voice_summary`       TEXT         NULL COMMENT '语音检修AI对话压缩摘要',
     `created_at`          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     `updated_at`          DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
     PRIMARY KEY (`id`),
@@ -484,25 +485,6 @@ CREATE TABLE IF NOT EXISTS `expiration_review` (
 -- =============================================
 -- 语音检修协作
 -- =============================================
-CREATE TABLE IF NOT EXISTS `maintenance_voice_session` (
-    `id`                  BIGINT       NOT NULL COMMENT '雪花ID',
-    `task_id`             BIGINT       NOT NULL COMMENT '检修任务ID',
-    `user_id`             BIGINT       NOT NULL COMMENT '工人ID',
-    `current_step_id`     BIGINT       NULL COMMENT '当前语音聚焦步骤',
-    `status`              VARCHAR(32)  NOT NULL DEFAULT 'ACTIVE' COMMENT 'ACTIVE/COMPLETED/ENDED',
-    `compressed_summary`  TEXT         NULL COMMENT '语音会话压缩摘要',
-    `pending_action`      VARCHAR(64)  NULL COMMENT '等待确认的动作',
-    `pending_step_id`     BIGINT       NULL COMMENT '等待确认的目标步骤',
-    `pending_reply`       TEXT         NULL COMMENT '等待确认时的上一轮回复',
-    `pending_agent_json`  TEXT         NULL COMMENT '等待确认时的模型原始决策',
-    `last_active_at`      DATETIME     NOT NULL COMMENT '最后活跃时间',
-    `created_at`          DATETIME     NOT NULL COMMENT '创建时间',
-    `updated_at`          DATETIME     NOT NULL COMMENT '更新时间',
-    PRIMARY KEY (`id`),
-    KEY `idx_voice_session_task_user` (`task_id`, `user_id`, `status`),
-    KEY `idx_voice_session_last_active` (`last_active_at`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检修任务语音会话';
-
 CREATE TABLE IF NOT EXISTS `maintenance_voice_event` (
     `id`                BIGINT       NOT NULL COMMENT '雪花ID',
     `session_id`        BIGINT       NOT NULL COMMENT '语音会话ID',

@@ -87,7 +87,11 @@ watch(
 )
 
 onMounted(async () => {
-  focusedStepId.value = props.activeStepId || sortedSteps.value[0]?.id || null
+  // 初始聚焦步骤：优先用 activeStepId，否则找第一个未完成的步骤
+  const firstPending = sortedSteps.value.find(
+    (s) => !['COMPLETED', 'AI_PASSED', 'SKIPPED'].includes(s.status),
+  )
+  focusedStepId.value = props.activeStepId || firstPending?.id || sortedSteps.value[0]?.id || null
   await openSession()
   await startListening()
 })

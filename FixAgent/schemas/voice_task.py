@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 class VoiceTaskRequest(BaseModel):
-    session_id: str = Field(..., description="Voice maintenance session id from Java.")
+    session_id: str = Field(default="", description="Voice task identifier (task-voice-{taskId}).")
     task_id: Optional[int] = None
     user_id: Optional[int] = None
     transcript: str = Field(..., min_length=1, description="ASR final transcript.")

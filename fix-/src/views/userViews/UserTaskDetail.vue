@@ -112,6 +112,8 @@ function enterVoiceMode() {
 
 function exitVoiceMode() {
   voiceMode.value = false
+  // 退出语音模式后重新加载，确保步骤状态与后端一致
+  load()
 }
 
 let verifyPollTimer = null
@@ -162,6 +164,7 @@ function onChat(step) {
 
 async function onVoiceUpdated(data) {
   if (!data) return
+  // 语音 turn 返回了最新步骤列表，直接更新前端状态
   if (Array.isArray(data.steps) && task.value) {
     task.value = { ...task.value, steps: data.steps }
     scheduleVerifyPoll()
