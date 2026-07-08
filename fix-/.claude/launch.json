@@ -5,7 +5,8 @@
       "name": "fix-frontend",
       "runtimeExecutable": "npm",
       "runtimeArgs": ["run", "dev"],
-      "port": 5173
+      "cwd": "C:\\Users\\ugh\\Desktop\\软件杯\\softbei\\fix-",
+      "port": 3000
     }
   ]
 }
