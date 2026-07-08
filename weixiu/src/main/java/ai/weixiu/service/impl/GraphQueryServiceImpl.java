@@ -180,7 +180,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
     ) {
         Map<String, Object> params = new HashMap<>();
         params.put("skip", skip);
-        params.put("limit", skip + limit);
+        params.put("endIdx", skip + limit);
 
         // 构建 OR 条件
         List<String> orConditions = new ArrayList<>();
@@ -215,7 +215,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 ORDER BY matchScore DESC, hasHistory DESC
                 WITH collect({d: d, c: c, f: f, hasHistory: hasHistory, matchScore: matchScore}) AS allPaths
                 WITH allPaths, size(allPaths) AS total
-                UNWIND allPaths[$skip..$limit] AS path
+                UNWIND allPaths[$skip..$endIdx] AS path
                 WITH path.d AS d, path.c AS c, path.f AS f,
                      path.hasHistory AS hasHistory, path.matchScore AS matchScore, total
                 OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
