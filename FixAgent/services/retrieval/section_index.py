@@ -30,6 +30,39 @@ MAX_SECTIONS_PER_QUERY = 3
 
 # 命中章节数超过此值为泛词，不强召
 GENERIC_WORD_THRESHOLD = 5
+# 单个 ngram 命中 section 数超过此值 → 该 ngram 判定为泛词噪声，不计分
+NGRAM_NOISE_THRESHOLD = 5
+
+# 标题字符按顺序出现在 query 中的最低覆盖率。
+# 用于处理“主副轴”被改写成“主轴与副轴”等自然表达。
+ORDERED_TITLE_COVERAGE_THRESHOLD = 0.80
+ACTION_TITLE_ALIASES = {
+    "安装": ("安装", "装配", "装上", "装"),
+    "拆卸": ("拆卸", "拆除", "拆下", "拆"),
+    "检查": ("检查", "检修", "查看", "看"),
+    "测量": ("测量", "检测", "测试", "测"),
+    "更换": ("更换", "替换", "换"),
+}
+
+
+def _compact_chinese(text: str) -> str:
+    return "".join(CHINESE_RE.findall(text or ""))
+
+
+def _lcs_length(left: str, right: str) -> int:
+    """Return longest common subsequence length for two short Chinese strings."""
+    if not left or not right:
+        return 0
+    previous = [0] * (len(right) + 1)
+    for left_char in left:
+        current = [0]
+        for index, right_char in enumerate(right, start=1):
+            if left_char == right_char:
+                current.append(previous[index - 1] + 1)
+            else:
+                current.append(max(previous[index], current[-1]))
+        previous = current
+    return previous[-1]
 
 
 @dataclass(frozen=True)
@@ -219,6 +252,87 @@ class SectionTitleIndex:
         def _key(ref: SectionRef) -> str:
             return f"{ref.document_id}:{ref.section_id}"
 
+        # 强命中：章节核心标题完整出现在自然问句里。
+        #
+        # 例如：
+        #   query = "给我展示传动主副轴装配部件清单"
+        #   core  = "传动主副轴装配部件清单"
+        #
+        # 旧逻辑只拿整段 query 和 2/3-gram 去索引里查，完整标题前面多了
+        # "给我展示" 时不会精确命中；而 "装配/部件清单" 又容易被泛词过滤。
+        # 这里先按完整标题子串收窄，命中后直接返回，避免相邻清单章节混入。
+        compact_query = _compact_chinese(query)
+        embedded_exact: Dict[str, tuple[SectionRef, int]] = {}
+        for core_title, refs in self._exact.items():
+            compact_core = _compact_chinese(core_title)
+            if len(compact_core) < MIN_CORE_LENGTH or compact_core not in compact_query:
+                continue
+            score = len(compact_core) * 3
+            for ref in refs:
+                k = _key(ref)
+                if k not in embedded_exact or embedded_exact[k][1] < score:
+                    embedded_exact[k] = (ref, score)
+
+        if embedded_exact:
+            sorted_hits = sorted(embedded_exact.values(), key=lambda x: x[1], reverse=True)
+            return [ref for ref, _score in sorted_hits[:MAX_SECTIONS_PER_QUERY]]
+
+        object_first_action_matches: Dict[str, tuple[SectionRef, int]] = {}
+        for core_title, refs in self._exact.items():
+            compact_core = _compact_chinese(core_title)
+            matched_action = next(
+                (action for action in ACTION_TITLE_ALIASES if compact_core.startswith(action)),
+                "",
+            )
+            if not matched_action:
+                continue
+            obj = compact_core[len(matched_action):]
+            if len(obj) < MIN_CORE_LENGTH:
+                continue
+            action_aliases = ACTION_TITLE_ALIASES.get(matched_action, (matched_action,))
+            if not any(alias in compact_query for alias in action_aliases) or obj not in compact_query:
+                continue
+            score = 2000 + len(obj) * 3 + len(matched_action)
+            for ref in refs:
+                k = _key(ref)
+                if k not in object_first_action_matches or object_first_action_matches[k][1] < score:
+                    object_first_action_matches[k] = (ref, score)
+
+        if object_first_action_matches:
+            sorted_hits = sorted(object_first_action_matches.values(), key=lambda x: x[1], reverse=True)
+            best_score = sorted_hits[0][1]
+            strong_hits = [
+                (ref, score) for ref, score in sorted_hits
+                if score >= best_score - 50
+            ]
+            return [ref for ref, _score in strong_hits[:MAX_SECTIONS_PER_QUERY]]
+
+        ordered_title_matches: Dict[str, tuple[SectionRef, int]] = {}
+        for core_title, refs in self._exact.items():
+            compact_core = _compact_chinese(core_title)
+            if len(compact_core) < 4:
+                continue
+            if compact_core[-1] not in compact_query and not compact_core.startswith(compact_query):
+                continue
+            matched = _lcs_length(compact_core, compact_query)
+            coverage = matched / len(compact_core)
+            if matched < 4 or coverage < ORDERED_TITLE_COVERAGE_THRESHOLD:
+                continue
+            score = int(coverage * 1000) + len(compact_core)
+            for ref in refs:
+                k = _key(ref)
+                if k not in ordered_title_matches or ordered_title_matches[k][1] < score:
+                    ordered_title_matches[k] = (ref, score)
+
+        if ordered_title_matches:
+            sorted_hits = sorted(ordered_title_matches.values(), key=lambda x: x[1], reverse=True)
+            best_score = sorted_hits[0][1]
+            strong_hits = [
+                (ref, score) for ref, score in sorted_hits
+                if score >= best_score - 50
+            ]
+            return [ref for ref, _score in strong_hits[:MAX_SECTIONS_PER_QUERY]]
+
         for chunk in set(query_chunks):
             if len(chunk) < MIN_CORE_LENGTH:
                 continue
@@ -230,8 +344,11 @@ class SectionTitleIndex:
                 if k not in scored or scored[k][1] < score:
                     scored[k] = (ref, score)
 
-            # 第二轮：ngram 模糊匹配（精确未命中才走）
-            for ref in self._ngram.get(chunk, []):
+            # 第二轮：ngram 模糊匹配（精确未命中才走，泛词噪声跳过）
+            ngram_refs = self._ngram.get(chunk, [])
+            if len(ngram_refs) > NGRAM_NOISE_THRESHOLD:
+                continue  # 该 ngram 命中太多 section → 泛词，不计分
+            for ref in ngram_refs:
                 k = _key(ref)
                 if k in scored:
                     continue
@@ -241,7 +358,12 @@ class SectionTitleIndex:
 
         # ---- 特异性检查 ----
         if len(scored) > GENERIC_WORD_THRESHOLD:
-            # 命中章节太多 → 泛词，不强召，让向量检索自然竞争
+            # 命中章节太多 → 取 top 高分（≥6），如果也没有则降级取所有，不直接返回空
+            high_score_hits = {k: v for k, v in scored.items() if v[1] >= 6}
+            if high_score_hits:
+                sorted_hits = sorted(high_score_hits.values(), key=lambda x: x[1], reverse=True)
+                return [ref for ref, _score in sorted_hits[:MAX_SECTIONS_PER_QUERY]]
+            # 都没有高分命中 → 保留所有，不做强召（泛词场景）
             return []
 
         # 按分数降序取 top MAX_SECTIONS_PER_QUERY

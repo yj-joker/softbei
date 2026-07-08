@@ -1,9 +1,0 @@
-{
-  "case_count": 50,
-  "answerable_case_count": 46,
-  "top_k": 5,
-  "recall_at_1": 0.543478,
-  "recall_at_3": 0.630435,
-  "recall_at_5": 0.73913,
-  "mrr": 0.603623
-}

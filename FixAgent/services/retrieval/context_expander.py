@@ -21,16 +21,8 @@ LIST_EXPANSION_FIELDS: Tuple[Tuple[str, str], ...] = (
 )
 
 SECTION_LOOKUP_LIMIT = 6
-SECTION_LABEL_PRIORITY = {
-    "troubleshooting": 0,
-    "step": 1,
-    "safety": 2,
-    "table_row": 3,
-    "table_full": 4,
-    "image_summary": 5,
-    "image": 5,
-    "general": 9,
-}
+# 图片类块排最后（不占叙述预算），其余一律按原文顺序补齐
+SECTION_IMAGE_LABELS = {"image", "image_summary"}
 
 
 def _as_dict(item: Any) -> Dict[str, Any]:
@@ -104,19 +96,22 @@ def _section_identity(item: Dict[str, Any]) -> Tuple[str, str]:
     return document_id, parent_section_id
 
 
-def _section_priority(item: Dict[str, Any]) -> Tuple[int, int, str]:
+def _section_priority(item: Dict[str, Any]) -> Tuple[int, int, int, str]:
+    """按手册原文顺序补齐同节上下文（图片类块排最后），避免 label 优先级打乱叙述顺序。"""
     metadata = item.get("metadata") or {}
     label = str(metadata.get("chunk_label") or "")
     chunk_type = str(metadata.get("chunk_type") or "")
-    priority = SECTION_LABEL_PRIORITY.get(label, SECTION_LABEL_PRIORITY.get(chunk_type, 8))
-    source_index = metadata.get("source_index")
-    if source_index is None:
-        source_index = metadata.get("row_index")
-    try:
-        order = int(source_index)
-    except (TypeError, ValueError):
-        order = 9999
-    return priority, order, _doc_id(item)
+    is_image = 1 if (label in SECTION_IMAGE_LABELS or chunk_type in SECTION_IMAGE_LABELS) else 0
+
+    def _int(value, default):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    source_index = _int(metadata.get("source_index"), 9999)
+    row_index = _int(metadata.get("row_index"), -1)  # table_full 无 row_index → 排本表最前
+    return is_image, source_index, row_index, _doc_id(item)
 
 
 def _collect_section_context(

@@ -1040,6 +1040,70 @@ class ReviewAgent:
             return message
         return message.rstrip() + "\n\n" + cls._PARAM_DISCLAIMER
 
+    # —— ④.5 步骤细节标记：检测步骤描述中的工具/材料名是否在证据中 ——
+    _TOOL_MATERIAL_CLUES = [
+        "细钢丝刷", "压缩空气枪", "无绒布", "洁净机油", "活塞环扩张器", "放大镜",
+        "角度尺", "记号笔", "软质拨片", "橡胶锤", "铜棒", "塞尺", "扭力扳手",
+        "扳手", "套筒", "螺丝刀", "尖嘴钳", "卡簧钳", "拉玛", "刮刀", "定扭扳手",
+        "防化手套", "护目镜", "防护手套", "安全眼镜", "防毒面具", "耳塞",
+        "火花塞专用套筒", "气门拆装器", "千分尺", "百分表", "游标卡尺",
+    ]
+
+    @classmethod
+    def _mark_unverified_step_details(cls, message: str, trace: List[Dict]) -> str:
+        """扫描步骤描述的每行，如果出现证据中不存在的工具/材料词，追加标注。
+
+        不做硬删除，只在行尾加 " ⚠ 未在手册中找到依据"，让用户自行判断。
+        """
+        if not message or not cls._reply_has_operational_steps(message):
+            return message
+
+        # 从 trace 收集所有证据文本
+        evidence_parts: List[str] = []
+        for step in trace or []:
+            if step.get("action") != "tool_call":
+                continue
+            for tc in step.get("tool_calls", []):
+                if tc.get("name") != "knowledge_retrieval":
+                    continue
+                data = tc.get("result_data")
+                if not isinstance(data, list):
+                    continue
+                for item in data:
+                    if not isinstance(item, dict):
+                        continue
+                    text = item.get("content") or item.get("text") or ""
+                    if text:
+                        evidence_parts.append(text)
+
+        evidence_text = "\n".join(evidence_parts)
+
+        lines = message.split("\n")
+        marked: List[str] = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                marked.append(line)
+                continue
+            # 只对步骤行（编号开头）做检查
+            if not cls._STEP_HEADER_PATTERN.match(stripped) and not cls._STEP_HEADER_PATTERN.match(stripped.lstrip()):
+                # 也检查子步骤（如 "a." 开头）
+                is_substep = bool(re.match(r"^[a-z][.、．)]", stripped.lstrip()))
+                if not is_substep:
+                    marked.append(line)
+                    continue
+            # 检查该行是否包含证据中不存在的工具/材料词
+            unverified_tools: List[str] = []
+            for tool in cls._TOOL_MATERIAL_CLUES:
+                if tool in stripped and tool not in evidence_text:
+                    unverified_tools.append(tool)
+            if unverified_tools:
+                marked.append(f"{line} （⚠ 以下工具/材料未在手册中找到依据：{'、'.join(unverified_tools)}）")
+            else:
+                marked.append(line)
+
+        return "\n".join(marked)
+
     # —— ④ 步骤忠实度：删掉手册主节里没有的多造步骤 ——
     _MANUAL_STEP_LEAD = re.compile(r"^\s*\d+\s*[.、．)）]\s*")
     _STEP_NAME_STRIP = re.compile(r"^\s*(?:步骤|第)\s*[一二三四五六七八九十百零〇\d]+\s*[步、.．:：]?\s*")
@@ -1277,6 +1341,8 @@ class ReviewAgent:
         # ④ 步骤忠实度：删掉"主节"手册里没有的多造步骤并重排编号（如把部件清单/拆卸
         #    步骤里的螺栓串成一步"紧固螺栓"），堵 LLM 加戏；保守，拿不准就不动。
         final_message = self._drop_fabricated_steps(final_message, trace)
+        # ④.5 步骤细节标记：检查步骤中的工具/材料名是否在证据中出现，不在则追加标注
+        final_message = self._mark_unverified_step_details(final_message, trace)
         before_downgrade = final_message
         final_message = self._downgrade_uncited_numbers(final_message, trace)
         if final_message != before_downgrade:

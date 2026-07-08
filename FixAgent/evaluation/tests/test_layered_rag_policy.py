@@ -277,6 +277,29 @@ def test_outline_query_keeps_outline_candidates():
     assert [item["doc_id"] for item in filtered] == ["outline"]
 
 
+def test_negative_image_request_uses_text_routes_not_image_routes():
+    plan = build_retrieval_plan("只告诉我火花塞安装拧紧力矩是多少，不需要图片")
+
+    assert plan.intent != "image_identification"
+    assert "image_vector" not in plan.routes
+    assert "image_summary" not in plan.routes
+
+
+def test_location_query_with_parameter_word_uses_text_routes_not_table_first():
+    plan = build_retrieval_plan("测量气门间隙时塞尺插在哪里？")
+
+    assert plan.intent == "evidence"
+    assert "semantic" in plan.routes
+    assert "table" not in plan.routes
+
+
+def test_standard_value_query_still_uses_parameter_routes():
+    plan = build_retrieval_plan("气门间隙标准是多少？")
+
+    assert plan.intent == "parameter"
+    assert "table" in plan.routes
+
+
 def test_parameter_ranking_prefers_matching_unit_and_part_name():
     plan = build_retrieval_plan("水泵组件锁紧扭力是多少？")
     candidates = [
@@ -299,6 +322,43 @@ def test_parameter_ranking_prefers_matching_unit_and_part_name():
     ranked = rank_candidates("水泵组件锁紧扭力是多少？", candidates, plan)
 
     assert ranked[0]["doc_id"] == "water_pump_torque"
+
+
+def test_evidence_ranking_prefers_body_anchor_over_section_match_neighbor():
+    query = "测量气门间隙时塞尺插在哪里？"
+    plan = build_retrieval_plan(query, section_match_ids=["sec-valve-gap"])
+    candidates = [
+        {
+            "doc_id": "neighbor-section-match",
+            "relevance_score": 0.96,
+            "routes": ["semantic", "section_match"],
+            "text": "注意：必须测量基圆位置，非凸轮升程段。\n气门间隙标准值\n调整气门间隙\n2. 取下滑动挺柱与气门间隙调整垫片。",
+            "metadata": {
+                "chunk_type": "text",
+                "section_title": "4.6 气门间隙",
+                "parent_section_id": "sec-valve-gap",
+                "page": 15,
+                "rrf_enabled": True,
+                "rrf_route_count": 2,
+            },
+        },
+        {
+            "doc_id": "body-anchor",
+            "relevance_score": 0.76,
+            "routes": ["semantic"],
+            "text": "4.6 气门间隙\n测量气门间隙\n将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。",
+            "metadata": {
+                "chunk_type": "text",
+                "section_title": "4.5 气缸头盖",
+                "parent_section_id": "sec-previous-title",
+                "page": 14,
+            },
+        },
+    ]
+
+    ranked = rank_candidates(query, candidates, plan)
+
+    assert ranked[0]["doc_id"] == "body-anchor"
 
 
 class FakeImageLocatorVectorService:
@@ -325,8 +385,23 @@ class FakeImageLocatorVectorService:
             ]
         return []
 
-    def get_section_records(self, document_id, parent_section_id, limit=20):
-        self.section_calls.append((document_id, parent_section_id, limit))
+    def get_section_records(self, document_id, parent_section_id, limit=20, chunk_type=None):
+        self.section_calls.append((document_id, parent_section_id, limit, chunk_type))
+        if document_id == "manual-doc" and parent_section_id == "sec-water-pump" and chunk_type in (None, "image"):
+            return [
+                {
+                    "doc_id": "manual-doc:img:0027",
+                    "text": "water pump procedure image",
+                    "score": 0.0,
+                    "metadata": {
+                        "document_id": "manual-doc",
+                        "chunk_type": "image",
+                        "chunk_label": "image",
+                        "parent_section_id": "sec-water-pump",
+                        "page": 27,
+                    },
+                }
+            ]
         if document_id == "manual-doc" and parent_section_id == "sec-drive-install":
             return [
                 {
@@ -345,7 +420,7 @@ class FakeImageLocatorVectorService:
         return []
 
 
-def test_image_locator_does_not_run_for_non_image_intent():
+def test_image_locator_runs_for_procedure_intent_to_add_same_section_images():
     query = "\u6c34\u6cf5\u5b89\u88c5\u6b65\u9aa4\u662f\u4ec0\u4e48\uff1f"
     plan = build_retrieval_plan(query)
     vector_service = FakeImageLocatorVectorService()
@@ -370,9 +445,11 @@ def test_image_locator_does_not_run_for_non_image_intent():
         limit=5,
     )
 
-    assert located == []
+    assert [item["doc_id"] for item in located] == ["manual-doc:img:0027"]
+    assert located[0]["metadata"]["image_locator_used"] is True
+    assert "image_locator" in located[0]["routes"]
     assert vector_service.page_calls == []
-    assert vector_service.section_calls == []
+    assert vector_service.section_calls == [("manual-doc", "sec-water-pump", 20, "image")]
 
 
 def test_image_locator_uses_explicit_page_to_add_image_candidates():
@@ -405,6 +482,7 @@ def test_image_locator_uses_explicit_page_to_add_image_candidates():
     assert "image_locator" in located[0]["routes"]
     assert located[0]["relevance_score"] > 0.8
     assert vector_service.page_calls == [("manual-doc", 27, "image", 20)]
+    assert vector_service.section_calls == [("manual-doc", "sec-water-pump", 20, "image")]
 
 
 def test_image_locator_does_not_force_same_section_when_page_is_missing():

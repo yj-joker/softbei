@@ -81,6 +81,95 @@ def test_build_answer_eval_row_uses_required_facts_instead_of_full_golden_answer
     assert row["failure_type"] == "pass"
 
 
+def test_build_answer_eval_row_includes_image_grounding_metrics():
+    case = EvalCase(
+        case_id="case_img",
+        question="show piston ring installation",
+        golden_answer="Install piston rings with the matching figures.",
+        golden_chunk_ids=["step_chunk"],
+        answerable=True,
+        question_type="procedure",
+        expected_image_pages=[21, 22],
+        expected_image_count_min=2,
+        expected_image_count_max=2,
+    )
+
+    row = build_answer_eval_row(
+        case=case,
+        generated_answer="Install the piston rings according to the manual.",
+        retrieved_items=[
+            RetrievedItem(chunk_id="step_chunk", content="Install the piston rings according to the manual."),
+            RetrievedItem(chunk_id="img_21", metadata={"chunk_type": "image", "page": 21}),
+            RetrievedItem(chunk_id="img_22", metadata={"chunk_type": "image", "page": 22}),
+        ],
+    )
+
+    assert row["retrieved_image_pages"] == "21;22"
+    assert row["image_recall"] == 1.0
+    assert row["image_precision"] == 1.0
+    assert row["image_count_pass"] is True
+    assert row["image_pass"] is True
+
+
+def test_build_answer_eval_row_uses_stable_evidence_key_for_grounding():
+    case = EvalCase(
+        case_id="case_stable",
+        question="spark plug gap?",
+        golden_answer="The spark plug gap is 0.7 to 0.9 mm.",
+        golden_chunk_ids=["old-doc:02:txt:0001"],
+        golden_evidence_keys=["anchor:sec:0002|text|step|3|abc123"],
+        answerable=True,
+        question_type="spec",
+    )
+
+    row = build_answer_eval_row(
+        case=case,
+        generated_answer="The standard gap is 0.7-0.9 mm.",
+        retrieved_items=[
+            RetrievedItem(
+                chunk_id="new-doc:02:txt:0001",
+                content="gap 0.7-0.9 mm",
+                metadata={"source_anchor": "sec:0002|text|step|3|abc123"},
+            )
+        ],
+    )
+
+    assert row["retrieval_hit_top5"] is True
+    assert row["retrieval_rank"] == 1
+    assert row["matched_evidence_key"] == "anchor:sec:0002|text|step|3|abc123"
+    assert row["grounded_pass"] is True
+
+
+def test_build_answer_eval_row_prefers_final_evidence_images_when_provided():
+    case = EvalCase(
+        case_id="case_api_img",
+        question="show transmission list",
+        golden_answer="Show the transmission list.",
+        answerable=True,
+        question_type="inventory",
+        expected_image_pages=[35],
+        expected_image_count_min=1,
+        expected_image_count_max=1,
+    )
+
+    row = build_answer_eval_row(
+        case=case,
+        generated_answer="Show the transmission list.",
+        retrieved_items=[],
+        evidence_images=[
+            {
+                "imageUrl": "https://example.test/page35.png",
+                "page": 35,
+                "sourceChunkId": "manual-doc:35:img:0000",
+            }
+        ],
+    )
+
+    assert row["retrieved_image_ids"] == "manual-doc:35:img:0000"
+    assert row["retrieved_image_pages"] == "35"
+    assert row["image_pass"] is True
+
+
 def test_fact_matching_accepts_condition_word_variants():
     assert _fact_matched(
         "\u5982\u6709\u5f2f\u66f2\u3001\u635f\u574f\u6216\u88c2\u7eb9",
@@ -177,6 +266,40 @@ def test_summarize_answer_eval_rows_calculates_core_metrics():
     assert summary["grounded_rate"] == 0.75
     assert summary["hallucination_rate"] == 0.25
     assert summary["no_answer_correct_rate"] == 1.0
+
+
+def test_summarize_answer_eval_rows_includes_image_metrics_when_present():
+    rows = [
+        {
+            "answerable": True,
+            "answer_score": 1.0,
+            "answer_pass": True,
+            "grounded_pass": True,
+            "hallucination": False,
+            "image_eval_required": True,
+            "image_pass": True,
+            "image_recall": 1.0,
+            "image_precision": 1.0,
+        },
+        {
+            "answerable": True,
+            "answer_score": 1.0,
+            "answer_pass": True,
+            "grounded_pass": True,
+            "hallucination": False,
+            "image_eval_required": True,
+            "image_pass": False,
+            "image_recall": 0.5,
+            "image_precision": 1.0,
+        },
+    ]
+
+    summary = summarize_answer_eval_rows(rows)
+
+    assert summary["image_case_count"] == 2
+    assert summary["image_pass_rate"] == 0.5
+    assert summary["avg_image_recall"] == 0.75
+    assert summary["avg_image_precision"] == 1.0
 
 
 def test_build_rag_answer_messages_adds_inspection_answer_structure():

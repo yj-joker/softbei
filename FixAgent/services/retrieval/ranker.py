@@ -227,7 +227,7 @@ def _type_alignment_bonus(
                 bonus -= 0.08
             elif title_hit_ratio < 0.6:
                 bonus -= 0.03
-    elif plan.intent == "procedure":
+    elif plan.intent in {"procedure", "evidence"}:
         if "section_match" in (candidate.get("routes") or []):
             bonus += 0.05
         if chunk_label == "step":
@@ -241,6 +241,14 @@ def _type_alignment_bonus(
             bonus += 0.06
         if chunk_type == "table" and query_coverage < 0.20:
             bonus -= 0.05
+
+    # outline 意图（目录/清单/部件列举）：table 加分，step/step_raw 降权
+    # 避免"XX都有哪些部件"命中拆装步骤块
+    if plan.intent == "outline":
+        if chunk_type == "table" or chunk_label in {"table_full", "table_row"}:
+            bonus += 0.10
+        if chunk_label == "step" or chunk_type == "step_raw":
+            bonus -= 0.08
 
     if chunk_label == "safety" and query_coverage >= 0.18:
         bonus += 0.045
@@ -262,6 +270,74 @@ def _parameter_metadata_bonus(query: str, plan: RetrievalPlan, candidate: Dict[s
         if len(normalized) >= 2 and normalized in query_text:
             return 0.08
     return 0.0
+
+
+_EVIDENCE_ATOMIC_ANCHORS = (
+    "塞尺",
+    "拉玛",
+    "螺栓",
+    "螺母",
+    "O型圈",
+    "O形圈",
+    "定位销",
+    "圆柱销",
+    "挡圈",
+    "垫圈",
+    "垫片",
+    "线束",
+    "油封",
+    "挺柱",
+    "插入",
+    "插在",
+    "放入",
+    "放在",
+    "装入",
+    "装到",
+    "对齐",
+    "朝下",
+    "朝上",
+    "朝外",
+)
+
+
+def _evidence_anchor_bonus(query: str, plan: RetrievalPlan, content: str) -> float:
+    if plan.intent != "evidence":
+        return 0.0
+    query_text = _normalize_text(query)
+    content_text = _normalize_text(content)
+    bonus = 0.0
+    object_anchors = {"塞尺", "拉玛", "螺栓", "螺母", "o型圈", "o形圈", "定位销", "圆柱销", "挡圈", "垫圈", "垫片", "线束", "油封", "挺柱"}
+    action_anchors = {"插入", "插在", "放入", "放在", "装入", "装到", "对齐", "朝下", "朝上", "朝外"}
+    for anchor in _EVIDENCE_ATOMIC_ANCHORS:
+        normalized = _normalize_text(anchor)
+        if normalized and normalized in query_text and normalized in content_text:
+            bonus += 0.22 if normalized in object_anchors else 0.10
+
+    if any(term in query_text for term in ("插入", "插在", "插到")) and any(term in content_text for term in ("插入", "插在", "插到")):
+        bonus += 0.12
+
+    for term in _query_terms(query_text):
+        if len(term) < 3 or term not in content_text:
+            continue
+        if any(anchor in term for anchor in object_anchors | action_anchors):
+            bonus += 0.08
+
+    for match in re.finditer(r"([\u4e00-\u9fff]{0,8})([a-z])标记", query_text, flags=re.IGNORECASE):
+        prefix, letter = match.group(1), match.group(2).lower()
+        if letter in content_text and "标记" in content_text:
+            bonus += 0.13
+            for size in (3, 2):
+                if len(prefix) >= size and prefix[-size:] in content_text:
+                    bonus += 0.05
+                    break
+
+    for match in re.finditer(r"([a-z])(?:孔|段)", query_text, flags=re.IGNORECASE):
+        letter = match.group(1).lower()
+        suffix = match.group(0)[-1:]
+        if letter in content_text and suffix in content_text:
+            bonus += 0.12
+
+    return min(0.60, bonus)
 
 
 def _completeness_adjustment(candidate: Dict[str, Any], plan: RetrievalPlan, content: str) -> float:
@@ -361,12 +437,14 @@ def _structural_score(query: str, candidate: Dict[str, Any], plan: RetrievalPlan
         title_hit_ratio=title_hit_ratio,
     )
     score += _parameter_metadata_bonus(query, plan, candidate)
+    score += _evidence_anchor_bonus(query, plan, content)
     score += _completeness_adjustment(candidate, plan, content)
 
     if any("relaxed" in str(route) for route in candidate.get("routes") or []):
         score -= 0.06
 
-    return max(0.0, min(1.0, score)), features
+    max_score = 1.25 if plan.intent == "evidence" else 1.0
+    return max(0.0, min(max_score, score)), features
 
 
 def rank_candidates(query: str, candidates: Iterable[Dict[str, Any]], plan: RetrievalPlan) -> List[Dict[str, Any]]:

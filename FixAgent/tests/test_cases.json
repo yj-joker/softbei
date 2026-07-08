@@ -1,0 +1,163 @@
+{
+  "test_cases": [
+    {
+      "id": "bom_transmission_shaft",
+      "query": "传动主副轴装配部件清单",
+      "top_k": 10,
+      "category": "recall",
+      "checks": {
+        "min_results": 1,
+        "must_have_chunk_types": ["table"],
+        "must_have_chunk_types_min_images": 1,
+        "must_contain_any": ["主轴", "副轴", "传动"],
+        "must_not_contain": ["知识库中未提取到", "未检索到"]
+      }
+    },
+    {
+      "id": "bom_transmission_shaft_images",
+      "query": "传动主副轴装配部件清单",
+      "top_k": 10,
+      "category": "recall",
+      "checks": {
+        "min_results": 1,
+        "must_have_chunk_types": ["image"],
+        "must_contain_any": ["主", "副轴", "传动"]
+      }
+    },
+    {
+      "id": "piston_ring_procedure",
+      "query": "如何安装活塞环",
+      "top_k": 5,
+      "category": "recall",
+      "checks": {
+        "min_results": 1,
+        "must_have_chunk_labels": ["step"],
+        "must_have_chunk_types_min_images": 1,
+        "must_contain_any": ["活塞环", "安装"]
+      }
+    },
+    {
+      "id": "spark_plug_gap",
+      "query": "火花塞间隙",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    },
+    {
+      "id": "cylinder_head_install",
+      "query": "气缸头盖安装",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    },
+    {
+      "id": "valve_clearance",
+      "query": "气门间隙标准值",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    },
+    {
+      "id": "oil_pump_removal",
+      "query": "机油泵拆卸",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    },
+    {
+      "id": "starter_motor_install",
+      "query": "起动电机安装",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    },
+    {
+      "id": "clutch_inspection",
+      "query": "离合器检查",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    },
+    {
+      "id": "water_pump_install",
+      "query": "水泵安装",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    },
+    {
+      "id": "engine_parts_list",
+      "query": "发动机装配部件清单",
+      "top_k": 5,
+      "category": "recall",
+      "checks": {
+        "min_results": 1,
+        "must_have_chunk_types": ["table"],
+        "must_contain_any": ["发动机", "部件"]
+      }
+    },
+    {
+      "id": "camshaft_removal",
+      "query": "拆卸凸轮轴",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1,
+        "must_have_chunk_labels": ["step"]
+      }
+    },
+    {
+      "id": "compression_pressure",
+      "query": "压缩压力标准值",
+      "top_k": 5,
+      "category": "regression",
+      "checks": {
+        "min_results": 1
+      }
+    }
+  ],
+  "stability_tests": [
+    {
+      "id": "piston_ring_image_stability",
+      "query": "如何安装活塞环",
+      "top_k": 5,
+      "runs": 5,
+      "metric": "image_count",
+      "expect_consistent": true,
+      "expect_avg_gt": 0
+    },
+    {
+      "id": "piston_ring_step_stability",
+      "query": "如何安装活塞环",
+      "top_k": 5,
+      "runs": 5,
+      "metric": "step_count",
+      "expect_consistent": false,
+      "max_variation": 2,
+      "expect_avg_gt": 0
+    },
+    {
+      "id": "bom_image_stability",
+      "query": "传动主副轴装配部件清单",
+      "top_k": 10,
+      "runs": 5,
+      "metric": "image_count",
+      "expect_consistent": true,
+      "expect_avg_gt": 0
+    }
+  ]
+}

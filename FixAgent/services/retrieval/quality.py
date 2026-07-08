@@ -54,7 +54,7 @@ def _stable_values(items: Iterable[Dict[str, Any]], field_name: str) -> set[str]
 def required_types_for_plan(plan: RetrievalPlan) -> List[str]:
     if plan.intent == "parameter":
         return ["table"]
-    if plan.intent in {"procedure", "diagnosis"}:
+    if plan.intent in {"procedure", "diagnosis", "evidence"}:
         return ["text"]
     if plan.intent == "image_identification":
         return ["image"]
@@ -75,7 +75,7 @@ def supplemental_routes_for_plan(plan: RetrievalPlan, missing_types: Iterable[st
     if weak_recall and not routes:
         if plan.intent == "parameter":
             routes.extend(["table", "keyword"])
-        elif plan.intent in {"procedure", "diagnosis"}:
+        elif plan.intent in {"procedure", "diagnosis", "evidence"}:
             routes.extend(["text", "keyword"])
         elif plan.intent == "image_identification":
             routes.extend(["image_summary", "image_vector"])
