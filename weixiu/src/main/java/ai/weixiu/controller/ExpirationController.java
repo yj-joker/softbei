@@ -91,9 +91,9 @@ public class ExpirationController {
             var result = neo4jClient.query(
                     "MATCH (d:Device)-[:OWNS]->(:Component)-[:CAUSES]->(f:Fault) " +
                     "WHERE d.name = $deviceName " +
-                    "  AND (NOT EXISTS(f.status) OR f.status <> 'deprecated') " +
+                    "  AND (f.status IS NULL OR f.status <> 'deprecated') " +
                     "OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution) " +
-                    "WHERE (NOT EXISTS(s.status) OR s.status <> 'deprecated') " +
+                    "WHERE (s.status IS NULL OR s.status <> 'deprecated') " +
                     "RETURN f.id AS faultId, f.name AS faultName, f.description AS faultDescription, " +
                     "       f.severity AS faultSeverity, f.status AS faultStatus, " +
                     "       collect(DISTINCT {id: s.id, title: s.title, " +
@@ -139,9 +139,9 @@ public class ExpirationController {
                     "MATCH (d:Device) " +
                     "WHERE d.name CONTAINS $deviceType OR d.model CONTAINS $deviceType " +
                     "OPTIONAL MATCH (d)-[:OWNS]->(:Component)-[:CAUSES]->(f:Fault) " +
-                    "WHERE (NOT EXISTS(f.status) OR f.status <> 'deprecated') " +
+                    "WHERE (f.status IS NULL OR f.status <> 'deprecated') " +
                     "OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution) " +
-                    "WHERE (NOT EXISTS(s.status) OR s.status <> 'deprecated') " +
+                    "WHERE (s.status IS NULL OR s.status <> 'deprecated') " +
                     "RETURN d.name AS deviceName, " +
                     "       f.id AS faultId, f.name AS faultName, f.description AS faultDescription, " +
                     "       f.status AS faultStatus, " +

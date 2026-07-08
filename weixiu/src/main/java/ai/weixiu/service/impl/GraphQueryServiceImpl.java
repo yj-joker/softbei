@@ -194,7 +194,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         }
 
         String whereClause = "(" + String.join(" OR ", orConditions) + ")"
-                + " AND (NOT EXISTS(f.status) OR f.status <> 'deprecated')";
+                + " AND (f.status IS NULL OR f.status <> 'deprecated')";
 
         // 确保评分参数存在（即使为空列表）
         params.putIfAbsent("componentIds", List.of());
@@ -219,7 +219,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 WITH path.d AS d, path.c AS c, path.f AS f,
                      path.hasHistory AS hasHistory, path.matchScore AS matchScore, total
                 OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
-                WHERE (NOT EXISTS(s.status) OR s.status <> 'deprecated')
+                WHERE (s.status IS NULL OR s.status <> 'deprecated')
                 WITH d, c, f, hasHistory, matchScore, total,
                      collect(DISTINCT {
                          id: s.id,
