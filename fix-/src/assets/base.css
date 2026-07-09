@@ -178,6 +178,8 @@
   /* —— 深色装饰面板（身份控制台/深色头部等），随主题换 —— */
   --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(219, 111, 42, 0.20), transparent 55%), linear-gradient(150deg, #2c2117 0%, #1b140d 76%);
   --plaza-console-accent: #db8556;
+  --plaza-console-text: #fbeede;
+  --plaza-console-label: rgba(251, 238, 222, 0.65);
 }
 
 /* ============================================================
@@ -284,8 +286,10 @@
   --signal-strong: #2f7488;
   --signal-soft: rgba(47, 116, 136, 0.16);
   --signal-line: rgba(47, 116, 136, 0.36);
-  --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(47, 116, 136, 0.40), transparent 55%), linear-gradient(150deg, #1e4255 0%, #152f3e 76%);
-  --plaza-console-accent: #72c4d8;
+  --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(47, 116, 136, 0.18), transparent 55%), linear-gradient(150deg, #d8eaef 0%, #c6dde8 76%);
+  --plaza-console-accent: #245d6e;
+  --plaza-console-text: #1f2a32;
+  --plaza-console-label: rgba(31, 42, 50, 0.58);
 }
 
 /* —— 松石绿：清新自然 —— */
@@ -386,8 +390,10 @@
   --signal-strong: #4f7d3a;
   --signal-soft: rgba(79, 125, 58, 0.16);
   --signal-line: rgba(79, 125, 58, 0.36);
-  --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(79, 125, 58, 0.40), transparent 55%), linear-gradient(150deg, #3a5428 0%, #293d1c 76%);
-  --plaza-console-accent: #a8d47a;
+  --plaza-console-grad: radial-gradient(120% 130% at 100% 0%, rgba(79, 125, 58, 0.18), transparent 55%), linear-gradient(150deg, #daefd0 0%, #c8e4b8 76%);
+  --plaza-console-accent: #3e6630;
+  --plaza-console-text: #27331d;
+  --plaza-console-label: rgba(39, 51, 29, 0.58);
 }
 
 *,

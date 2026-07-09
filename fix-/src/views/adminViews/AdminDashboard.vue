@@ -573,7 +573,7 @@ onBeforeUnmount(() => {
   margin-top: 14px;
   border-radius: var(--plaza-radius-lg);
   padding: 20px 22px 22px;
-  color: var(--plaza-panel-bg);
+  color: var(--plaza-console-text);
   background: var(--plaza-console-grad);
   border: 1px solid var(--signal-soft);
   box-shadow: 0 26px 60px -22px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(255,255,255,.02);
@@ -588,13 +588,13 @@ onBeforeUnmount(() => {
   mask-image: radial-gradient(circle at 70% 50%, #000, transparent 75%);
 }
 .hero-head { position: relative; display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
-.hero-title { color: #fbeede; }
+.hero-title { color: var(--plaza-console-text); }
 .hero-tag { font-family: var(--font-mono); font-size: 10px; letter-spacing: 1.6px; color: var(--signal); }
 .hero-body { position: relative; display: grid; grid-template-columns: 264px minmax(0, 1fr); gap: 20px; }
 
 /* 表单 */
 .form { display: flex; flex-direction: column; }
-.f-label { font-size: 12.5px; color: var(--plaza-border-strong); margin: 12px 0 6px; }
+.f-label { font-size: 12.5px; color: var(--plaza-console-label); margin: 12px 0 6px; }
 .f-label:first-child { margin-top: 0; }
 .f-select, .f-area {
   position: relative;
@@ -606,7 +606,7 @@ onBeforeUnmount(() => {
 .f-select:focus-within, .f-area:focus-within { border-color: var(--signal); }
 .f-select input, .f-area textarea {
   width: 100%; background: transparent; border: none; outline: none;
-  color: #fbeede; font-size: 13.5px; font-family: inherit;
+  color: var(--plaza-console-text); font-size: 13.5px; font-family: inherit;
 }
 .f-select { display: flex; align-items: center; padding: 10px 12px; }
 .f-select .el-icon { color: var(--signal); transform: rotate(90deg); }
@@ -666,7 +666,7 @@ onBeforeUnmount(() => {
 .diag-node.s2 { bottom: 8%; }
 .dn-ico { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: grid; place-items: center; font-size: 16px; color: var(--signal); background: var(--signal-soft); }
 .dn-text { display: flex; flex-direction: column; }
-.dn-label { font-size: 13px; font-weight: 600; color: #fbeede; }
+.dn-label { font-size: 13px; font-weight: 600; color: var(--plaza-console-text); }
 .dn-sub { font-family: var(--font-mono); font-size: 9px; letter-spacing: 1px; color: var(--plaza-text-muted); }
 
 /* —— 任务流转 —— */
