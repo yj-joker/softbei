@@ -222,4 +222,14 @@ public class MaintenanceTaskController {
     public Result<List<TaskChatMessage>> taskChatHistory(@PathVariable Long taskId) {
         return Result.success(taskService.getChatHistory(taskId));
     }
+
+    /** 删除检修任务*/
+    @DeleteMapping("/{taskId}")
+    @OpLog(value = "删除了检修任务", targetType = "task")
+    public Result<Void> deleteTask(@PathVariable Long taskId) {
+        taskService.deleteTask(taskId);
+        return Result.success(null);
+    }
+
+
 }

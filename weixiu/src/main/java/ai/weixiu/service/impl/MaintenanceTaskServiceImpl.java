@@ -1547,6 +1547,38 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
                         .orderByAsc(TaskChatMessage::getId));
     }
 
+    @Override
+    @Transactional
+    public void deleteTask(Long taskId) {
+        // 1. 校验任务存在
+        MaintenanceTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new NotFoundException("检修任务不存在: " + taskId);
+        }
+
+        // 2. 级联删除关联数据（顺序：子记录先于主记录）
+        // 步骤记录
+        stepMapper.delete(new LambdaQueryWrapper<TaskStepRecord>()
+                .eq(TaskStepRecord::getTaskId, taskId));
+
+        // 任务对话消息
+        chatMessageMapper.delete(new LambdaQueryWrapper<TaskChatMessage>()
+                .eq(TaskChatMessage::getTaskId, taskId));
+
+        // 聚焦步骤记录
+        taskFocusMapper.delete(new LambdaQueryWrapper<MaintenanceTaskFocus>()
+                .eq(MaintenanceTaskFocus::getTaskId, taskId));
+
+        // 语音事件（Mapper 未注入，用 Db 工具删除）
+        Db.lambdaUpdate(MaintenanceVoiceEvent.class)
+                .eq(MaintenanceVoiceEvent::getTaskId, taskId)
+                .remove();
+
+        // 3. 删除主任务记录
+        taskMapper.deleteById(taskId);
+        log.info("[deleteTask] 任务已删除 taskId={} operator={}", taskId, BaseContext.getCurrentId());
+    }
+
     /** 取最近 maxTurns*2 条消息（时间正序）回灌 LLM，格式 [{role,content}] */
     private List<Map<String, Object>> loadHistoryForLLM(Long taskId, int maxTurns) {
         List<TaskChatMessage> msgs = chatMessageMapper.selectList(
