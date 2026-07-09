@@ -525,7 +525,8 @@ class BaseAgent(ABC):
         self,
         messages: List[Dict[str, str]],
         stream: bool = False,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        temperature: Optional[float] = None
     ) -> Dict[str, Any] | AsyncIterator[str]:
         """
         调用LLM服务
@@ -534,12 +535,13 @@ class BaseAgent(ABC):
             messages: 消息列表
             stream: 是否流式输出
             model: 模型覆盖（有图片时传 VLM 模型）
+            temperature: 温度覆盖（不传则用全局默认）
 
         Returns:
             非流式：完整响应字典
             流式：异步生成器yield每个token
         """
-        return await self.llm_service.chat(messages, stream=stream, model=model)
+        return await self.llm_service.chat(messages, stream=stream, model=model, temperature=temperature)
 
     def _process_response(
         self,
@@ -569,7 +571,7 @@ class BaseAgent(ABC):
             raw_response=raw_response
         )
 
-    async def run(self, input_data: AgentInput) -> AgentOutput:
+    async def run(self, input_data: AgentInput, temperature: Optional[float] = None) -> AgentOutput:
         """
         Agent执行入口（模板方法）
 
@@ -584,6 +586,7 @@ class BaseAgent(ABC):
 
         Args:
             input_data: Agent输入数据
+            temperature: 温度覆盖（不传则用全局默认，如需确定性输出可传 0.1）
 
         Returns:
             AgentOutput对象
@@ -603,7 +606,7 @@ class BaseAgent(ABC):
 
             # 3. 调用LLM（图片无效时降级为纯文本重试）
             try:
-                response = await self._call_llm(messages, stream=False, model=model_override)
+                response = await self._call_llm(messages, stream=False, model=model_override, temperature=temperature)
             except Exception as llm_err:
                 if input_data.images and "400" in str(llm_err):
                     logger.warning(f"[{self.name}] 多模态调用失败(可能图片URL无效)，降级为纯文本重试: {llm_err}")
@@ -617,7 +620,7 @@ class BaseAgent(ABC):
                     )
                     messages = self._build_messages(input_data_fallback)
                     model_override = None
-                    response = await self._call_llm(messages, stream=False, model=model_override)
+                    response = await self._call_llm(messages, stream=False, model=model_override, temperature=temperature)
                 else:
                     raise
 
