@@ -199,6 +199,23 @@ CREATE TABLE IF NOT EXISTS `task_step_record` (
 
 
 -- =============================================
+-- 10.1 检修任务当前聚焦步骤表
+-- =============================================
+CREATE TABLE IF NOT EXISTS `maintenance_task_focus` (
+    `id`              BIGINT      NOT NULL COMMENT '雪花ID',
+    `task_id`         BIGINT      NOT NULL COMMENT '检修任务ID',
+    `user_id`         BIGINT      NOT NULL COMMENT '工人ID',
+    `current_step_id` BIGINT      NULL COMMENT '当前聚焦步骤ID',
+    `mode`            VARCHAR(20) NOT NULL DEFAULT 'NORMAL' COMMENT 'NORMAL=普通检修, VOICE=语音检修',
+    `created_at`      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    `updated_at`      DATETIME    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_task_focus_user` (`task_id`, `user_id`),
+    KEY `idx_task_focus_step` (`current_step_id`)
+) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '检修任务当前聚焦步骤表';
+
+
+-- =============================================
 -- 11. 标准作业规程表
 -- =============================================
 CREATE TABLE IF NOT EXISTS `standard_procedure` (
@@ -506,3 +523,16 @@ CREATE TABLE IF NOT EXISTS `maintenance_voice_event` (
     KEY `idx_voice_event_task_time` (`task_id`, `created_at`),
     KEY `idx_voice_event_task_step` (`task_id`, `target_step_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检修任务语音事件';
+
+CREATE TABLE IF NOT EXISTS `operation_log` (
+    `id`          BIGINT       NOT NULL AUTO_INCREMENT COMMENT '主键',
+    `user_id`     BIGINT       DEFAULT NULL COMMENT '操作人ID',
+    `user_name`   VARCHAR(100) DEFAULT NULL COMMENT '操作人姓名（冗余，免联表）',
+    `action`      VARCHAR(100) NOT NULL COMMENT '操作描述，如“提交检修案例”',
+    `target_type` VARCHAR(30)  DEFAULT NULL COMMENT '操作对象类型: case/task/user 等',
+    `target_id`   VARCHAR(64)  DEFAULT NULL COMMENT '操作对象ID',
+    `status`      VARCHAR(20)  DEFAULT NULL COMMENT '状态标记，用于前端动态圆点着色: pending/approved 等',
+    `created_at`  DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '操作时间',
+    PRIMARY KEY (`id`),
+    KEY `idx_op_log_created_at` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='操作流水日志表';

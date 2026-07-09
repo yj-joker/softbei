@@ -15,7 +15,7 @@ import {
   Tickets,
   Warning,
 } from '@element-plus/icons-vue'
-import { getTaskDetail, startTask, retryGenerate } from '@/api/maintenanceTask'
+import { getTaskDetail, startTask, retryGenerate, updateTaskFocus } from '@/api/maintenanceTask'
 import { draftFromTask, getMyCases } from '@/api/caseRecord'
 import { notifyStore } from '@/stores/notifyStore'
 import { taskAssistantStore } from '@/stores/taskAssistantStore'
@@ -48,6 +48,9 @@ const DONE_SET = ['AI_PASSED', 'COMPLETED', 'SKIPPED']
 const steps = computed(() => (task.value?.steps || []).slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)))
 // 当前应执行的步骤 = 第一个「待执行 / 未通过」的步骤
 const activeStepId = computed(() => {
+  const focused = Number(task.value?.currentStepId || 0)
+  const focusedStep = focused ? steps.value.find((x) => Number(x.id) === focused) : null
+  if (focusedStep) return focusedStep.id
   const s = steps.value.find((x) => stepActionable(x.status))
   return s ? s.id : null
 })
@@ -87,6 +90,19 @@ function scrollToStep(id) {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
 }
 
+async function focusStep(stepId, mode = 'NORMAL') {
+  if (!stepId) return
+  taskAssistantStore.setFocus(taskId, stepId)
+  if (task.value) task.value = { ...task.value, currentStepId: stepId }
+  await nextTick()
+  scrollToStep(stepId)
+  try {
+    await updateTaskFocus(taskId, stepId, mode)
+  } catch (err) {
+    console.warn('[task] save focus failed', err)
+  }
+}
+
 // 跟读模式：逐步念「标题+内容+安全提示」，读完一步停下等点「下一步」；当前步滚动到可视区 + 高亮
 const readAlong = useStepReadAlong(steps, {
   onStep: (step) => scrollToStep(step.id),
@@ -107,7 +123,7 @@ function startReadAlongFrom(step) {
 function enterVoiceMode() {
   readAlong.exit()
   voiceMode.value = true
-  if (activeStepId.value) taskAssistantStore.setFocus(taskId, activeStepId.value)
+  if (activeStepId.value) focusStep(activeStepId.value, 'VOICE')
 }
 
 function exitVoiceMode() {
@@ -157,8 +173,8 @@ async function onRetry() {
 }
 
 // 点步骤卡「答疑」→ 助手聚焦到该步并聚焦输入框（同一条对话，不再弹抽屉）
-function onChat(step) {
-  taskAssistantStore.setFocus(taskId, step.id)
+async function onChat(step) {
+  await focusStep(step.id)
   panelRef.value?.focusInput?.()
 }
 
@@ -172,6 +188,7 @@ async function onVoiceUpdated(data) {
     await load()
   }
   if (data.currentStepId) {
+    if (task.value) task.value = { ...task.value, currentStepId: data.currentStepId }
     taskAssistantStore.setFocus(taskId, data.currentStepId)
     await nextTick()
     scrollToStep(data.currentStepId)
@@ -180,9 +197,7 @@ async function onVoiceUpdated(data) {
 
 async function onVoiceFocusStep(stepId) {
   if (!stepId) return
-  taskAssistantStore.setFocus(taskId, stepId)
-  await nextTick()
-  scrollToStep(stepId)
+  await focusStep(stepId, 'VOICE')
 }
 
 async function openCaseDialog() {
@@ -376,7 +391,7 @@ onUnmounted(() => {
               class="flow-node"
               :class="n.state"
               :style="{ '--i': i }"
-              @click="scrollToStep(n.id)"
+              @click="focusStep(n.id)"
               :title="n.title"
             >
               <span class="fn-dot">
@@ -442,6 +457,7 @@ onUnmounted(() => {
                 :active="s.id === activeStepId"
                 :reading="s.id === readAlong.currentStepId.value"
                 @submitted="load"
+                @reopened="load"
                 @chat="onChat"
                 @read-along="startReadAlongFrom"
               />

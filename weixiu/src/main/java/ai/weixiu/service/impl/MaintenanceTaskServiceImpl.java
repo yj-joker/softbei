@@ -7,6 +7,7 @@ import ai.weixiu.exceprion.NotFoundException;
 import ai.weixiu.exceprion.TaskStateException;
 import ai.weixiu.mapper.KnowledgeDocumentMapper;
 import ai.weixiu.mapper.MaintenanceManualMapper;
+import ai.weixiu.mapper.MaintenanceTaskFocusMapper;
 import ai.weixiu.mapper.ManualDeviceMapper;
 import ai.weixiu.mapper.MaintenanceTaskMapper;
 import ai.weixiu.mapper.ProcedureStepMapper;
@@ -25,6 +26,7 @@ import ai.weixiu.service.MemoryPreferenceService;
 import ai.weixiu.service.MioIOUpLoadService;
 import ai.weixiu.service.ExpirationService;
 import ai.weixiu.utils.MultimodalEmbeddingUtils;
+import ai.weixiu.utils.BaseContext;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -64,6 +66,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     private final ManualDeviceMapper manualDeviceMapper;
     private final KnowledgeDocumentMapper knowledgeDocumentMapper;
     private final MaintenanceManualMapper maintenanceManualMapper;
+    private final MaintenanceTaskFocusMapper taskFocusMapper;
     private final MioIOUpLoadService mioIOUpLoadService;
     private final ObjectMapper objectMapper;
     private final TaskChatMessageMapper chatMessageMapper;
@@ -177,6 +180,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         task.setStatus("EXECUTING");
         task.setUpdatedAt(LocalDateTime.now());
         taskMapper.updateById(task);
+        saveFocusStep(taskId, task.getReporterId(), firstIncompleteStep(loadSteps(taskId)), "NORMAL");
         log.info("[任务] 开始执行 taskId={}", taskId);
     }
 
@@ -224,6 +228,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         step.setNote(dto.getNote());
         step.setStatus("SUBMITTED");
         stepMapper.updateById(step);
+        saveFocusStep(taskId, BaseContext.getCurrentId(), nextIncompleteStep(taskId, stepId), "NORMAL");
 
         // 发MQ给Python做AI多模态验证
         sendStepVerifyMessage(task, step);
@@ -273,6 +278,12 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             MaintenanceTask task = taskMapper.selectById(step.getTaskId());
             if (task != null) {
                 checkAllStepsCompleted(task);
+                saveFocusStep(task.getId(), task.getReporterId(), nextIncompleteStep(task.getId(), step.getId()), "NORMAL");
+            }
+        } else if ("AI_REJECTED".equals(step.getStatus())) {
+            MaintenanceTask task = taskMapper.selectById(step.getTaskId());
+            if (task != null) {
+                saveFocusStep(task.getId(), task.getReporterId(), step.getId(), "NORMAL");
             }
         }
     }
@@ -306,7 +317,100 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
                 taskId, stepId, step.getAiConfidence(), reason);
 
         checkAllStepsCompleted(task);
+        saveFocusStep(taskId, BaseContext.getCurrentId(), nextIncompleteStep(taskId, stepId), "NORMAL");
         return toStepVO(step);
+    }
+
+    @Override
+    @Transactional
+    public TaskStepRecordVO reopenStep(Long taskId, Long stepId, String reason) {
+        MaintenanceTask task = getTaskOrThrow(taskId);
+        if (!"EXECUTING".equals(task.getStatus()) && !"CLOSED".equals(task.getStatus())) {
+            throw new TaskStateException("任务未在执行中，当前状态: " + task.getStatus());
+        }
+
+        TaskStepRecord step = stepMapper.selectById(stepId);
+        if (step == null || !step.getTaskId().equals(taskId)) {
+            throw new NotFoundException("步骤不存在");
+        }
+
+        if ("PENDING".equals(step.getStatus()) || "AI_REJECTED".equals(step.getStatus())) {
+            saveFocusStep(taskId, BaseContext.getCurrentId(), stepId, "NORMAL");
+            return toStepVO(step);
+        }
+
+        step.setStatus("PENDING");
+        step.setImages(null);
+        step.setNote(null);
+        step.setCheckpointConfirmed(false);
+        step.setAiPass(null);
+        step.setAiConfidence(null);
+        step.setAiReason(null);
+        step.setCompletedAt(null);
+        stepMapper.updateById(step);
+
+        if ("CLOSED".equals(task.getStatus())) {
+            task.setStatus("EXECUTING");
+            task.setUpdatedAt(LocalDateTime.now());
+            taskMapper.updateById(task);
+        }
+
+        saveFocusStep(taskId, BaseContext.getCurrentId(), stepId, "NORMAL");
+        log.info("[任务] 重新打开步骤 taskId={} stepId={} reason={}", taskId, stepId, reason);
+        return toStepVO(step);
+    }
+
+    @Override
+    @Transactional
+    public Long saveFocusStep(Long taskId, Long userId, Long stepId, String mode) {
+        getTaskOrThrow(taskId);
+        List<TaskStepRecord> steps = loadSteps(taskId);
+        Long resolvedStepId = validStepId(steps, stepId) ? stepId : defaultFocusStepId(steps);
+        if (resolvedStepId == null || userId == null) {
+            return resolvedStepId;
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        MaintenanceTaskFocus focus = taskFocusMapper.selectOne(new LambdaQueryWrapper<MaintenanceTaskFocus>()
+                .eq(MaintenanceTaskFocus::getTaskId, taskId)
+                .eq(MaintenanceTaskFocus::getUserId, userId)
+                .last("LIMIT 1"));
+        if (focus == null) {
+            focus = new MaintenanceTaskFocus()
+                    .setTaskId(taskId)
+                    .setUserId(userId)
+                    .setCurrentStepId(resolvedStepId)
+                    .setMode(StringUtils.hasText(mode) ? mode : "NORMAL")
+                    .setCreatedAt(now)
+                    .setUpdatedAt(now);
+            taskFocusMapper.insert(focus);
+        } else {
+            focus.setCurrentStepId(resolvedStepId);
+            focus.setMode(StringUtils.hasText(mode) ? mode : focus.getMode());
+            focus.setUpdatedAt(now);
+            taskFocusMapper.updateById(focus);
+        }
+        return resolvedStepId;
+    }
+
+    @Override
+    @Transactional
+    public Long resolveFocusStep(Long taskId, Long userId, Long preferredStepId, String mode) {
+        getTaskOrThrow(taskId);
+        List<TaskStepRecord> steps = loadSteps(taskId);
+        if (validStepId(steps, preferredStepId)) {
+            return saveFocusStep(taskId, userId, preferredStepId, mode);
+        }
+        if (userId != null) {
+            MaintenanceTaskFocus focus = taskFocusMapper.selectOne(new LambdaQueryWrapper<MaintenanceTaskFocus>()
+                    .eq(MaintenanceTaskFocus::getTaskId, taskId)
+                    .eq(MaintenanceTaskFocus::getUserId, userId)
+                    .last("LIMIT 1"));
+            if (focus != null && validStepId(steps, focus.getCurrentStepId())) {
+                return focus.getCurrentStepId();
+            }
+        }
+        return saveFocusStep(taskId, userId, defaultFocusStepId(steps), mode);
     }
 
     // ==================== 查询 ====================
@@ -319,7 +423,9 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
                         .eq(TaskStepRecord::getTaskId, taskId)
                         .orderByAsc(TaskStepRecord::getSortOrder)
         );
-        return toVO(task, steps);
+        MaintenanceTaskVO vo = toVO(task, steps);
+        vo.setCurrentStepId(resolveFocusStep(taskId, BaseContext.getCurrentId(), null, "NORMAL"));
+        return vo;
     }
 
     @Override
@@ -1121,6 +1227,48 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             taskMapper.updateById(task);
             log.info("[任务] 所有步骤完成，任务关闭 taskId={}", task.getId());
         }
+    }
+
+    private List<TaskStepRecord> loadSteps(Long taskId) {
+        return stepMapper.selectList(
+                new LambdaQueryWrapper<TaskStepRecord>()
+                        .eq(TaskStepRecord::getTaskId, taskId)
+                        .orderByAsc(TaskStepRecord::getSortOrder)
+        );
+    }
+
+    private Long firstIncompleteStep(List<TaskStepRecord> steps) {
+        return defaultFocusStepId(steps);
+    }
+
+    private Long nextIncompleteStep(Long taskId, Long afterStepId) {
+        List<TaskStepRecord> steps = loadSteps(taskId);
+        Integer currentOrder = steps.stream()
+                .filter(step -> Objects.equals(step.getId(), afterStepId))
+                .map(TaskStepRecord::getSortOrder)
+                .findFirst()
+                .orElse(0);
+        return steps.stream()
+                .filter(step -> step.getSortOrder() != null && step.getSortOrder() > currentOrder)
+                .filter(step -> !isStepDone(step.getStatus()))
+                .findFirst()
+                .map(TaskStepRecord::getId)
+                .orElse(defaultFocusStepId(steps));
+    }
+
+    private Long defaultFocusStepId(List<TaskStepRecord> steps) {
+        if (steps == null || steps.isEmpty()) {
+            return null;
+        }
+        return steps.stream()
+                .filter(step -> !isStepDone(step.getStatus()))
+                .findFirst()
+                .map(TaskStepRecord::getId)
+                .orElse(steps.get(steps.size() - 1).getId());
+    }
+
+    private boolean validStepId(List<TaskStepRecord> steps, Long stepId) {
+        return stepId != null && steps != null && steps.stream().anyMatch(step -> Objects.equals(step.getId(), stepId));
     }
 
     private String generateTaskNumber() {

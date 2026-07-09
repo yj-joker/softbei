@@ -19,6 +19,7 @@ public enum TaskVoiceAction {
     REQUEST_PHOTO("request_photo", "请求拍照/上传照片"),
     CONFIRM_CHECKPOINT("confirm_checkpoint", "确认检查点"),
     UNDO_STEP_COMPLETION("undo_step_completion", "撤销上次完成"),
+    REOPEN_STEP("reopen_step", "重新打开步骤"),
     EXIT_VOICE_MODE("exit_voice_mode", "退出语音模式"),
     CLARIFY("clarify", "需要澄清"),
     NO_OP("no_op", "无有效操作");

@@ -15,6 +15,7 @@ import {
   Promotion,
   ArrowRight,
 } from '@element-plus/icons-vue'
+import { getUserOverview } from '@/api/stat'
 
 const router = useRouter()
 
@@ -26,11 +27,11 @@ const userName = computed(() => {
   }
 })
 
-/* —— 顶部指标 —— */
+/* —— 顶部指标（数据来自 /weixiu/stat/user-overview，初始为 0，加载后填充） —— */
 const stats = reactive([
-  { key: 'dev', label: '设备总数', value: 128, display: 0, decimals: 0, suffix: '', icon: Monitor, tone: 'accent', spark: 'M0,18 L8,14 L16,16 L24,9 L32,12 L40,6 L48,10 L56,4 L64,8 L72,3', to: '/user/tasks' },
-  { key: 'alert', label: '待处理告警', value: 23, display: 0, decimals: 0, suffix: '', icon: Bell, tone: 'info', spark: 'M0,16 L8,10 L16,17 L24,8 L32,15 L40,7 L48,14 L56,6 L64,13 L72,9', to: '/user/tasks' },
-  { key: 'health', label: '设备健康率', value: 97.6, display: 0, decimals: 1, suffix: '%', icon: CircleCheck, tone: 'success', spark: 'M0,14 L8,12 L16,13 L24,9 L32,11 L40,7 L48,9 L56,5 L64,7 L72,4', to: '/user/quiz' },
+  { key: 'dev', label: '设备总数', value: 0, display: 0, decimals: 0, suffix: '', icon: Monitor, tone: 'accent', spark: 'M0,18 L8,14 L16,16 L24,9 L32,12 L40,6 L48,10 L56,4 L64,8 L72,3', to: '/user/tasks' },
+  { key: 'todo', label: '我的待办', value: 0, display: 0, decimals: 0, suffix: '', icon: Bell, tone: 'info', spark: 'M0,16 L8,10 L16,17 L24,8 L32,15 L40,7 L48,14 L56,6 L64,13 L72,9', to: '/user/tasks' },
+  { key: 'rate', label: '任务完成率', value: 0, display: 0, decimals: 1, suffix: '%', icon: CircleCheck, tone: 'success', spark: 'M0,14 L8,12 L16,13 L24,9 L32,11 L40,7 L48,9 L56,5 L64,7 L72,4', to: '/user/tasks' },
 ])
 
 /* —— 中央检修台周围的功能节点 —— */
@@ -43,14 +44,14 @@ const nodes = [
   { label: '经验上传', sub: 'CASES', icon: UploadFilled, to: '/user/case-upload', side: 'r', slot: 2 },
 ]
 
-/* —— 检修任务流转 —— */
-const taskFlow = [
-  { label: '待处理', count: 23, hi: 8, tone: 'accent' },
-  { label: '待派', count: 15, hi: 5, tone: 'info' },
-  { label: '执行中', count: 18, hi: 3, tone: 'warning' },
-  { label: '待验收', count: 7, hi: 1, tone: 'gold' },
-  { label: '已完成', count: 126, sub: '本月完成', tone: 'success' },
-]
+/* —— 检修任务流转（按后端真实状态计数，count 初始 0，加载后填充） —— */
+const taskFlow = reactive([
+  { status: 'CREATED', label: '已创建', count: 0, tone: 'accent' },
+  { status: 'GENERATING', label: '生成中', count: 0, tone: 'info' },
+  { status: 'GENERATED', label: '待执行', count: 0, tone: 'warning' },
+  { status: 'EXECUTING', label: '执行中', count: 0, tone: 'gold' },
+  { status: 'CLOSED', label: '已完成', count: 0, sub: '已闭环', tone: 'success' },
+])
 
 /* —— 知识问答示例 —— */
 const quizSamples = [
@@ -118,9 +119,33 @@ function onPointerUp() {
   window.removeEventListener('pointerup', onPointerUp)
 }
 
+/* —— 拉取真实概览统计 —— */
+async function loadOverview() {
+  try {
+    const res = await getUserOverview()
+    if (!res || String(res.code) !== '200' || !res.data) return
+    const d = res.data
+    const map = { dev: Number(d.deviceTotal) || 0, todo: Number(d.myOpenTasks) || 0, rate: Number(d.completionRate) || 0 }
+    stats.forEach((s, i) => {
+      s.value = map[s.key] ?? 0
+      s.display = 0
+      // 0 → 真实值 count-up；overwrite 清除该对象上的残留补间，避免与入场动画竞争
+      gsap.to(s, { display: s.value, duration: 1.2, delay: 0.2 + i * 0.1, ease: 'power2.out', overwrite: true })
+    })
+    const flow = d.taskFlow || {}
+    taskFlow.forEach((t) => {
+      t.count = Number(flow[t.status]) || 0
+    })
+  } catch (e) {
+    // 网络/业务失败时保持 0 占位，不展示编造数据（request.js 已统一提示）
+  }
+}
+
 onMounted(() => {
   reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   if (reduce) { motion.vel = 0 }
+
+  loadOverview()
 
   ctx = gsap.context(() => {
     // 入场
@@ -133,10 +158,8 @@ onMounted(() => {
       .from('.col-right > .card', { x: 26, autoAlpha: 0, duration: 0.55, stagger: 0.12 }, '-=0.5')
       .from('.flow-col', { y: 20, autoAlpha: 0, duration: 0.45, stagger: 0.08 }, '-=0.4')
 
-    // 指标数字滚动
-    stats.forEach((s, i) => {
-      gsap.to(s, { display: s.value, duration: 1.4, delay: 0.35 + i * 0.12, ease: 'power2.out' })
-    })
+    // 指标数字滚动由 loadOverview 在拿到真实值后触发（0→真实值），
+    // 此处不再基于初始值 0 起滚，避免两个动画竞争导致数字回落到 0。
 
     // 连接线数据流
     gsap.to('.flow-line', { strokeDashoffset: -200, duration: 6, repeat: -1, ease: 'none' })
@@ -305,7 +328,7 @@ onBeforeUnmount(() => {
             <div class="flow-cols">
               <router-link
                 v-for="(t, i) in taskFlow"
-                :key="t.label"
+                :key="t.status"
                 to="/user/tasks"
                 class="flow-col"
               >
@@ -315,7 +338,7 @@ onBeforeUnmount(() => {
                     <span class="fc-label">{{ t.label }}</span>
                     <span class="fc-count">{{ t.count }}</span>
                   </span>
-                  <span class="fc-sub">{{ t.sub ? t.sub : '高优先级 ' + t.hi }}</span>
+                  <span class="fc-sub">{{ t.sub || '当前数量' }}</span>
                 </div>
               </router-link>
             </div>
