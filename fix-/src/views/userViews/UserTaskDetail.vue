@@ -523,7 +523,7 @@ onUnmounted(() => {
   margin: 8px 0 8px; color: #fff; font-family: var(--font-display);
   font-size: clamp(28px, 3vw, 42px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.08;
 }
-.command-copy > p { max-width: 720px; margin: 0; color: var(--plaza-border-strong); font-size: 13px; line-height: 1.75; }
+.command-copy > p { max-width: 720px; margin: 0; color: var(--plaza-border-strong); font-size: clamp(28px, 3vw, 42px); line-height: 1.75; }
 .command-meta { flex-wrap: wrap; gap: 9px 16px; margin-top: 21px; }
 .command-meta span { display: inline-flex; align-items: center; gap: 6px; color: var(--plaza-text-muted); font-size: 11px; }
 .command-meta .el-icon { color: var(--c-accent-light); }
@@ -676,7 +676,7 @@ onUnmounted(() => {
 @media (max-width: 680px) {
   .console-code { display: none; }
   .task-command { gap: 20px; padding: 22px 18px; }
-  .command-copy h1 { font-size: 28px; }
+  .command-copy h1, .command-copy > p { font-size: 28px; }
   .command-readout { grid-template-columns: 72px minmax(0, 1fr); padding: 14px; }
   .readout-grid { grid-template-columns: 1fr; }
   .workflow-heading { align-items: flex-start; flex-direction: column; }

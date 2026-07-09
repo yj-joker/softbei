@@ -101,9 +101,9 @@ async function submit() {
         </el-select>
       </el-form-item>
 
-      <el-form-item label="故障描述" required>
+      <el-form-item label="任务描述" required>
         <el-input v-model="form.faultDescription" type="textarea" :rows="3"
-                  placeholder="描述故障现象，例如：发动机怠速抖动、伴随异响…" />
+                  placeholder="描述任务内容，如拆卸部件或者故障维修等" />
       </el-form-item>
 
       <el-form-item label="紧急等级">
