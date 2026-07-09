@@ -78,6 +78,7 @@ async function loadNotifications() {
     const res = await getRecentActivities(30)
     const list = res.data || []
     notifications.value = list.map(item => ({
+      id: item.id,
       type: guessType(item.action, item.status),
       title: item.user || '系统',
       content: item.action || '',
