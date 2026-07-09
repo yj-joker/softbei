@@ -152,12 +152,23 @@ class MaintenanceAgent(BaseAgent):
                 fault_description, device_name, report_images
             )
 
+            # ===== Step 1.5: 确定性选步 =====
+            # 复用问答链路的选节逻辑，从检索证据中选出「同一手册章节、完整有序」的
+            # 权威操作步骤块。这层是确定性的，不会漏步/串入拆卸章节/杜撰步骤。
+            # 仅在没有标准规程模板（AI_GENERATE 从零生成）时启用；有模板时走原微调链路。
+            manual_step_blocks = []
+            if not procedure_steps:
+                manual_step_blocks = self._select_manual_step_blocks(
+                    fault_description, retrieval_results
+                )
+
             # ===== Step 2: 构建 prompt，注入证据，让 LLM 生成步骤 =====
             user_msg = self._build_prompt(
                 fault_description, device_name, device_id,
                 urgency_level, report_images,
                 graph_results, retrieval_results,
                 procedure_steps, procedure_id, procedure_name,
+                manual_step_blocks,
             )
 
             input_data = AgentInput(
@@ -166,7 +177,9 @@ class MaintenanceAgent(BaseAgent):
                 images=report_images,
             )
 
-            result = await self.run(input_data)
+            # 检修步骤生成需要稳定、可复现的输出，用低温度覆盖全局默认(0.7)，
+            # 避免同一故障+同一检索证据每次生成的步骤措辞/结构漂移。
+            result = await self.run(input_data, temperature=0.1)
 
             if result.metadata.get("status") == "error":
                 return {
@@ -251,6 +264,82 @@ class MaintenanceAgent(BaseAgent):
 
         return graph_results, retrieval_results
 
+    # ==================== 确定性选步 ====================
+
+    def _select_manual_step_blocks(
+        self,
+        fault_description: str,
+        retrieval_results: Any,
+    ) -> List[Dict[str, Any]]:
+        """从检索证据中确定性地选出权威手册步骤块。
+
+        复用问答链路 api.main._manual_best_section_records 的选节逻辑：
+        把检索结果组装成其期望的 react_trace 结构，选出同一章节、完整有序的
+        操作步骤。返回 [{"content": 原文, "section_title": 章节名}, ...]，
+        选不出时返回 []（退回纯 LLM 自由生成）。
+
+        用函数内延迟 import 规避 agents ↔ api 的循环 import。
+        """
+        if not retrieval_results:
+            return []
+        try:
+            from api.main import _manual_best_section_records, _manual_query_kind
+        except Exception as e:
+            logger.warning("[MaintenanceAgent] 选步逻辑 import 失败，退回自由生成: %s", e)
+            return []
+
+        kind = _manual_query_kind(fault_description)
+        # 只对「操作流程」类查询启用确定性选步；参数/清单类不适用
+        if kind != "procedure":
+            return []
+
+        # 组装成 _manual_best_section_records 期望的 metadata 格式：
+        # metadata.react_trace[].tool_calls[].result_data = [{content, metadata}, ...]
+        items = []
+        for doc in retrieval_results:
+            if hasattr(doc, "__dict__"):
+                content = getattr(doc, "content", "") or ""
+                meta = getattr(doc, "metadata", {}) or {}
+                doc_id = getattr(doc, "id", "") or ""
+                score = getattr(doc, "score", 0)
+            else:
+                content = doc.get("content", "") or doc.get("text", "")
+                meta = doc.get("metadata", {}) or {}
+                doc_id = doc.get("id", "") or doc.get("doc_id", "")
+                score = doc.get("score", 0) or doc.get("relevance_score", 0)
+            items.append({
+                "id": doc_id,
+                "content": content,
+                "metadata": dict(meta),
+                "score": score,
+            })
+        assembled = {"react_trace": [{"tool_calls": [{"result_data": items}]}]}
+
+        try:
+            records = _manual_best_section_records(fault_description, kind, assembled)
+        except Exception as e:
+            logger.warning("[MaintenanceAgent] 确定性选步执行异常，退回自由生成: %s", e)
+            return []
+
+        blocks = []
+        for r in records:
+            content = (r.get("content") or "").strip()
+            if not content:
+                continue
+            meta = r.get("metadata") or {}
+            blocks.append({
+                "content": content,
+                "section_title": str(
+                    meta.get("section_title") or meta.get("chunk_label") or ""
+                ),
+            })
+        if blocks:
+            logger.info(
+                "[MaintenanceAgent] 确定性选步命中 %d 个权威步骤块（章节: %s）",
+                len(blocks), blocks[0]["section_title"],
+            )
+        return blocks
+
     # ==================== Prompt 构建 ====================
 
     def _build_prompt(
@@ -265,6 +354,7 @@ class MaintenanceAgent(BaseAgent):
         procedure_steps: Optional[List[Dict]] = None,
         procedure_id: Optional[int] = None,
         procedure_name: Optional[str] = None,
+        manual_step_blocks: Optional[List[Dict]] = None,
     ) -> str:
         """构建包含检索证据的用户消息"""
         urgency_map = {0: "低", 1: "普通", 2: "紧急"}
@@ -306,6 +396,24 @@ class MaintenanceAgent(BaseAgent):
                 "4. 为控制输出长度：sources 只填必要字段，adjustmentNote 不超过 30 字；"
                 "content/safetyNote 简明扼要，不要照抄模板原文。"
             )
+
+        # 注入确定性选出的权威手册步骤骨架（最高优先级约束）
+        if manual_step_blocks:
+            sec = manual_step_blocks[0].get("section_title") or ""
+            parts.append(f"\n---\n## 权威手册操作步骤（章节：{sec}）")
+            parts.append(
+                "以下是从维修手册中确定性提取的操作步骤，已按手册原始顺序排列。\n"
+                "**这是你生成检修步骤的权威骨架，必须严格遵守以下规则：**\n"
+                "1. 逐条保留下列每一个步骤，不得遗漏、不得合并、不得拆分、不得改写步骤标题；\n"
+                "2. 步骤顺序必须与下列完全一致，不得调整；\n"
+                "3. 不得新增下列之外的操作步骤，也不得混入其它章节（如拆卸章节）的内容；\n"
+                "4. 你只能为每一步补充：safetyNote（安全注意）、requirePhoto、requireNote、\n"
+                "   estimatedMinutes、sources（引用来源），以及在最前面加一步「安全准备」、\n"
+                "   最后加一步「验证测试」（这两步 sources 填空数组 []）；\n"
+                "5. 每一步的 sources 应引用对应的手册片段（documentId/chunkId 见下方检修手册参考资料）。"
+            )
+            for i, blk in enumerate(manual_step_blocks):
+                parts.append(f"\n### 权威步骤 {i+1}\n{blk.get('content', '')}")
 
         # 注入图谱证据
         if graph_results and isinstance(graph_results, dict):
