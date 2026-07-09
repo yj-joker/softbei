@@ -1,18 +1,19 @@
 <script setup>
 import { ref, reactive, computed, watch, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { gsap } from 'gsap'
 import {
   ArrowRight,
   CircleCheck,
+  Delete,
   Plus,
   Refresh,
   Search,
   Tickets,
   Timer,
 } from '@element-plus/icons-vue'
-import { getTaskDetail, listTasks } from '@/api/maintenanceTask'
+import { deleteTask, getTaskDetail, listTasks } from '@/api/maintenanceTask'
 import { notifyStore } from '@/stores/notifyStore'
 import { taskStatus, TASK_STATUS, urgency } from '@/constants/taskStatus'
 import TaskCreateDialog from '@/components/task/TaskCreateDialog.vue'
@@ -161,6 +162,23 @@ function openTask(task) {
   router.push(`/user/tasks/${task.id}`)
 }
 
+async function confirmDelete(e, task) {
+  e.stopPropagation()
+  try {
+    await ElMessageBox.confirm(
+      `确认删除任务「${task.taskNumber || task.id}」？此操作不可恢复，关联步骤和对话记录也会一并删除。`,
+      '删除检修任务',
+      { confirmButtonText: '删除', cancelButtonText: '取消', type: 'warning' },
+    )
+    await deleteTask(task.id)
+    ElMessage.success('任务已删除')
+    load()
+  } catch (err) {
+    if (err === 'cancel') return
+    ElMessage.error('删除失败：' + (err.message || '请稍后重试'))
+  }
+}
+
 function onCreated(taskId) {
   load()
   if (taskId) router.push(`/user/tasks/${taskId}`)
@@ -278,13 +296,18 @@ onUnmounted(() => taskMotionContext?.revert())
         <span class="card-accent" />
         <div class="card-top">
           <span class="task-number">{{ t.taskNumber || ('#' + t.id) }}</span>
-          <span
-            class="task-state"
-            :style="{ color: taskStatus(t.status).color, background: taskStatus(t.status).bg }"
-          >
-            <i v-if="taskStatus(t.status).spin" />
-            {{ taskStatus(t.status).label }}
-          </span>
+          <div class="card-top-right">
+            <span
+              class="task-state"
+              :style="{ color: taskStatus(t.status).color, background: taskStatus(t.status).bg }"
+            >
+              <i v-if="taskStatus(t.status).spin" />
+              {{ taskStatus(t.status).label }}
+            </span>
+            <button class="del-btn" title="删除任务" @click="confirmDelete($event, t)">
+              <el-icon><Delete /></el-icon>
+            </button>
+          </div>
         </div>
 
         <div class="device-row">
@@ -472,9 +495,17 @@ onUnmounted(() => taskMotionContext?.revert())
 .task-card:hover { border-color: var(--plaza-accent); box-shadow: var(--plaza-shadow-organic-hover); transform: translateY(-2px); }
 .task-card:hover .card-accent { opacity: 1; }
 .card-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.card-top-right { display: flex; align-items: center; gap: 8px; }
 .task-number { font-family: var(--font-mono); font-size: 10.5px; font-weight: 700; letter-spacing: 0.04em; color: var(--plaza-text-muted); }
 .task-state { display: inline-flex; align-items: center; gap: 5px; min-height: 25px; padding: 0 9px; border-radius: 999px; font-size: 11px; font-weight: 700; }
 .task-state i { width: 8px; height: 8px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: task-spin 0.8s linear infinite; }
+.del-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 26px; flex-shrink: 0; border-radius: 7px; border: none;
+  background: transparent; color: var(--plaza-text-muted); cursor: pointer; font-size: 14px;
+  transition: background .15s ease, color .15s ease;
+}
+.del-btn:hover { background: #fee2e2; color: #dc2626; }
 .device-row { display: flex; align-items: center; gap: 8px; margin-top: 15px; }
 .urgency-tag { flex-shrink: 0; padding: 3px 7px; border-radius: 6px; font-size: 10px; font-weight: 700; }
 .device-row h3 { overflow: hidden; font-family: var(--font-display); font-size: 17px; font-weight: 700; color: var(--plaza-heading); text-overflow: ellipsis; white-space: nowrap; }

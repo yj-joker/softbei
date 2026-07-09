@@ -115,3 +115,8 @@ export function endTaskVoiceSession(taskId) {
     throwOnError: true,
   })
 }
+
+/** 删除检修任务（级联清理步骤/消息/聚焦记录） */
+export function deleteTask(taskId) {
+  return request({ url: `${BASE}/${taskId}`, method: 'DELETE', throwOnError: true })
+}
