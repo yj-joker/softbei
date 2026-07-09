@@ -66,8 +66,8 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         assertCanAccess(task, userId);
         List<TaskStepRecord> steps = loadSteps(taskId);
 
-        // 当前步骤：优先用前端传入的 focusedStepId，否则找第一个未完成的步骤
-        Long currentStepId = resolveInitialStep(steps, focusedStepId);
+        // 当前步骤：优先用前端传入的 focusedStepId，否则恢复上次聚焦步骤。
+        Long currentStepId = taskService.resolveFocusStep(taskId, userId, focusedStepId, "VOICE");
 
         TaskVoiceTurnVO vo = new TaskVoiceTurnVO();
         vo.setCurrentStepId(currentStepId);
@@ -86,11 +86,17 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         assertCanAccess(task, userId);
         List<TaskStepRecord> steps = loadSteps(taskId);
 
-        // 当前步骤：优先用 dto 传入的，否则前面 startVoice 传的，否则第一个未完成
-        Long currentStepId = resolveInitialStep(steps, dto.getFocusedStepId());
+        // 当前步骤：优先用 dto 传入的，否则恢复上次聚焦步骤。
+        Long currentStepId = taskService.resolveFocusStep(taskId, userId, dto.getFocusedStepId(), "VOICE");
 
-        Map<String, Object> pythonRequest = buildVoiceAgentRequest(task, steps, currentStepId, dto, userId);
-        VoiceTaskAgentDecision decision = callVoiceTaskAgent(pythonRequest);
+        VoiceTaskAgentDecision decision;
+        currentTurnDto.set(dto);
+        try {
+            Map<String, Object> pythonRequest = buildVoiceAgentRequest(task, steps, currentStepId, dto, userId);
+            decision = callVoiceTaskAgent(pythonRequest);
+        } finally {
+            currentTurnDto.remove();
+        }
         TaskVoiceAction action = TaskVoiceAction.fromValue(decision.getAction());
         decision.setAction(action.getValue());
         decision.setActionLabel(StringUtils.hasText(decision.getActionLabel()) ? decision.getActionLabel() : action.getLabel());
@@ -117,6 +123,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         Long nextCurrentStep = outcome.currentStepId != null
                 ? outcome.currentStepId
                 : resolveInitialStep(refreshedSteps, currentStepId);
+        nextCurrentStep = taskService.saveFocusStep(taskId, userId, nextCurrentStep, "VOICE");
 
         TaskVoiceTurnVO vo = new TaskVoiceTurnVO();
         vo.setReplyText(replyText);
@@ -166,11 +173,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
                                            TaskVoiceAction action) {
         Long nextStepId = currentStepId;
         return switch (action) {
-            case GO_NEXT_STEP -> {
-                TaskStepRecord next = nextStep(steps, currentStepId);
-                TaskStepRecord target = next != null ? next : findStepById(steps, currentStepId).orElse(null);
-                yield moveTo(target, "FOCUS_NEXT");
-            }
+            case GO_NEXT_STEP -> completeCurrentStep(task, steps, currentStepId, dto, decision, false);
             case GO_PREV_STEP -> {
                 TaskStepRecord prev = previousStep(steps, currentStepId);
                 yield moveTo(prev, "FOCUS_PREVIOUS");
@@ -184,6 +187,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
             case ADD_STEP_NOTE -> addStepNote(steps, currentStepId, dto, decision);
             case CONFIRM_CHECKPOINT -> confirmCheckpoint(steps, currentStepId, dto, decision);
             case UNDO_STEP_COMPLETION -> undoStepCompletion(steps, currentStepId, decision);
+            case REOPEN_STEP -> reopenStep(task, steps, currentStepId, decision);
             case EXIT_VOICE_MODE -> ExecutionOutcome.done(currentStepId, "VOICE_SESSION_ENDED", "语音检修模式已结束", false);
             case ANSWER_QUESTION, REPEAT_CURRENT_STEP, REQUEST_PHOTO, CLARIFY, NO_OP ->
                     noStateChange(currentStepId, decision, action);
@@ -223,6 +227,12 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         }
 
         boolean missingRequiredEvidence = missingRequiredEvidence(step, dto);
+        if (missingRequiredEvidence
+                && !Boolean.TRUE.equals(dto.getConfirmed())
+                && !Boolean.TRUE.equals(dto.getOverride())
+                && !forceOverride) {
+            return ExecutionOutcome.pending(step.getId(), "PENDING_CONFIRMATION", "缺少必要证据，等待确认或补充");
+        }
         boolean overrideFlag = forceOverride
                 || Boolean.TRUE.equals(dto.getOverride())
                 || Boolean.TRUE.equals(decision.getOverrideRecommended())
@@ -298,6 +308,20 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         step.setNote(appendNote(step.getNote(), "[语音撤销完成状态]"));
         stepMapper.updateById(step);
         return ExecutionOutcome.done(step.getId(), "COMPLETION_UNDONE", "已撤销步骤完成状态", false);
+    }
+
+    private ExecutionOutcome reopenStep(MaintenanceTask task, List<TaskStepRecord> steps, Long currentStepId,
+                                         VoiceTaskAgentDecision decision) {
+        TaskStepRecord step = resolveTargetStep(steps, currentStepId, decision);
+        if (step == null) {
+            return ExecutionOutcome.rejected(currentStepId, "TARGET_STEP_NOT_FOUND", "没有找到要重新执行的步骤", null);
+        }
+        TaskStepRecordVO reopened = taskService.reopenStep(
+                task.getId(),
+                step.getId(),
+                firstText(decision.getAuditReason(), decision.getRiskReason(), "语音要求重新执行")
+        );
+        return ExecutionOutcome.done(reopened.getId(), "STEP_REOPENED", "已重新打开步骤，可重新上传证据或继续执行", false);
     }
 
     private ExecutionOutcome moveTo(TaskStepRecord target, String result) {

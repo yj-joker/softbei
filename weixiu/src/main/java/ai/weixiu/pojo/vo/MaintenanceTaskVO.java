@@ -23,6 +23,7 @@ public class MaintenanceTaskVO {
     private String generateMode;
     private Integer stepCount;
     private Long reporterId;
+    private Long currentStepId;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 

@@ -28,6 +28,12 @@ public interface MaintenanceTaskService {
     /** 工人强制完成步骤（AI_REJECTED → COMPLETED，工人确认AI误判时使用） */
     TaskStepRecordVO forceCompleteStep(Long taskId, Long stepId, String reason);
 
+    TaskStepRecordVO reopenStep(Long taskId, Long stepId, String reason);
+
+    Long saveFocusStep(Long taskId, Long userId, Long stepId, String mode);
+
+    Long resolveFocusStep(Long taskId, Long userId, Long preferredStepId, String mode);
+
     /** 查询任务详情（含步骤列表） */
     MaintenanceTaskVO getTaskDetail(Long taskId);
 

@@ -83,6 +83,30 @@ public class MaintenanceTaskController {
     }
 
     /** 查询任务详情（含步骤列表） */
+    @PostMapping("/{taskId}/steps/{stepId}/reopen")
+    public Result<TaskStepRecordVO> reopenStep(
+            @PathVariable Long taskId,
+            @PathVariable Long stepId,
+            @RequestBody(required = false) Map<String, Object> body) {
+        String reason = body == null ? "" : String.valueOf(body.getOrDefault("reason", ""));
+        TaskStepRecordVO vo = taskService.reopenStep(taskId, stepId, reason);
+        return Result.success(vo);
+    }
+
+    @PostMapping("/{taskId}/focus")
+    public Result<Map<String, Object>> updateFocus(
+            @PathVariable Long taskId,
+            @RequestBody Map<String, Object> body) {
+        Long userId = BaseContext.getCurrentId();
+        Long stepId = body != null && body.get("currentStepId") != null
+                ? Long.valueOf(String.valueOf(body.get("currentStepId"))) : null;
+        String mode = body != null ? String.valueOf(body.getOrDefault("mode", "NORMAL")) : "NORMAL";
+        Long currentStepId = taskService.saveFocusStep(taskId, userId, stepId, mode);
+        Map<String, Object> result = new HashMap<>();
+        result.put("currentStepId", currentStepId);
+        return Result.success(result);
+    }
+
     @GetMapping("/{taskId}")
     public Result<MaintenanceTaskVO> getTaskDetail(@PathVariable Long taskId) {
         MaintenanceTaskVO vo = taskService.getTaskDetail(taskId);

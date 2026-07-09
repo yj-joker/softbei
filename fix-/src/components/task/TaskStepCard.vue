@@ -14,7 +14,7 @@ import {
   VideoPause,
   Warning,
 } from '@element-plus/icons-vue'
-import { executeStep, forceCompleteStep } from '@/api/maintenanceTask'
+import { executeStep, forceCompleteStep, reopenStep } from '@/api/maintenanceTask'
 import { uploadImage } from '@/api/user'
 import { notifyStore } from '@/stores/notifyStore'
 import { stepStatus, stepActionable } from '@/constants/taskStatus'
@@ -26,7 +26,7 @@ const props = defineProps({
   executing: { type: Boolean, default: false },// 任务是否处于 EXECUTING
   reading: { type: Boolean, default: false },  // 跟读模式下：是否正在念这一步（高亮）
 })
-const emit = defineEmits(['submitted', 'chat', 'read-along'])
+const emit = defineEmits(['submitted', 'reopened', 'chat', 'read-along'])
 
 const exec = reactive({ note: '', images: [], confirmed: false })
 const uploading = ref(false)
@@ -37,6 +37,7 @@ const st = computed(() => stepStatus(props.step.status))
 const canAct = computed(() => props.executing && props.active && stepActionable(props.step.status))
 const rejected = computed(() => props.step.status === 'AI_REJECTED')
 const done = computed(() => ['AI_PASSED', 'COMPLETED', 'SKIPPED'].includes(props.step.status))
+const canReopen = computed(() => props.executing && ['SUBMITTED', 'AI_PASSED', 'COMPLETED', 'SKIPPED'].includes(props.step.status))
 const showBody = computed(() => canAct.value || rejected.value || expanded.value)
 const requirementCount = computed(() =>
   [props.step.requirePhoto, props.step.requireNote, props.step.isCheckpoint].filter(Boolean).length,
@@ -95,6 +96,20 @@ async function forceComplete() {
   } catch (err) { ElMessage.error('操作失败：' + (err.message || '')) }
   finally { submitting.value = false }
 }
+
+async function reopen() {
+  submitting.value = true
+  try {
+    await reopenStep(props.taskId, props.step.id, exec.note.trim() || '工人要求重新执行')
+    exec.note = ''
+    exec.images = []
+    exec.confirmed = false
+    expanded.value = true
+    ElMessage.success('已重新打开该步骤')
+    emit('reopened')
+  } catch (err) { ElMessage.error('操作失败：' + (err.message || '')) }
+  finally { submitting.value = false }
+}
 </script>
 
 <template>
@@ -139,6 +154,9 @@ async function forceComplete() {
           </button>
           <button type="button" class="ask-button" @click="emit('chat', step)">
             <el-icon><ChatDotRound /></el-icon> 问 AI
+          </button>
+          <button v-if="canReopen" type="button" class="ask-button" :disabled="submitting" @click="reopen">
+            重新执行
           </button>
           <button
             v-if="!canAct"
