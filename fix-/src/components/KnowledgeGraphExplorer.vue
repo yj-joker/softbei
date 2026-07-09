@@ -24,6 +24,16 @@ const SEVERITY = { 轻微: '#c9a23a', 一般: '#df9226', 严重: 'var(--plaza-ac
 const REL = { OWNS: '拥有', CAUSES: '引发', HAS_SOLUTION: '方案', RECORDED: '案例' }
 const LABEL_FONT = "'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace"
 
+/* G6 v5 用 canvas 渲染，无法解析 CSS 变量 var(--x)：直接传入会退化成默认白底灰边、标签透明。
+ * 这里用 getComputedStyle 把 var(--x) 解析成当前主题的实际色值（不缓存，重绘即随主题换色）。 */
+function resolveColor(v) {
+  if (typeof v !== 'string' || !v.includes('var(')) return v
+  return v.replace(/var\((--[a-z0-9-]+)\)/gi, (_, name) => {
+    const val = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    return val || '#c4602f'
+  })
+}
+
 /* ---------- 内部状态 ---------- */
 const PAGE_SIZE = 6          // 每次展开仅渲染一页，避免一次铺出整页节点
 const containerRef = ref(null)
@@ -56,14 +66,14 @@ const CHILD = {
 function nodeStyle() {
   return {
     size: (d) => d.data.size,
-    fill: (d) => d.data.fill,
-    stroke: (d) => d.data.stroke,
+    fill: (d) => resolveColor(d.data.fill),
+    stroke: (d) => resolveColor(d.data.stroke),
     lineWidth: 1.6,
     shadowColor: 'rgba(120,70,30,0.18)',
     shadowBlur: 8,
     shadowOffsetY: 2,
     labelText: (d) => d.data.label,
-    labelFill: 'var(--plaza-text)',
+    labelFill: resolveColor('var(--plaza-text)'),
     labelFontSize: 11,
     labelFontFamily: LABEL_FONT,
     labelPlacement: 'bottom',
@@ -72,7 +82,7 @@ function nodeStyle() {
     labelBackgroundFill: 'rgba(255, 255, 255, 0.92)',
     labelBackgroundRadius: 4,
     labelBackgroundLineWidth: 1,
-    labelBackgroundStroke: 'var(--plaza-border)',
+    labelBackgroundStroke: resolveColor('var(--plaza-border)'),
     labelPadding: [2, 6],
   }
 }
@@ -86,8 +96,8 @@ function buildGraph() {
     node: {
       style: nodeStyle(),
       state: {
-        active:   { lineWidth: 2.6, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.16 },
-        selected: { lineWidth: 3, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.22 },
+        active:   { lineWidth: 2.6, halo: true, haloStroke: resolveColor('var(--plaza-accent)'), haloOpacity: 0.16 },
+        selected: { lineWidth: 3, halo: true, haloStroke: resolveColor('var(--plaza-accent)'), haloOpacity: 0.22 },
       },
     },
     edge: {
@@ -98,14 +108,14 @@ function buildGraph() {
         endArrowType: 'vee',
         endArrowSize: 7,
         labelText: (d) => d.data.relLabel || '',
-        labelFill: 'var(--plaza-text-muted)',
+        labelFill: resolveColor('var(--plaza-text-muted)'),
         labelFontSize: 9,
         labelFontFamily: LABEL_FONT,
         labelBackground: true,
         labelBackgroundFill: 'rgba(255, 255, 255, 0.9)',
         labelBackgroundRadius: 2,
       },
-      state: { active: { stroke: 'var(--plaza-accent)', lineWidth: 2 } },
+      state: { active: { stroke: resolveColor('var(--plaza-accent)'), lineWidth: 2 } },
     },
     layout: {
       type: 'd3-force',

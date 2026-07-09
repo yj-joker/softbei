@@ -2,7 +2,7 @@ package ai.weixiu.domain;
 
 import ai.weixiu.constant.DomainRuleConstants;
 import ai.weixiu.entity.DomainRule;
-import ai.weixiu.exceprion.DomainRuleSyncException;
+import ai.weixiu.exception.DomainRuleSyncException;
 import ai.weixiu.mapper.DomainRuleMapper;
 import ai.weixiu.pojo.dto.DomainRulePythonSyncResponse;
 import ai.weixiu.service.client.DomainRulePythonClient;

@@ -1,7 +1,7 @@
 package ai.weixiu.domain;
 
 import ai.weixiu.entity.DomainRule;
-import ai.weixiu.exceprion.TaskStateException;
+import ai.weixiu.exception.TaskStateException;
 import ai.weixiu.service.support.DomainRuleStateGuard;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;

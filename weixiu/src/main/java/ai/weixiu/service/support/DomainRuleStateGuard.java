@@ -2,7 +2,7 @@ package ai.weixiu.service.support;
 
 import ai.weixiu.constant.DomainRuleConstants;
 import ai.weixiu.entity.DomainRule;
-import ai.weixiu.exceprion.TaskStateException;
+import ai.weixiu.exception.TaskStateException;
 
 public final class DomainRuleStateGuard {
 

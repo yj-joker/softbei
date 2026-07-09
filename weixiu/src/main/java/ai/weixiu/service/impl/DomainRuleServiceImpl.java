@@ -2,9 +2,9 @@ package ai.weixiu.service.impl;
 
 import ai.weixiu.constant.DomainRuleConstants;
 import ai.weixiu.entity.DomainRule;
-import ai.weixiu.exceprion.DomainRuleSyncException;
-import ai.weixiu.exceprion.NotFoundException;
-import ai.weixiu.exceprion.TaskStateException;
+import ai.weixiu.exception.DomainRuleSyncException;
+import ai.weixiu.exception.NotFoundException;
+import ai.weixiu.exception.TaskStateException;
 import ai.weixiu.mapper.DomainRuleMapper;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.dto.DomainRuleDTO;
@@ -33,7 +33,6 @@ import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
 import java.util.List;
-import java.util.Map;
 
 @Service
 @Slf4j

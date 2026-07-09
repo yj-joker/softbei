@@ -2,7 +2,7 @@ package ai.weixiu.service.impl;
 
 import ai.weixiu.config.MinioProperties;
 import ai.weixiu.enumerate.BucketEnum;
-import ai.weixiu.exceprion.UploadException;
+import ai.weixiu.exception.UploadException;
 import ai.weixiu.service.MioIOUpLoadService;
 import io.minio.*;
 import io.minio.http.Method;

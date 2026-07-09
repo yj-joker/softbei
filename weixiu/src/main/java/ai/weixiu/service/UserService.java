@@ -35,4 +35,6 @@ public interface UserService extends IService<User> {
     void sendEmail(String email, Integer mode);
 
     void verifyEmail(String code, Integer mode,String emailOrPassword);
+
+    void removeUserByIds(List<Integer> ids);
 }

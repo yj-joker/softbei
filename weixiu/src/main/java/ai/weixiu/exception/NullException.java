@@ -1,4 +1,4 @@
-package ai.weixiu.exceprion;
+package ai.weixiu.exception;
 
 /*
 * null参数异常

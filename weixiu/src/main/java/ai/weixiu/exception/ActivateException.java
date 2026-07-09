@@ -1,4 +1,4 @@
-package ai.weixiu.exceprion;
+package ai.weixiu.exception;
 
 /*
 * 未激活异常

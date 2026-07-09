@@ -1,6 +1,5 @@
 package ai.weixiu.utils;
 
-import ai.weixiu.exceprion.NullException;
 import com.alibaba.excel.EasyExcel;
 import com.alibaba.excel.context.AnalysisContext;
 import com.alibaba.excel.read.listener.ReadListener;

@@ -110,7 +110,7 @@ public class UserController {
     @DeleteMapping("/deleteByIds")
     @Operation(summary = "根据用户id批量删除用户")
     public Result deleteByIds(@RequestBody List<Integer> ids) {
-        userService.removeByIds(ids);
+        userService.removeUserByIds(ids);
         return Result.success();
     }
     /*

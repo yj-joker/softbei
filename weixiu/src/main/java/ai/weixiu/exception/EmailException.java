@@ -1,4 +1,4 @@
-package ai.weixiu.exceprion;
+package ai.weixiu.exception;
 
 public class EmailException extends RuntimeException {
     public EmailException(String message) {

@@ -77,4 +77,7 @@ public interface MaintenanceTaskService {
 
     /** 拉取任务的完整对话历史（前端进面板时渲染，时间正序） */
     List<TaskChatMessage> getChatHistory(Long taskId);
+
+    /** 删除检修任务*/
+    void deleteTask(Long taskId);
 }

@@ -1,4 +1,4 @@
-package ai.weixiu.exceprion;
+package ai.weixiu.exception;
 
 public class NotFoundException extends RuntimeException {
     public NotFoundException(String message) {

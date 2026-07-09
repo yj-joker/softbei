@@ -2,8 +2,8 @@ package ai.weixiu.service.impl;
 
 import ai.weixiu.config.RabbitMQConfig;
 import ai.weixiu.entity.*;
-import ai.weixiu.exceprion.NotFoundException;
-import ai.weixiu.exceprion.TaskStateException;
+import ai.weixiu.exception.NotFoundException;
+import ai.weixiu.exception.TaskStateException;
 import ai.weixiu.mapper.*;
 import ai.weixiu.pojo.dto.QuizGenerateMessage;
 import ai.weixiu.pojo.vo.QuizQuestionVO;

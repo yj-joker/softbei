@@ -3,7 +3,7 @@ package ai.weixiu.service.impl;
 import ai.weixiu.common.RedisKey;
 import ai.weixiu.entity.MaintenanceManual;
 import ai.weixiu.enumerate.MaintenanceManualRankType;
-import ai.weixiu.exceprion.NotFoundException;
+import ai.weixiu.exception.NotFoundException;
 import ai.weixiu.pojo.vo.MaintenanceManualRankVO;
 import ai.weixiu.service.MaintenanceManualRankService;
 import ai.weixiu.service.MaintenanceManualService;

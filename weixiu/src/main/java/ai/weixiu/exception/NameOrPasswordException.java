@@ -1,4 +1,4 @@
-package ai.weixiu.exceprion;
+package ai.weixiu.exception;
 /*
 * 用户名或密码错误异常2
 * */

@@ -1,7 +1,7 @@
 package ai.weixiu.service.impl;
 
 import ai.weixiu.entity.Solution;
-import ai.weixiu.exceprion.NotFoundException;
+import ai.weixiu.exception.NotFoundException;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.dto.SolutionDTO;
 import ai.weixiu.pojo.query.SolutionQuery;

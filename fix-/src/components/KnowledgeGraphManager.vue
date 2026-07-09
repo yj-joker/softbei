@@ -18,6 +18,16 @@ const SEVERITY = { 轻微: '#c9a23a', 一般: '#df9226', 严重: 'var(--plaza-ac
 const REL = { OWNS: '拥有', CAUSES: '引发', HAS_SOLUTION: '方案' }
 const LABEL_FONT = "'JetBrains Mono','IBM Plex Mono',ui-monospace,monospace"
 
+/* G6 v5 canvas 渲染无法解析 CSS 变量 var(--x)，直接传入会退化成默认白底灰边、标签透明。
+ * 用 getComputedStyle 解析为当前主题实际色值（不缓存，重绘即随主题换色）。 */
+function resolveColor(v) {
+  if (typeof v !== 'string' || !v.includes('var(')) return v
+  return v.replace(/var\((--[a-z0-9-]+)\)/gi, (_, name) => {
+    const val = getComputedStyle(document.documentElement).getPropertyValue(name).trim()
+    return val || '#c4602f'
+  })
+}
+
 // 父类型 → 子层级配置
 const CHILD = {
   device:    { child: 'component', rel: 'OWNS',         fetch: getDeviceComponents, relType: 'DEVICE_OWNS_COMPONENT',   labelKey: 'name'  },
@@ -71,21 +81,21 @@ function buildGraph() {
     node: {
       style: {
         size: (d) => d.data.size,
-        fill: (d) => d.data.fill,
-        stroke: (d) => (d.data.unverified ? '#df9226' : d.data.stroke),
+        fill: (d) => resolveColor(d.data.fill),
+        stroke: (d) => resolveColor(d.data.unverified ? '#df9226' : d.data.stroke),
         lineWidth: (d) => (d.data.unverified ? 2.4 : 1.6),
         lineDash: (d) => (d.data.unverified ? [5, 4] : 0),
         shadowColor: 'rgba(120,80,50,0.16)', shadowBlur: 8, shadowOffsetY: 2,
         labelText: (d) => d.data.label,
-        labelFill: 'var(--plaza-heading)', labelFontSize: 11, labelFontFamily: LABEL_FONT,
+        labelFill: resolveColor('var(--plaza-heading)'), labelFontSize: 11, labelFontFamily: LABEL_FONT,
         labelPlacement: 'bottom', labelOffsetY: 4,
         labelBackground: true, labelBackgroundFill: 'rgba(255, 255, 255, 0.92)',
         labelBackgroundRadius: 4, labelBackgroundLineWidth: 1,
-        labelBackgroundStroke: 'var(--plaza-border)', labelPadding: [2, 6],
+        labelBackgroundStroke: resolveColor('var(--plaza-border)'), labelPadding: [2, 6],
       },
       state: {
-        active:   { lineWidth: 2.6, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.14 },
-        selected: { lineWidth: 3, halo: true, haloStroke: 'var(--plaza-accent)', haloOpacity: 0.2 },
+        active:   { lineWidth: 2.6, halo: true, haloStroke: resolveColor('var(--plaza-accent)'), haloOpacity: 0.14 },
+        selected: { lineWidth: 3, halo: true, haloStroke: resolveColor('var(--plaza-accent)'), haloOpacity: 0.2 },
       },
     },
     edge: {
@@ -93,10 +103,10 @@ function buildGraph() {
         stroke: 'rgba(120,80,50,0.26)', lineWidth: 1.1,
         endArrow: true, endArrowType: 'vee', endArrowSize: 7,
         labelText: (d) => d.data.relLabel || '',
-        labelFill: 'var(--plaza-text)', labelFontSize: 9, labelFontFamily: LABEL_FONT,
+        labelFill: resolveColor('var(--plaza-text)'), labelFontSize: 9, labelFontFamily: LABEL_FONT,
         labelBackground: true, labelBackgroundFill: 'rgba(255, 255, 255, 0.9)', labelBackgroundRadius: 2,
       },
-      state: { active: { stroke: 'var(--plaza-accent)', lineWidth: 2 } },
+      state: { active: { stroke: resolveColor('var(--plaza-accent)'), lineWidth: 2 } },
     },
     layout: { type: 'd3-force', link: { distance: 120, strength: 0.5 }, collide: { radius: 44 }, manyBody: { strength: -200 } },
     behaviors: ['zoom-canvas', 'drag-canvas', 'drag-element', { type: 'hover-activate', degree: 1 }, { type: 'click-select' }],

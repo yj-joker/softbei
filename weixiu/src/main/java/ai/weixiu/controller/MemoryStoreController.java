@@ -1,6 +1,6 @@
 package ai.weixiu.controller;
 
-import ai.weixiu.exceprion.MemoryNotFoundException;
+import ai.weixiu.exception.MemoryNotFoundException;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.MemoryEntry;
 import ai.weixiu.service.MemoryStore;

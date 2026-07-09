@@ -1,4 +1,4 @@
-package ai.weixiu.exceprion;
+package ai.weixiu.exception;
 
 public class EmbeddingException extends RuntimeException {
     public EmbeddingException(String message) {

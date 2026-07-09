@@ -1,6 +1,6 @@
 package ai.weixiu.service.client;
 
-import ai.weixiu.exceprion.DomainRuleSyncException;
+import ai.weixiu.exception.DomainRuleSyncException;
 import ai.weixiu.pojo.dto.DomainRulePythonDeleteRequest;
 import ai.weixiu.pojo.dto.DomainRulePythonSyncRequest;
 import ai.weixiu.pojo.dto.DomainRulePythonSyncResponse;

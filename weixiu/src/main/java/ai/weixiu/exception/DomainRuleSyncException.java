@@ -1,4 +1,4 @@
-package ai.weixiu.exceprion;
+package ai.weixiu.exception;
 
 public class DomainRuleSyncException extends RuntimeException {
     public DomainRuleSyncException(String message) {

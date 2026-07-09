@@ -1,10 +1,9 @@
 package ai.weixiu.utils;
 
-import ai.weixiu.exceprion.EmbeddingException;
+import ai.weixiu.exception.EmbeddingException;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import lombok.AllArgsConstructor;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;

@@ -2,7 +2,7 @@ package ai.weixiu.service.impl;
 
 import ai.weixiu.common.RedisKey;
 import ai.weixiu.enumerate.EmailEnum;
-import ai.weixiu.exceprion.*;
+import ai.weixiu.exception.*;
 import ai.weixiu.pojo.dto.UserDTO;
 import ai.weixiu.pojo.dto.UserLoginDTO;
 import ai.weixiu.entity.User;
@@ -15,7 +15,6 @@ import ai.weixiu.utils.BaseContext;
 import ai.weixiu.utils.ExcelUtils;
 import ai.weixiu.utils.IsNullUtils;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import jakarta.servlet.http.HttpServletRequest;
@@ -353,4 +352,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         return code.toString();
     }
 
+    @Override
+    public void removeUserByIds(List<Integer> ids) {
+        List<User> users = this.listByIds(ids);
+        users.forEach(user -> {
+          if(user.getType()==1){
+              throw new DeleteException("不能删除管理员");
+          }
+        });
+        this.removeByIds(ids);
+    }
 }

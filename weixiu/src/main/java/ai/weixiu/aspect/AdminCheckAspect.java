@@ -2,7 +2,7 @@ package ai.weixiu.aspect;
 
 import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.entity.User;
-import ai.weixiu.exceprion.ForbiddenException;
+import ai.weixiu.exception.ForbiddenException;
 import ai.weixiu.mapper.UserMapper;
 import ai.weixiu.utils.BaseContext;
 import lombok.RequiredArgsConstructor;

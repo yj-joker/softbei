@@ -1,7 +1,7 @@
 package ai.weixiu.service.impl;
 
 import ai.weixiu.entity.AiSession;
-import ai.weixiu.exceprion.AiMemoryException;
+import ai.weixiu.exception.AiMemoryException;
 import ai.weixiu.mapper.AiSessionMapper;
 import ai.weixiu.service.AiSessionService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;

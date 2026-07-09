@@ -1,6 +1,6 @@
 package ai.weixiu.service.impl;
 
-import ai.weixiu.exceprion.NotFoundException;
+import ai.weixiu.exception.NotFoundException;
 import ai.weixiu.pojo.dto.RelationCreateDTO;
 import ai.weixiu.service.RelationService;
 import lombok.AllArgsConstructor;

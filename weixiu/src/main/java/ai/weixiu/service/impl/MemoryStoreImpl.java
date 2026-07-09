@@ -1,7 +1,7 @@
 package ai.weixiu.service.impl;
 
 import ai.weixiu.entity.MemoryFact;
-import ai.weixiu.exceprion.MemoryNotFoundException;
+import ai.weixiu.exception.MemoryNotFoundException;
 import ai.weixiu.pojo.dto.MemoryEntry;
 import ai.weixiu.service.MemoryFactService;
 import ai.weixiu.service.MemoryStore;

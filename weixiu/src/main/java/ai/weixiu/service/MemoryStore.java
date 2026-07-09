@@ -24,7 +24,7 @@ public interface MemoryStore {
     String loadIndex(Long userId, String deviceType, String equipmentId, String siteId, String taskId);
 
     /**
-     * 按 name 读取一条 active 记忆，命中不到抛 {@link ai.weixiu.exceprion.MemoryNotFoundException}。
+     * 按 name 读取一条 active 记忆，命中不到抛 {@link ai.weixiu.exception.MemoryNotFoundException}。
      */
     MemoryEntry readMemory(Long userId, String name);
 
