@@ -1,5 +1,6 @@
 package ai.weixiu.controller;
 
+import ai.weixiu.annotation.OpLog;
 import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
@@ -41,6 +42,7 @@ public class MaintenanceTaskController {
 
     /** 创建检修任务（自动触发LLM生成步骤） */
     @PostMapping
+    @OpLog(value = "创建了检修任务", targetType = "task", status = "pending")
     public Result<MaintenanceTaskVO> createTask(@RequestBody MaintenanceTaskDTO dto) {
         Long userId = BaseContext.getCurrentId();
         MaintenanceTaskVO vo = taskService.createTask(dto, userId);

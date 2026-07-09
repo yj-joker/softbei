@@ -20,3 +20,11 @@ export function getUserOverview() {
 export function getAdminOverview() {
   return request({ url: `${BASE}/admin-overview`, method: 'GET' })
 }
+
+/**
+ * 最近操作动态（管理端首页，后端 @RequireAdmin）。
+ * 返回 [{ user, action, status, time }]，time 为 ISO 时间字符串。
+ */
+export function getRecentActivities(limit = 10) {
+  return request({ url: `${BASE}/recent-activities`, method: 'GET', params: { limit } })
+}

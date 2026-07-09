@@ -126,10 +126,11 @@ async function loadOverview() {
     if (!res || String(res.code) !== '200' || !res.data) return
     const d = res.data
     const map = { dev: Number(d.deviceTotal) || 0, todo: Number(d.myOpenTasks) || 0, rate: Number(d.completionRate) || 0 }
-    stats.forEach((s) => {
+    stats.forEach((s, i) => {
       s.value = map[s.key] ?? 0
-      // 数字滚动到真实值；若入场动画已把 display 滚到 0，这里再滚到真实值
-      gsap.to(s, { display: s.value, duration: 1.2, ease: 'power2.out' })
+      s.display = 0
+      // 0 → 真实值 count-up；overwrite 清除该对象上的残留补间，避免与入场动画竞争
+      gsap.to(s, { display: s.value, duration: 1.2, delay: 0.2 + i * 0.1, ease: 'power2.out', overwrite: true })
     })
     const flow = d.taskFlow || {}
     taskFlow.forEach((t) => {
@@ -157,10 +158,8 @@ onMounted(() => {
       .from('.col-right > .card', { x: 26, autoAlpha: 0, duration: 0.55, stagger: 0.12 }, '-=0.5')
       .from('.flow-col', { y: 20, autoAlpha: 0, duration: 0.45, stagger: 0.08 }, '-=0.4')
 
-    // 指标数字滚动
-    stats.forEach((s, i) => {
-      gsap.to(s, { display: s.value, duration: 1.4, delay: 0.35 + i * 0.12, ease: 'power2.out' })
-    })
+    // 指标数字滚动由 loadOverview 在拿到真实值后触发（0→真实值），
+    // 此处不再基于初始值 0 起滚，避免两个动画竞争导致数字回落到 0。
 
     // 连接线数据流
     gsap.to('.flow-line', { strokeDashoffset: -200, duration: 6, repeat: -1, ease: 'none' })

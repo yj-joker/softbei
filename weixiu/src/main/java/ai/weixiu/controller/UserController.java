@@ -1,6 +1,7 @@
 package ai.weixiu.controller;
 
 
+import ai.weixiu.annotation.OpLog;
 import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.enumerate.BucketEnum;
 import ai.weixiu.pojo.Result;
@@ -117,6 +118,7 @@ public class UserController {
     * */
     @PutMapping("/updateUser")
     @Operation(summary = "修改用户信息")
+    @OpLog(value = "更新了用户信息", targetType = "user")
     public Result updateById(@RequestBody UserDTO userDTO) {
         userService.updateUser(userDTO);
         return Result.success();

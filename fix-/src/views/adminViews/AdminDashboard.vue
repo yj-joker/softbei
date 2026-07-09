@@ -15,7 +15,7 @@ import {
   Promotion,
   ArrowRight,
 } from '@element-plus/icons-vue'
-import { getAdminOverview } from '@/api/stat'
+import { getAdminOverview, getRecentActivities } from '@/api/stat'
 
 const router = useRouter()
 
@@ -53,8 +53,24 @@ const taskFlow = reactive([
   { status: 'CLOSED', label: '已完成', count: 0, sub: '已闭环', tone: 'success' },
 ])
 
-/* —— 最近动态 —— 后端暂无操作流水接口，置空并在模板显示空状态，不展示编造数据 */
+/* —— 最近动态 —— 来自 /weixiu/stat/recent-activities，加载后填充；无数据显示空状态 */
 const recentActivities = reactive([])
+
+/** 绝对时间 → 相对时间文案（如“5 分钟前”） */
+function relativeTime(iso) {
+  if (!iso) return ''
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return ''
+  const diff = Math.max(0, Date.now() - t)
+  const min = Math.floor(diff / 60000)
+  if (min < 1) return '刚刚'
+  if (min < 60) return `${min} 分钟前`
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return `${hr} 小时前`
+  const day = Math.floor(hr / 24)
+  if (day < 30) return `${day} 天前`
+  return new Date(t).toLocaleDateString('zh-CN')
+}
 
 /* —— 管理助手示例 —— */
 const assistantChips = [
@@ -173,9 +189,11 @@ async function loadOverview() {
     if (!res || String(res.code) !== '200' || !res.data) return
     const d = res.data
     const map = { users: Number(d.userTotal) || 0, review: Number(d.pendingCaseTotal) || 0, devices: Number(d.deviceTotal) || 0 }
-    stats.forEach((s) => {
+    stats.forEach((s, i) => {
       s.value = map[s.key] ?? 0
-      gsap.to(s, { display: s.value, duration: 1.2, ease: 'power2.out' })
+      s.display = 0
+      // 0 → 真实值 count-up；overwrite 清除残留补间，避免与入场动画竞争
+      gsap.to(s, { display: s.value, duration: 1.2, delay: 0.2 + i * 0.1, ease: 'power2.out', overwrite: true })
     })
     const dist = d.taskStatusDist || {}
     taskFlow.forEach((t) => { t.count = Number(dist[t.status]) || 0 })
@@ -186,11 +204,23 @@ async function loadOverview() {
   }
 }
 
+/* —— 拉取最近操作动态 —— */
+async function loadActivities() {
+  try {
+    const res = await getRecentActivities(8)
+    if (!res || String(res.code) !== '200' || !Array.isArray(res.data)) return
+    recentActivities.splice(0, recentActivities.length, ...res.data)
+  } catch (e) {
+    // 失败保持空状态
+  }
+}
+
 onMounted(() => {
   reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
   if (reduce) { motion.vel = 0 }
 
   loadOverview()
+  loadActivities()
 
   ctx = gsap.context(() => {
     const tl = gsap.timeline({ defaults: { ease: 'power3.out' } })
@@ -202,9 +232,8 @@ onMounted(() => {
       .from('.col-right > .card', { x: 26, autoAlpha: 0, duration: 0.55, stagger: 0.12 }, '-=0.5')
       .from('.flow-col', { y: 20, autoAlpha: 0, duration: 0.45, stagger: 0.08 }, '-=0.4')
 
-    stats.forEach((s, i) => {
-      gsap.to(s, { display: s.value, duration: 1.4, delay: 0.35 + i * 0.12, ease: 'power2.out' })
-    })
+    // 指标数字滚动由 loadOverview 在拿到真实值后触发（0→真实值），
+    // 此处不再基于初始值 0 起滚，避免两个动画竞争导致数字回落到 0。
 
     gsap.to('.flow-line', { strokeDashoffset: -200, duration: 6, repeat: -1, ease: 'none' })
 
@@ -415,7 +444,7 @@ onBeforeUnmount(() => {
                 <span class="activity-user">{{ item.user }}</span>
                 <span class="activity-action">{{ item.action }}</span>
               </div>
-              <span class="activity-time">{{ item.time }}</span>
+              <span class="activity-time">{{ relativeTime(item.time) }}</span>
             </div>
             <p v-if="!recentActivities.length" class="activity-empty">暂无操作动态</p>
           </div>

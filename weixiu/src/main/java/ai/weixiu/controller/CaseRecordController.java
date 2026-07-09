@@ -1,5 +1,6 @@
 package ai.weixiu.controller;
 
+import ai.weixiu.annotation.OpLog;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.CaseRecordDTO;
@@ -69,6 +70,7 @@ public class CaseRecordController {
 
     @PostMapping("/submit")
     @Operation(summary = "提交案例(合规闸门→落待审)")
+    @OpLog(value = "提交了检修案例", targetType = "case", status = "pending")
     public Result<Void> submit(@RequestBody CaseRecordDTO dto) {
         caseRecordService.submit(dto);
         return Result.success();
@@ -83,6 +85,7 @@ public class CaseRecordController {
 
     @PostMapping("/{id}/approve")
     @Operation(summary = "审核通过(向量化+尽力连边)")
+    @OpLog(value = "审核通过了检修案例", targetType = "case", status = "approved")
     public Result<Void> approve(@PathVariable String id, @RequestBody CaseRecordDTO dto) {
         caseRecordService.approve(id, dto);
         return Result.success();
@@ -90,6 +93,7 @@ public class CaseRecordController {
 
     @PostMapping("/{id}/reject")
     @Operation(summary = "审核驳回")
+    @OpLog(value = "驳回了检修案例", targetType = "case", status = "pending")
     public Result<Void> reject(@PathVariable String id, @RequestParam String comment) {
         caseRecordService.reject(id, comment);
         return Result.success();
