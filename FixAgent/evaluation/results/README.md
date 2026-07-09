@@ -1,53 +1,52 @@
-# 评测结果归档（results/）
+# 测评结果目录
 
-本目录保存 RAG 链路从 v1 到 v24 的测评结果。每个版本只保留**一份代表性结果**，
-同版的对比/子实验变体（`_profile_only`、`_legacy`、`_corrected`、`v16b`、`v18b~f` 等）
-已清理。**v24 为最终采用版**。
+本目录只保存当前测评制度的代表性结果。
 
-- 数据集：`../rag_eval_dataset_v14_image_locator.csv`（150 题，8 类：diagnosis / inspection /
-  procedure / safety / spec / torque / image / no_answer；144 题可回答 + 6 题无答案）
-- `retrieval_result_*` = 检索测评（Recall@k、MRR）；`answer_eval_*` = 大模型回答正确率
-- 复现：`python -m evaluation.rag_eval_cli`（检索） / `python -m evaluation.answer_eval_cli`（回答）
+当前主测评集：
 
-## 检索指标演进（Recall@1 / @3 / @5、MRR，top_k=5）
+- `../maintenance_eval_dataset_v1.jsonl`
 
-> 早期样本量较小（v1~v6 为 50/65 题、v8~v10 为 100 题），v11 起统一为 150 题集，跨版对比以 v11 之后为准。
+当前主评测器：
 
-| 版本 | 样本 | R@1 | R@3 | R@5 | MRR | 关键变化 |
-|---|---|---|---|---|---|---|
-| v1 | 50 | 0.500 | 0.587 | 0.630 | 0.548 | 最初基线 |
-| v2 | 50 | 0.609 | 0.739 | 0.783 | 0.664 | — |
-| v3 | 50 | 0.543 | 0.630 | 0.739 | 0.604 | — |
-| v4 | 50 | 0.565 | 0.652 | 0.739 | 0.621 | — |
-| v5 | 65 | 0.361 | 0.492 | 0.541 | 0.428 | 混入图片/旧链路，回退 |
-| v6 | 65 | 0.459 | 0.574 | 0.639 | 0.526 | — |
-| v8 | 100 | 0.635 | 0.865 | 0.958 | 0.759 | qwen3 rerank |
-| v9 | 100 | 0.698 | 0.875 | 0.938 | 0.793 | 本地结构化重排 |
-| v10 | 100 | 0.698 | 0.875 | 0.938 | 0.793 | 候选清洗 |
-| v11 | 150 | 0.688 | 0.840 | 0.910 | 0.772 | 扩到 150 题集 |
-| v12 | 150 | 0.688 | 0.840 | 0.910 | 0.772 | 回答测评后复跑 |
-| v13 | 150 | 0.701 | 0.840 | 0.924 | 0.784 | 图片索引 |
-| v14 | 150 | 0.736 | 0.854 | 0.910 | 0.804 | 图片定位器（image_locator） |
-| v15 | 150 | 0.681 | 0.847 | 0.903 | 0.772 | BM25F 段落召回（回退） |
-| v16 | 150 | 0.708 | 0.896 | 0.944 | 0.800 | contextual chunk |
-| v17 | 150 | 0.701 | 0.840 | 0.910 | 0.782 | pairwise 重排 |
-| v18 | 150 | 0.722 | 0.854 | 0.924 | 0.799 | 基线对照（v18a） |
-| v19 | 150 | 0.778 | 0.882 | 0.924 | 0.834 | 步骤去 contextual（明显跃升） |
-| v20 | 150 | 0.785 | 0.903 | 0.924 | 0.840 | 步骤双向量（方案乙） |
-| v21 | 150 | 0.806 | 0.917 | 0.931 | 0.857 | 安全路由 |
-| v22 | 150 | 0.750 | 0.931 | 0.972 | 0.839 | ToC 写入向量文本 → R@1 同质化回退（失败） |
-| v23 | 150 | — | — | — | — | ToC 改存 metadata + 步骤兄弟救回（该次存的是回答测评，正确率 0.953） |
-| **v24** ⭐ | 150 | **0.8125** | **0.9097** | **0.9375** | **0.8611** | 多文档隔离（方向一/二/三）；**最终采用版** |
+- `python -m evaluation.maintenance_eval_cli`
+- `python -m evaluation.gold_dataset_validator`
 
-## 当前回答正确率（`answer_eval_v25_prefix12_recheck`，= v24 逻辑实跑）
+## 新测评制度
 
-整体 **93.33%**（140/150）｜可回答 93.06%｜拒答 100%｜幻觉率 4.67%
+旧版 `rag_eval_dataset_v14/v26/v27/v28` 已删除。那些数据主要评估检索命中和图片页码集合，无法稳定发现真实使用中的问题，例如：
 
-| 题型 | 正确率 | 题型 | 正确率 |
-|---|---|---|---|
-| diagnosis | 100% | inspection | 92.59% |
-| torque | 100% | **procedure** | **90.91%** |
-| safety | 95.24% | image | 86.96% |
-| spec | 94.74% | no_answer | 100% |
+- 文本答案漏步骤、调换顺序；
+- 模型补充手册未写内容；
+- 明明手册有答案却拒答；
+- 图片页码对但顺序错；
+- 图片没有绑定到对应步骤；
+- 安装/拆卸相反动作混淆。
 
-> 注：回答测评温度 0.1，存在轻微随机波动（同版多跑 ±1~2 题）。procedure（步骤类）稳定在 0.9 以上，与检索侧 R@5 0.909 一致，是本项目的核心硬指标。
+新制度以“维修任务端到端质量”为核心，按以下层级评分：
+
+1. `required_nugget_recall`：必答信息点覆盖率。
+2. `forbidden_claim_pass`：是否没有命中禁答/无依据说法。
+3. `procedure_order_pass`：步骤顺序是否符合手册。
+4. `image_pass`：图片召回、精确率、顺序、禁图、步骤绑定是否都通过。
+5. `grounding_pass`：回答是否忠于手册证据。
+6. `final_pass`：综合通过，必须同时满足文本、顺序、图片与拒答约束。
+
+## 常用命令
+
+校验测评集本身是否能回查到 PDF 原文证据：
+
+```bash
+python -m evaluation.gold_dataset_validator --dataset evaluation/maintenance_eval_dataset_v1.jsonl --pdf "C:/Users/27202/Desktop/摩托车发动机维修手册.pdf" --report evaluation/results/maintenance_gold_validation_report.json
+```
+
+调用本地 `/ai/chat` 做真实端到端测评：
+
+```bash
+python -m evaluation.maintenance_eval_cli --dataset evaluation/maintenance_eval_dataset_v1.jsonl --mode api --result-name maintenance_eval_v1_current
+```
+
+只用数据集内置候选答案做离线校验：
+
+```bash
+python -m evaluation.maintenance_eval_cli --dataset evaluation/maintenance_eval_dataset_v1.jsonl --mode fixture --result-name maintenance_eval_v1_fixture
+```

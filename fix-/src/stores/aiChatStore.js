@@ -40,6 +40,7 @@ function createWelcomeMessage(content) {
     images: [],
     evidenceImages: [],
     diagnosisItems: [],
+    diagnosticFollowUp: null,
     timestamp: nowTime(),
     status: 'done',
     agentSteps: [],
@@ -254,7 +255,7 @@ export const aiChatStore = {
     return session
   },
 
-  async send(storageKey, { text, files = [], thinking = false, mode = 'maintenance' }) {
+  async send(storageKey, { text, files = [], thinking = false, mode = 'maintenance', context = undefined }) {
     const state = ensure(storageKey)
     const sessionMode = normalizeMode(mode)
     const session = ensureModeSession(state, sessionMode)
@@ -303,6 +304,7 @@ export const aiChatStore = {
         content,
         images: requestImages,
         evidenceImages: [],
+        diagnosticFollowUp: null,
         mode: sessionMode,
         timestamp: nowTime(),
         status: 'done',
@@ -317,6 +319,7 @@ export const aiChatStore = {
         images: [],
         evidenceImages: [],
         diagnosisItems: [],
+        diagnosticFollowUp: null,
         mode: sessionMode,
         timestamp: nowTime(),
         status: 'streaming',
@@ -332,6 +335,7 @@ export const aiChatStore = {
         message: content,
         images: requestImages,
         thinking,
+        context,
       }, controller.signal)
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -389,6 +393,7 @@ export const aiChatStore = {
         if (event.event === 'done') {
           assistant.evidenceImages = Array.isArray(data.evidenceImages) ? data.evidenceImages : []
           assistant.diagnosisItems = Array.isArray(data.diagnosisItems) ? data.diagnosisItems : []
+          assistant.diagnosticFollowUp = data.diagnosticFollowUp || data.metadata?.diagnostic_follow_up || null
           assistant.latencyMs = data.latency_ms || data.latencyMs || 0
           assistant.agentProgress = createProgressSummary({ ...assistant, status: 'done' }, data)
           streamCompleted = true

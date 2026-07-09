@@ -17,7 +17,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Sequence
 
-from evaluation.rag_eval_cli import EvalCase, RetrievedItem, first_hit_rank, read_dataset, split_ids
+from evaluation.rag_eval_cli import (
+    EvalCase,
+    RetrievedItem,
+    evaluate_evidence_images,
+    evaluate_image_expectations,
+    first_evidence_hit_for_case,
+    read_dataset,
+    split_ids,
+)
 
 
 DEFAULT_TOP_K = 5
@@ -272,10 +280,11 @@ def build_answer_eval_row(
     tools_used: Sequence[str] | None = None,
     error: str = "",
     top_k: int = DEFAULT_TOP_K,
+    evidence_images: Sequence[Mapping[str, Any]] | None = None,
 ) -> Dict[str, Any]:
     items = list(retrieved_items)
     returned_ids = [item.chunk_id for item in items]
-    rank = first_hit_rank(case.golden_chunk_ids, returned_ids)
+    rank, matched_evidence_key = first_evidence_hit_for_case(case, items)
     retrieval_hit_top5 = bool(rank and rank <= top_k)
     score, judge_reason = _score_answer(case, generated_answer)
     required_facts = _case_facts(case, "required_facts")
@@ -295,7 +304,7 @@ def build_answer_eval_row(
         failure_type = "generation_error"
         judge_reason = f"生成链路失败：{error}"
 
-    return {
+    row = {
         "id": case.case_id,
         "question": case.question,
         "question_type": case.question_type,
@@ -305,7 +314,9 @@ def build_answer_eval_row(
         "required_facts": ";".join(required_facts),
         "optional_facts": ";".join(optional_facts),
         "golden_chunk_ids": ";".join(case.golden_chunk_ids),
+        "golden_evidence_keys": ";".join(case.golden_evidence_keys),
         "retrieved_chunk_ids": ";".join(returned_ids),
+        "matched_evidence_key": matched_evidence_key,
         "retrieval_hit_top5": retrieval_hit_top5,
         "retrieval_rank": rank or "",
         "generated_answer": generated_answer,
@@ -327,6 +338,11 @@ def build_answer_eval_row(
         "error": error,
         "top_k": top_k,
     }
+    if evidence_images is not None:
+        row.update(evaluate_evidence_images(case, evidence_images))
+    else:
+        row.update(evaluate_image_expectations(case, items))
+    return row
 
 
 def _rate(rows: Sequence[Mapping[str, Any]], field: str) -> float:
@@ -355,6 +371,7 @@ def summarize_answer_eval_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, A
     all_rows = list(rows)
     answerable_rows = [row for row in all_rows if _as_bool(row.get("answerable"))]
     no_answer_rows = [row for row in all_rows if not _as_bool(row.get("answerable"))]
+    image_rows = [row for row in answerable_rows if _as_bool(row.get("image_eval_required"))]
     by_type: Dict[str, List[Mapping[str, Any]]] = {}
     for row in all_rows:
         question_type = str(row.get("question_type") or "unknown")
@@ -371,6 +388,10 @@ def summarize_answer_eval_rows(rows: Sequence[Mapping[str, Any]]) -> Dict[str, A
         "grounded_rate": _rate(all_rows, "grounded_pass"),
         "hallucination_rate": _rate(all_rows, "hallucination"),
         "no_answer_correct_rate": _rate(no_answer_rows, "answer_pass"),
+        "image_case_count": len(image_rows),
+        "image_pass_rate": _rate(image_rows, "image_pass"),
+        "avg_image_recall": _avg(image_rows, "image_recall"),
+        "avg_image_precision": _avg(image_rows, "image_precision"),
         "by_question_type": {
             question_type: _summarize_group(group_rows)
             for question_type, group_rows in sorted(by_type.items())
@@ -641,7 +662,9 @@ def write_answer_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "required_facts",
         "optional_facts",
         "golden_chunk_ids",
+        "golden_evidence_keys",
         "retrieved_chunk_ids",
+        "matched_evidence_key",
         "retrieval_hit_top5",
         "retrieval_rank",
         "generated_answer",
@@ -662,6 +685,21 @@ def write_answer_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "tools_used",
         "error",
         "top_k",
+        "expected_image_ids",
+        "expected_image_pages",
+        "forbidden_image_pages",
+        "expected_image_count_min",
+        "expected_image_count_max",
+        "retrieved_image_ids",
+        "retrieved_image_pages",
+        "image_recall",
+        "image_precision",
+        "image_count_pass",
+        "forbidden_image_pass",
+        "image_pass",
+        "missing_expected_image_ids",
+        "unexpected_image_ids",
+        "image_eval_required",
     ]
     with path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)

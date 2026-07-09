@@ -73,6 +73,11 @@ const routes = [
         component: () => import('../views/adminViews/AdminAIChat.vue')
       },
       {
+        path: 'domain-rules',
+        name: 'AdminDomainRules',
+        redirect: { path: '/admin/knowledge-center', query: { tab: 'domain-rules' } }
+      },
+      {
         path: 'settings',
         name: 'AdminSettings',
         redirect: { path: '/admin/system', query: { tab: 'users' } }

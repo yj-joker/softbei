@@ -5,6 +5,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AdminKnowledge from './AdminKnowledge.vue'
 import AdminKnowledgeGraph from './AdminKnowledgeGraph.vue'
 import AdminProcedures from './AdminProcedures.vue'
+import AdminDomainRules from './AdminDomainRules.vue'
 import CaseReviewPanel from '@/components/case/CaseReviewPanel.vue'
 
 const route = useRoute()
@@ -28,6 +29,12 @@ const tabs = [
     label: '标准规程',
     desc: '沉淀检修任务，形成可复用的标准作业规程',
     component: AdminProcedures,
+  },
+  {
+    name: 'domain-rules',
+    label: '诊断规则',
+    desc: '管理确定性诊断规则，支撑规则引擎前置命中与专家审核发布',
+    component: AdminDomainRules,
   },
   {
     name: 'case-review',

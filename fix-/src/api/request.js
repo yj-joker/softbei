@@ -1,5 +1,6 @@
 import JSONbigFactory from 'json-bigint'
 import { ElMessage } from 'element-plus'
+import { useSpeech } from '@/composables/useSpeech'
 
 const baseURL = '/api'
 
@@ -122,6 +123,8 @@ export async function request(options) {
     // 会话失效（后端 SessionInterceptor 返回 401）：提示 + 清登录态并带 redirect 跳登录页，
     // 登录后由 Login.vue 跳回原页。登录页自身的请求不处理，避免回环。
     if (json && String(json.code) === '401' && location.pathname !== '/login') {
+      const { stop } = useSpeech()
+      stop()
       try { localStorage.removeItem('userInfo') } catch (e) {}
       if (!silent) tip('登录已过期，请重新登录', 'warning')
       const redirect = encodeURIComponent(location.pathname + location.search)

@@ -166,14 +166,16 @@ class LLMService:
         messages: List[Dict[str, Any]],
         tools: List[Dict[str, Any]],
         response_format: Optional[Dict[str, str]] = None,
-        model: Optional[str] = None
+        model: Optional[str] = None,
+        temperature: Optional[float] = None
     ) -> Dict[str, Any]:
         """Run one non-streaming chat-completion request with optional tool schemas."""
         use_model = model or self.model
         params = {
             "model": use_model,
             "messages": messages,
-            "temperature": self.settings.llm_temperature,
+            # 用 is not None 判断，避免 temperature=0 被 falsy 逻辑回退默认值
+            "temperature": temperature if temperature is not None else self.settings.llm_temperature,
             "top_p": self.settings.llm_top_p,
             "max_tokens": self.settings.llm_max_tokens
         }

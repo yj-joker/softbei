@@ -74,6 +74,7 @@ const TOOL_LABEL = {
   java_graph_device_search: '\u67e5\u8be2\u8bbe\u5907\u5173\u7cfb',
   recall_conversation_detail: '\u53c2\u8003\u5386\u53f2\u5bf9\u8bdd',
   procedure_recommend: '\u5339\u914d\u7ef4\u4fee\u6d41\u7a0b',
+  causal_follow_up: '\u6839\u636e\u8ffd\u95ee\u6536\u655b\u6839\u56e0',
 }
 
 const REASON_LABEL = {

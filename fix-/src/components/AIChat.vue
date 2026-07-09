@@ -6,8 +6,6 @@ import {
   ChatLineRound,
   Delete,
   FolderOpened,
-  Microphone,
-  Mute,
   Plus,
   Refresh,
   Tools,
@@ -17,10 +15,6 @@ import AgentActivityPanel from '@/components/ai/AgentActivityPanel.vue'
 import ChatMessage from '@/components/ai/ChatMessage.vue'
 import SessionSidebar from '@/components/ai/SessionSidebar.vue'
 import { aiChatStore } from '@/stores/aiChatStore'
-import { useSpeech } from '@/composables/useSpeech'
-
-// 自动朗读开关（AI 回复生成完自动念），状态共享自全局语音单例
-const { state: speechState, setAutoRead } = useSpeech()
 
 const AGENT_PANEL_EVENTS = new Set([
   'tool',
@@ -196,6 +190,30 @@ function handleSend(payload) {
   scrollToBottom(true)
 }
 
+function handleFollowUpSend(payload) {
+  if (!payload?.text || state.streaming) return
+  const pendingFollowUp = payload.followUp
+    ? JSON.parse(JSON.stringify(payload.followUp))
+    : null
+  if (payload.followUp?.status === 'awaiting_answer') {
+    payload.followUp.status = 'submitted'
+    payload.followUp.selectedOptionId = payload.optionId
+    payload.followUp.selectedOptionLabel = payload.text
+  }
+  resetAgentPanel()
+  aiChatStore.send(props.storageKey, {
+    text: payload.text,
+    files: [],
+    thinking: currentMode.value === 'maintenance',
+    mode: currentMode.value,
+    context: {
+      diagnostic_follow_up: pendingFollowUp,
+      selected_option_id: payload.optionId,
+    },
+  })
+  scrollToBottom(true)
+}
+
 function handleStop() {
   aiChatStore.stop(props.storageKey, currentSession.value?.id)
 }
@@ -327,14 +345,6 @@ onActivated(() => {
           </div>
 
           <div class="header-actions">
-            <button
-              type="button"
-              :title="speechState.autoRead ? '自动朗读：开（点击关闭）' : '自动朗读：关（点击开启）'"
-              :class="{ active: speechState.autoRead }"
-              @click="setAutoRead(!speechState.autoRead)"
-            >
-              <el-icon><Microphone v-if="speechState.autoRead" /><Mute v-else /></el-icon>
-            </button>
             <button type="button" title="会话记录" :class="{ active: showHistory }" @click="showHistory = !showHistory">
               <el-icon><FolderOpened /></el-icon>
             </button>
@@ -382,6 +392,7 @@ onActivated(() => {
             :user-initial="userInitial"
             :agent-enabled="currentMode === 'maintenance'"
             @open-agent="openAgentPanel"
+            @send-follow-up="handleFollowUpSend"
           />
         </div>
       </main>

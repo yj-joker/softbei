@@ -486,6 +486,67 @@ def _link_neighbors(chunks: List[Dict[str, Any]]) -> None:
             metadata["next_chunk_id"] = chunks[idx + 1]["id"]
 
 
+def _normalize_header_row(row: List[str]) -> tuple:
+    return tuple(re.sub(r"\s+", "", _as_text(cell)) for cell in row)
+
+
+def _merge_continued_tables(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """合并跨页续表：同一 section 内页码连续、列数一致、且后表首行等于前表表头
+    （或后表无表头、首行即数据行）的相邻表，拼成一张逻辑表。恢复被 pdfplumber
+    逐页切开的跨页表格语义，避免下游把续页当独立小表丢弃（如气缸活塞清单第17/18页）。"""
+    if not tables:
+        return tables
+
+    merged: List[Dict[str, Any]] = []
+    for table in tables:
+        if not isinstance(table, dict):
+            merged.append(table)
+            continue
+        rows = _table_rows(table)
+        if not merged or not rows:
+            merged.append(dict(table))
+            continue
+
+        prev = merged[-1]
+        prev_rows = _table_rows(prev)
+        prev_page = prev.get("page")
+        cur_page = table.get("page")
+        # 页码必须连续（相邻页），列数一致
+        page_ok = (
+            isinstance(prev_page, int) and isinstance(cur_page, int)
+            and 0 < cur_page - prev_page <= 1
+        )
+        prev_headers = _table_headers(prev_rows)
+        cur_header_row = rows[0]
+        cols_ok = bool(prev_headers) and len(cur_header_row) == len(prev_headers)
+        if not (page_ok and cols_ok and prev_rows):
+            merged.append(dict(table))
+            continue
+
+        # 续表判据：后表首行 == 前表表头（重复表头），或后表首行是纯数据行（无表头续排）
+        header_repeated = _normalize_header_row(cur_header_row) == _normalize_header_row(prev_headers)
+        first_cell = _as_text(cur_header_row[0])
+        looks_like_data = first_cell.isdigit()  # 序号列以数字开头 → 直接续排的数据行
+        if not (header_repeated or looks_like_data):
+            merged.append(dict(table))
+            continue
+
+        continuation_rows = rows[1:] if header_repeated else rows
+        if not continuation_rows:
+            merged.append(dict(table))
+            continue
+
+        combined = dict(prev)
+        combined["rows"] = list(prev_rows) + continuation_rows
+        # page_range 记跨页范围；caption 若是自动生成的"第N页表格"则升级为范围，便于下游标注出处
+        combined["page_range"] = f"{prev_page}-{cur_page}"
+        prev_caption = _as_text(prev.get("caption"))
+        if not prev_caption or re.fullmatch(r"第\d+页表格", prev_caption):
+            combined["caption"] = f"第{prev_page}-{cur_page}页表格"
+        merged[-1] = combined
+    return merged
+
+
 def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) -> List[Dict[str, Any]]:
     """Build retrieval-ready child chunks for one parsed manual section."""
     chunks: List[Dict[str, Any]] = []
@@ -660,7 +721,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                     text_chunk_ids.append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
 
-    for table_index, table in enumerate(section.get("tables") or []):
+    for table_index, table in enumerate(_merge_continued_tables(section.get("tables") or [])):
         table_text = _table_to_text(table)
         rows = _table_rows(table)
         headers = _table_headers(rows)

@@ -1,4 +1,4 @@
-export function aiChatStream({ sessionId, message, images = [], thinking = false }, signal) {
+export function aiChatStream({ sessionId, message, images = [], thinking = false, context = undefined }, signal) {
   return fetch('/api/weixiu/ai/chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -9,6 +9,7 @@ export function aiChatStream({ sessionId, message, images = [], thinking = false
       message,
       images,
       thinking,
+      context,
     }),
   })
 }

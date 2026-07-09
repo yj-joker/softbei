@@ -23,30 +23,27 @@
 // 1. Fault 文本向量索引（1536 维）
 //    用途：用户输入故障描述文字 → 文本向量化 → 搜索最相似的故障节点
 //    属性：Fault.embedding
-CALL db.index.vector.createNodeIndex(
-  'fault_embedding_index', 'Fault', 'embedding', 1536, 'cosine'
-);
+//    新语法（Neo4j 5.x+）：
+CREATE VECTOR INDEX fault_embedding_index FOR (f:Fault) ON (f.embedding)
+OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
 
 // 2. Component 文本向量索引（1536 维）
 //    用途：用户输入部件描述文字 → 文本向量化 → 搜索最相似的部件节点
 //    属性：Component.embedding
-CALL db.index.vector.createNodeIndex(
-  'component_embedding_index', 'Component', 'embedding', 1536, 'cosine'
-);
+CREATE VECTOR INDEX component_embedding_index FOR (c:Component) ON (c.embedding)
+OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
 
 // 3. Fault 多模态向量索引（1024 维）
 //    用途：用户上传故障图片 → 图片向量化 → 搜索最相似的故障节点
 //    属性：Fault.multimodal_embedding
-CALL db.index.vector.createNodeIndex(
-  'fault_multimodal_index', 'Fault', 'multimodal_embedding', 1024, 'cosine'
-);
+CREATE VECTOR INDEX fault_multimodal_index FOR (f:Fault) ON (f.multimodal_embedding)
+OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}};
 
 // 4. Component 多模态向量索引（1024 维）
 //    用途：用户上传部件图片 → 图片向量化 → 搜索最相似的部件节点
 //    属性：Component.multimodal_embedding
-CALL db.index.vector.createNodeIndex(
-  'component_multimodal_index', 'Component', 'multimodal_embedding', 1024, 'cosine'
-);
+CREATE VECTOR INDEX component_multimodal_index FOR (c:Component) ON (c.multimodal_embedding)
+OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}};
 
 
 // ======================== 二、TEXT 索引（建议，共 7 个）========================

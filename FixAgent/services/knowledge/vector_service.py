@@ -652,10 +652,11 @@ class VectorService:
 
     def get_section_records(self, document_id: str, parent_section_id: str, limit: int = 6, chunk_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Read same-section vector records for parent/child context expansion."""
-        if not document_id or not parent_section_id or limit <= 0:
+        if not document_id or not parent_section_id:
             return []
 
-        search_limit = max(limit * 4, limit)
+        effective_limit = max(limit, 50)
+        search_limit = max(effective_limit * 4, effective_limit)
         try:
             section_filter = build_redis_filter(
                 document_id=document_id,

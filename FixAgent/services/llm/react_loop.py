@@ -70,6 +70,7 @@ class ReActLoop:
         max_iterations: int = 10,
         response_format: Optional[Dict[str, str]] = None,
         model: Optional[str] = None,
+        temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
         trace: List[Dict[str, Any]] = []
         executor = ToolExecutor(tool_handlers)
@@ -81,6 +82,7 @@ class ReActLoop:
                 tools=tools,
                 model=model,
                 response_format=response_format,
+                temperature=temperature,
             )
 
             tool_calls = response.get("tool_calls", [])
@@ -133,6 +135,7 @@ class ReActLoop:
         tools: List[Dict[str, Any]],
         model: Optional[str],
         response_format: Optional[Dict[str, str]],
+        temperature: Optional[float] = None,
     ) -> Dict[str, Any]:
         complete = getattr(self.llm_service, "complete_with_tools", None)
         if complete and inspect.iscoroutinefunction(complete):
@@ -141,6 +144,7 @@ class ReActLoop:
                 tools=tools,
                 response_format=response_format,
                 model=model,
+                temperature=temperature,
             )
 
         legacy_chat = getattr(self.llm_service, "chat_with_tools", None)

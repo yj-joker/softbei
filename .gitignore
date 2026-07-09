@@ -17,6 +17,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 .env
+# 运行时缓存与本地产物（图片摘要缓存、PDF 渲染页）
+rag_files/
+# 本地离线诊断工具与其输出，不纳入版本库
+rag_diagnostics/
+
+# ===== CodeGraph 索引（本地生成，不入库） =====
+.codegraph/
 
 # ===== Java 端 (weixiu) =====
 target/
