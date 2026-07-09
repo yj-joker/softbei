@@ -2,7 +2,7 @@ package ai.weixiu.handler;
 
 
 
-import ai.weixiu.exceprion.*;
+import ai.weixiu.exception.*;
 import ai.weixiu.pojo.Result;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -87,5 +87,10 @@ public class WebExceptionHandler {
     public Result handleUploadException(UploadException e) {
         log.error("Upload failed", e);
         return Result.error("500", SERVER_ERROR_MESSAGE);
+    }
+    @ExceptionHandler(DeleteException.class)
+    public Result handleDeleteException(DeleteException e) {
+        log.warn("Delete denied: {}", e.getMessage());
+        return Result.error("403", e.getMessage());
     }
 }

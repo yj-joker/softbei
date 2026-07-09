@@ -84,7 +84,8 @@ export function deleteUsers(ids) {
   return request({
     url: '/weixiu/user/deleteByIds',
     method: 'DELETE',
-    data: ids
+    data: ids,
+    throwOnError: true
   })
 }
 

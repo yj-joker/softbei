@@ -130,10 +130,21 @@ async function handleEdit() {
 }
 
 async function handleDelete(row) {
-  await ElMessageBox.confirm(`确定删除用户「${row.name}」吗？`, '提示', { type: 'warning' })
-  await deleteUsers([row.id])
-  ElMessage.success('删除成功')
-  loadUsers()
+  // 管理员账号前端直接拦截，不走接口
+  if (row.type === 1) {
+    ElMessage.warning('管理员账号不可删除')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(`确定删除用户「${row.name}」吗？`, '提示', { type: 'warning' })
+    await deleteUsers([row.id])
+    ElMessage.success('删除成功')
+    loadUsers()
+  } catch (e) {
+    // 用户点取消：e === 'cancel'，不弹错误
+    if (!e || e === 'cancel') return
+    ElMessage.error(e?.message || '删除失败，请稍后重试')
+  }
 }
 
 function statusText(status) { return status === 1 ? '启用' : '禁用' }

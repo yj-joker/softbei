@@ -2,10 +2,10 @@
   <div class="notification-page">
     <div class="page-header">
       <h2>通知中心</h2>
-      <p class="subtitle">查看系统通知和消息</p>
+      <p class="subtitle">查看系统最近操作动态</p>
     </div>
 
-    <div class="notification-list" v-if="notifications.length > 0">
+    <div v-loading="loading" class="notification-list" v-if="notifications.length > 0">
       <div
         v-for="(item, index) in notifications"
         :key="index"
@@ -29,7 +29,7 @@
       </div>
     </div>
 
-    <el-empty v-else description="暂无通知" />
+    <el-empty v-else-if="!loading" description="暂无动态" />
   </div>
 </template>
 
@@ -37,41 +37,67 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { gsap } from 'gsap'
 import { Bell, Setting, User } from '@element-plus/icons-vue'
+import { getRecentActivities } from '@/api/stat'
 
-const notifications = ref([
-  {
-    type: 'system',
-    title: '系统更新通知',
-    content: '系统将于今晚10点进行版本更新，预计维护30分钟。',
-    createTime: '2026-05-21 09:30',
-    isRead: false
-  },
-  {
-    type: 'user',
-    title: '新用户注册',
-    content: '您有一条新的用户注册申请待审批。',
-    createTime: '2026-05-20 15:20',
-    isRead: false
-  },
-  {
-    type: 'system',
-    title: '知识库更新',
-    content: '知识库已更新，新增10条检修案例。',
-    createTime: '2026-05-19 11:00',
-    isRead: true
+const notifications = ref([])
+const loading = ref(false)
+
+/** 根据操作描述推断通知图标类型 */
+function guessType(action = '', status = '') {
+  if (action.includes('用户') || action.includes('注册')) return 'user'
+  if (action.includes('系统') || action.includes('管理') || status === 'approved') return 'system'
+  return 'message'
+}
+
+/** ISO 时间字符串 → "YYYY/MM/DD HH:mm" */
+function formatTime(isoStr) {
+  if (!isoStr) return ''
+  try {
+    const d = new Date(isoStr)
+    return d.toLocaleString('zh-CN', {
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit'
+    })
+  } catch {
+    return isoStr
   }
-])
+}
+
+async function loadNotifications() {
+  loading.value = true
+  try {
+    const res = await getRecentActivities(30)
+    const list = res.data || []
+    notifications.value = list.map(item => ({
+      type: guessType(item.action, item.status),
+      // title 展示操作人，content 展示操作描述
+      title: item.user || '系统',
+      content: item.action || '',
+      createTime: formatTime(item.time),
+      status: item.status,
+      isRead: false
+    }))
+    // 数据到位后再播放列表动画
+    if (list.length && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
+      await nextTick()
+      gsap.from('.notification-item', { y: 22, opacity: 0, duration: 0.45, stagger: 0.06 })
+    }
+  } catch {
+    // 静默，不影响页面
+  } finally {
+    loading.value = false
+  }
+}
 
 const handleRead = (item) => {
   item.isRead = true
 }
 
 onMounted(() => {
+  loadNotifications()
   if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) return
   nextTick(() => {
-    gsap.timeline({ defaults: { ease: 'power3.out' } })
-      .from('.page-header', { y: -14, opacity: 0, duration: 0.5 })
-      .from('.notification-item', { y: 22, opacity: 0, duration: 0.5, stagger: 0.08 }, '-=0.25')
+    gsap.from('.page-header', { y: -14, opacity: 0, duration: 0.5 })
   })
 })
 </script>
