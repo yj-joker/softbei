@@ -10,6 +10,8 @@ import {
 
 const router = useRouter()
 
+const currentYear = new Date().getFullYear()
+
 function goToLogin() {
   router.push('/login')
 }
@@ -206,7 +208,7 @@ const steps = [
         </div>
       </div>
       <div class="footer-bottom">
-        <span>© 2024 设备检修知识检索系统. All rights reserved.</span>
+        <span>© {{ currentYear }} 设备检修知识检索系统. All rights reserved.</span>
       </div>
     </footer>
   </div>
