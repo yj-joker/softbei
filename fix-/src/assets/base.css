@@ -180,6 +180,12 @@
   --plaza-console-accent: #db8556;
   --plaza-console-text: #fbeede;
   --plaza-console-label: rgba(251, 238, 222, 0.65);
+  /* 管理节点背景（深色主题：近黑；浅色主题：主题色半透明） */
+  --plaza-node-bg: rgba(0, 0, 0, 0.78);
+  --plaza-node-bg-hover: rgba(0, 0, 0, 0.90);
+  /* 个人中心 readout 条纹 */
+  --plaza-readout-bg: rgba(0, 0, 0, 0.28);
+  --plaza-readout-wrap: rgba(255, 255, 255, 0.07);
 }
 
 /* ============================================================
@@ -290,6 +296,10 @@
   --plaza-console-accent: #245d6e;
   --plaza-console-text: #1f2a32;
   --plaza-console-label: rgba(31, 42, 50, 0.58);
+  --plaza-node-bg: rgba(36, 90, 106, 0.85);
+  --plaza-node-bg-hover: rgba(36, 90, 106, 0.95);
+  --plaza-readout-bg: rgba(0, 0, 0, 0.06);
+  --plaza-readout-wrap: rgba(0, 0, 0, 0.07);
 }
 
 /* —— 松石绿：清新自然 —— */
@@ -394,6 +404,10 @@
   --plaza-console-accent: #3e6630;
   --plaza-console-text: #27331d;
   --plaza-console-label: rgba(39, 51, 29, 0.58);
+  --plaza-node-bg: rgba(59, 94, 43, 0.86);
+  --plaza-node-bg-hover: rgba(59, 94, 43, 0.96);
+  --plaza-readout-bg: rgba(0, 0, 0, 0.06);
+  --plaza-readout-wrap: rgba(0, 0, 0, 0.07);
 }
 
 *,

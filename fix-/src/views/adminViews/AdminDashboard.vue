@@ -651,13 +651,13 @@ onBeforeUnmount(() => {
   position: absolute; z-index: 3;
   display: flex; align-items: center; gap: 9px;
   padding: 8px 12px; border-radius: 11px;
-  background: rgba(0, 0, 0, .78);
+  background: var(--plaza-node-bg);
   border: 1px solid var(--signal-line);
-  box-shadow: 0 8px 20px -10px rgba(0,0,0,.6);
+  box-shadow: 0 8px 20px -10px rgba(0,0,0,.4);
   backdrop-filter: blur(4px);
   transition: transform .2s ease, border-color .2s ease, background .2s ease;
 }
-.diag-node:hover { transform: scale(1.05); border-color: var(--signal); background: rgba(0, 0, 0, .9); }
+.diag-node:hover { transform: scale(1.05); border-color: var(--signal); background: var(--plaza-node-bg-hover); }
 .diag-node.left { left: 2px; flex-direction: row; }
 .diag-node.right { right: 2px; flex-direction: row-reverse; text-align: right; }
 .diag-node.s0 { top: 8%; }

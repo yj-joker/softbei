@@ -640,7 +640,7 @@ onBeforeUnmount(() => {
   padding: 28px;
   overflow: hidden;
   border-radius: 15px;
-  color: var(--plaza-panel-bg);
+  color: var(--plaza-console-text);
   border: 1px solid var(--plaza-accent-soft-strong);
   background: var(--plaza-console-grad);
   box-shadow: 0 26px 60px -24px rgba(0, 0, 0, 0.5);
@@ -707,7 +707,7 @@ onBeforeUnmount(() => {
 }
 .identity-copy h2 {
   margin: 6px 0 0;
-  color: #fff;
+  color: var(--plaza-console-text);
   font-family: var(--font-display);
   font-size: clamp(26px, 3vw, 36px);
   font-weight: 800;
@@ -746,7 +746,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 8px;
   margin-top: 8px;
-  color: var(--plaza-border);
+  color: var(--plaza-console-text);
   font-size: 12px;
   font-weight: 700;
 }
@@ -773,10 +773,10 @@ onBeforeUnmount(() => {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   margin-top: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.07);
+  border: 1px solid var(--plaza-readout-wrap);
   border-radius: 11px;
   overflow: hidden;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--plaza-readout-wrap);
 }
 .readout {
   display: grid;
@@ -785,7 +785,7 @@ onBeforeUnmount(() => {
   align-items: center;
   gap: 10px;
   padding: 13px 15px;
-  background: rgba(0, 0, 0, 0.30);
+  background: var(--plaza-readout-bg);
 }
 .readout-icon {
   display: grid;
@@ -809,7 +809,7 @@ onBeforeUnmount(() => {
 .readout-copy b {
   margin-top: 3px;
   overflow: hidden;
-  color: var(--plaza-border);
+  color: var(--plaza-console-text);
   font-size: 10px;
   font-weight: 700;
   text-overflow: ellipsis;
