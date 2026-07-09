@@ -6,6 +6,7 @@ import {
   searchDevices, getDeviceComponents, getComponentFaults, getFaultSolutions,
   deviceApi, componentApi, faultApi, solutionApi, createRelation,
 } from '../api/graph'
+import { uploadImage } from '@/api/user'
 
 /* ---------- 视觉编码（与浏览页一致：浅色圆形节点） ---------- */
 const TYPE = {
@@ -59,7 +60,8 @@ const childLabel = (type) => (CHILD[type] ? TYPE[CHILD[type].child].label : '')
 /* ---------- 表单 ---------- */
 const dlg = reactive({ show: false, mode: 'create', type: 'device', parentKey: '', saving: false })
 const form = reactive({})       // 普通字段
-const imagesText = ref('')      // 图片 URL（换行分隔）
+const imageUrlList = ref([])    // 图片 URL 列表
+const imgUploading = ref(false)
 // [字段, 标签, 类型/必填] — 1=必填, 'num' 'sev' 'dif' 'bool' 'area' 'imgs'
 const FIELDS = {
   device:    [['name','名称',1],['code','编码'],['model','型号'],['location','位置'],['manufacturer','制造商'],['imageUrls','图片URL','imgs']],
@@ -292,7 +294,7 @@ function tickOverlay() {
 function openCreate(type, parentKey = '') {
   dlg.mode = 'create'; dlg.type = type; dlg.parentKey = parentKey
   for (const k of Object.keys(form)) delete form[k]
-  imagesText.value = ''
+  imageUrlList.value = []
   if (type === 'fault') form.severity = '一般'
   if (type === 'solution') { form.difficulty = '中等'; form.verified = true }
   dlg.show = true
@@ -302,19 +304,35 @@ function openEdit() {
   dlg.mode = 'edit'; dlg.type = d.type; dlg.parentKey = ''
   for (const k of Object.keys(form)) delete form[k]
   Object.assign(form, { ...(d.raw || {}), id: d.rawId })
-  imagesText.value = (d.raw?.imageUrls || []).join('\n')
+  imageUrlList.value = (d.raw?.imageUrls || [])
   dlg.show = true
 }
 function buildDTO() {
   const dto = {}
   FIELDS[dlg.type].forEach(([f, , t]) => {
     if (t === 'imgs') {
-      const arr = imagesText.value.split('\n').map((s) => s.trim()).filter(Boolean)
-      if (arr.length) dto.imageUrls = arr
+      if (imageUrlList.value.length) dto.imageUrls = [...imageUrlList.value]
     } else if (form[f] !== undefined && form[f] !== '') dto[f] = form[f]
   })
   if (dlg.mode === 'edit' && form.id) dto.id = form.id
   return dto
+}
+
+async function handleImageUpload(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  if (!/^image\//.test(file.type)) { ElMessage.warning('请选择图片文件'); return }
+  imgUploading.value = true
+  try {
+    const res = await uploadImage(file)
+    const url = res?.data
+    if (url) imageUrlList.value = [...imageUrlList.value, url]
+  } catch {
+    ElMessage.error('图片上传失败')
+  } finally {
+    imgUploading.value = false
+  }
 }
 
 async function submitForm() {
@@ -538,7 +556,19 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
           <el-switch v-else-if="f[2]==='bool'" v-model="form[f[0]]" />
           <el-input-number v-else-if="f[2]==='num'" v-model="form[f[0]]" :min="0" controls-position="right" style="width:100%" />
           <el-input v-else-if="f[2]==='area'" v-model="form[f[0]]" type="textarea" :rows="3" />
-          <el-input v-else-if="f[2]==='imgs'" v-model="imagesText" type="textarea" :rows="2" placeholder="每行一个图片 URL" />
+          <!-- 图片上传（替代纯文本URL输入） -->
+          <div v-else-if="f[2]==='imgs'" class="img-upload-area">
+            <div v-if="imageUrlList.length" class="img-preview-list">
+              <div v-for="(url, idx) in imageUrlList" :key="idx" class="img-preview-item">
+                <img :src="url" alt="" />
+                <button class="img-remove" @click.prevent="imageUrlList.splice(idx,1)">×</button>
+              </div>
+            </div>
+            <label class="img-upload-btn" :class="{ loading: imgUploading }">
+              <input type="file" accept="image/*" style="display:none" @change="handleImageUpload" :disabled="imgUploading" />
+              <span>{{ imgUploading ? '上传中…' : '+ 上传图片' }}</span>
+            </label>
+          </div>
           <el-input v-else v-model="form[f[0]]" clearable />
         </el-form-item>
       </el-form>
@@ -666,4 +696,15 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .dlg-btn.ok{background:var(--primary);color:#fff;border-color:var(--primary)}
 .dlg-btn.ok:hover{background:var(--plaza-accent-hover)}
 .dlg-btn.ok:disabled{opacity:.6;cursor:not-allowed}
+
+/* —— 图片上传区 —— */
+.img-upload-area{display:flex;flex-direction:column;gap:8px;width:100%}
+.img-preview-list{display:flex;flex-wrap:wrap;gap:8px}
+.img-preview-item{position:relative;width:80px;height:80px;flex-shrink:0}
+.img-preview-item img{width:100%;height:100%;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
+.img-remove{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--primary);color:#fff;border:none;cursor:pointer;font-size:13px;line-height:18px;text-align:center;padding:0;display:grid;place-items:center}
+.img-remove:hover{background:var(--plaza-accent-hover)}
+.img-upload-btn{display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 14px;border-radius:8px;border:1px dashed var(--primary);color:var(--primary);font-size:13px;cursor:pointer;transition:.15s;background:var(--plaza-accent-soft);user-select:none;width:fit-content}
+.img-upload-btn:hover{background:var(--plaza-accent-soft-strong)}
+.img-upload-btn.loading{opacity:.65;cursor:not-allowed}
 </style>
