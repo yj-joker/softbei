@@ -23,8 +23,16 @@
           <div class="notification-desc">{{ item.content }}</div>
           <div class="notification-time">{{ item.createTime }}</div>
         </div>
-        <div class="notification-status" v-if="!item.isRead">
-          <span class="unread-badge"></span>
+        <div class="notification-right">
+          <span class="unread-badge" v-if="!item.isRead"></span>
+          <el-button
+            class="del-btn"
+            size="small"
+            text
+            type="danger"
+            :icon="Delete"
+            @click.stop="handleDelete(index)"
+          />
         </div>
       </div>
     </div>
@@ -36,7 +44,7 @@
 <script setup>
 import { ref, onMounted, nextTick } from 'vue'
 import { gsap } from 'gsap'
-import { Bell, Setting, User } from '@element-plus/icons-vue'
+import { Bell, Setting, User, Delete } from '@element-plus/icons-vue'
 import { getRecentActivities } from '@/api/stat'
 
 const notifications = ref([])
@@ -70,17 +78,16 @@ async function loadNotifications() {
     const list = res.data || []
     notifications.value = list.map(item => ({
       type: guessType(item.action, item.status),
-      // title 展示操作人，content 展示操作描述
       title: item.user || '系统',
       content: item.action || '',
       createTime: formatTime(item.time),
       status: item.status,
       isRead: false
     }))
-    // 数据到位后再播放列表动画
+    // 只做位移入场，不做透明度渐变，避免 stagger 造成"渐变"视觉
     if (list.length && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) {
       await nextTick()
-      gsap.from('.notification-item', { y: 22, opacity: 0, duration: 0.45, stagger: 0.06 })
+      gsap.from('.notification-item', { y: 16, duration: 0.35, stagger: 0.04, ease: 'power2.out' })
     }
   } catch {
     // 静默，不影响页面
@@ -91,6 +98,10 @@ async function loadNotifications() {
 
 const handleRead = (item) => {
   item.isRead = true
+}
+
+const handleDelete = (index) => {
+  notifications.value.splice(index, 1)
 }
 
 onMounted(() => {
@@ -139,7 +150,7 @@ onMounted(() => {
   border-radius: 12px;
   border: 1px solid var(--plaza-border);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
 .notification-item:hover {
@@ -201,10 +212,14 @@ onMounted(() => {
   color: var(--plaza-text-light);
 }
 
-.notification-status {
+/* 右侧：未读红点 + 删除按钮 */
+.notification-right {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  padding-left: 12px;
+  gap: 8px;
+  flex-shrink: 0;
+  padding-left: 4px;
 }
 
 .unread-badge {
@@ -212,5 +227,14 @@ onMounted(() => {
   height: 8px;
   background: var(--plaza-accent);
   border-radius: 50%;
+}
+
+.del-btn {
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.notification-item:hover .del-btn {
+  opacity: 1;
 }
 </style>
