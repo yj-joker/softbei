@@ -63,11 +63,17 @@ public class OperationLogServiceImpl implements OperationLogService {
             vo.setAction(l.getAction());
             vo.setStatus(l.getStatus());
             vo.setTime(l.getCreatedAt());
+            vo.setId(l.getId());
             return vo;
         }).toList();
     }
 
     private String emptyToNull(String s) {
         return (s == null || s.isEmpty()) ? null : s;
+    }
+
+    @Override
+    public void deleteById(Long id) {
+        operationLogMapper.deleteById(id);
     }
 }

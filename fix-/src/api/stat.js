@@ -23,8 +23,15 @@ export function getAdminOverview() {
 
 /**
  * 最近操作动态（管理端首页，后端 @RequireAdmin）。
- * 返回 [{ user, action, status, time }]，time 为 ISO 时间字符串。
+ * 返回 [{ id, user, action, status, time }]，time 为 ISO 时间字符串。
  */
 export function getRecentActivities(limit = 10) {
   return request({ url: `${BASE}/recent-activities`, method: 'GET', params: { limit } })
+}
+
+/**
+ * 删除一条操作流水（通知中心，后端 @RequireAdmin）。
+ */
+export function deleteActivity(id) {
+  return request({ url: `${BASE}/activity/${id}`, method: 'DELETE', throwOnError: true })
 }

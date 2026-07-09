@@ -9,6 +9,8 @@ import java.time.LocalDateTime;
  */
 @Data
 public class ActivityVO {
+    /** 记录主键，供前端删除时传回 */
+    private Long id;
     /** 操作人姓名 */
     private String user;
     /** 操作描述，如“提交检修案例” */

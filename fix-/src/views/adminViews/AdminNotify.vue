@@ -45,7 +45,8 @@
 import { ref, onMounted, nextTick } from 'vue'
 import { gsap } from 'gsap'
 import { Bell, Setting, User, Delete } from '@element-plus/icons-vue'
-import { getRecentActivities } from '@/api/stat'
+import { ElMessage } from 'element-plus'
+import { getRecentActivities, deleteActivity } from '@/api/stat'
 
 const notifications = ref([])
 const loading = ref(false)
@@ -100,8 +101,14 @@ const handleRead = (item) => {
   item.isRead = true
 }
 
-const handleDelete = (index) => {
-  notifications.value.splice(index, 1)
+const handleDelete = async (index) => {
+  const item = notifications.value[index]
+  try {
+    await deleteActivity(item.id)
+    notifications.value.splice(index, 1)
+  } catch (e) {
+    ElMessage.error(e?.message || '删除失败，请稍后重试')
+  }
 }
 
 onMounted(() => {

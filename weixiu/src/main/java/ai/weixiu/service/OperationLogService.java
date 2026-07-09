@@ -22,4 +22,7 @@ public interface OperationLogService {
 
     /** 最近动态（按时间倒序，最多 limit 条，1~50） */
     List<ActivityVO> recentActivities(int limit);
+
+    /** 按主键删除一条操作流水（管理员在通知中心删除） */
+    void deleteById(Long id);
 }

@@ -10,7 +10,9 @@ import ai.weixiu.service.StatService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.AllArgsConstructor;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -47,5 +49,13 @@ public class StatController {
     @RequireAdmin
     public Result<List<ActivityVO>> recentActivities(@RequestParam(defaultValue = "10") int limit) {
         return Result.success(operationLogService.recentActivities(limit));
+    }
+
+    @DeleteMapping("/activity/{id}")
+    @Operation(summary = "删除一条操作流水（通知中心）")
+    @RequireAdmin
+    public Result<Void> deleteActivity(@PathVariable Long id) {
+        operationLogService.deleteById(id);
+        return Result.success();
     }
 }
