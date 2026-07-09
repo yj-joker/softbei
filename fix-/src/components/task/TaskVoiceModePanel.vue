@@ -43,6 +43,18 @@ const historyRef = ref(null)
 
 let submitTimer = null
 let destroyed = false
+let voiceRunToken = 0
+
+function isVoiceRunCurrent(token) {
+  return !destroyed && sessionActive.value && token === voiceRunToken
+}
+
+function invalidateVoiceRun() {
+  voiceRunToken += 1
+  clearSubmitTimer()
+  pendingTranscript.value = ''
+  speech.stop()
+}
 
 const sortedSteps = computed(() =>
   props.steps.slice().sort((a, b) => (a.sortOrder || 0) - (b.sortOrder || 0)),
@@ -120,15 +132,18 @@ function pushTurn(turn) {
 
 async function openSession() {
   if (sessionActive.value || sessionBusy.value) return
+  const runToken = voiceRunToken
   sessionBusy.value = true
   sessionError.value = ''
   try {
     const res = await startTaskVoiceSession(props.taskId, { focusedStepId: focusedStepId.value })
+    if (destroyed || runToken !== voiceRunToken) return
     const data = res?.data || {}
     if (data.currentStepId) setFocusedStep(data.currentStepId)
     sessionActive.value = true
     pushTurn({ role: 'system', text: '语音检修已开启', meta: stepTitle(focusedStepId.value) })
   } catch (err) {
+    if (destroyed || runToken !== voiceRunToken) return
     sessionError.value = err.message || '语音检修开启失败'
     ElMessage.error('语音检修开启失败：' + (err.message || ''))
   } finally {
@@ -137,11 +152,11 @@ async function openSession() {
 }
 
 async function closeSession() {
-  clearSubmitTimer()
-  pendingTranscript.value = ''
+  invalidateVoiceRun()
   try { asr.cleanup() } catch (e) {}
-  speech.stop()
-  if (!sessionActive.value) return
+  const wasActive = sessionActive.value
+  sessionActive.value = false
+  if (!wasActive) return
   sessionBusy.value = true
   try {
     await endTaskVoiceSession(props.taskId)
@@ -169,9 +184,9 @@ async function reconnectSession() {
 }
 
 async function startListening() {
-  if (listening.value || sessionBusy.value) return
+  if (destroyed || listening.value || sessionBusy.value) return
   await openSession()
-  if (!sessionActive.value) return
+  if (destroyed || !sessionActive.value) return
   try {
     await asr.start({
       onFinal: (text) => queueTranscript(text),
@@ -203,6 +218,7 @@ function clearSubmitTimer() {
 
 function scheduleSubmit(delay = SUBMIT_DELAY_MS) {
   clearSubmitTimer()
+  if (destroyed || !sessionActive.value) return
   if (!pendingTranscript.value.trim()) return
   submitTimer = setTimeout(() => {
     submitTimer = null
@@ -211,6 +227,7 @@ function scheduleSubmit(delay = SUBMIT_DELAY_MS) {
 }
 
 function queueTranscript(text) {
+  if (destroyed || !sessionActive.value) return
   const transcript = String(text || '').trim()
   if (!transcript) return
   pendingTranscript.value = pendingTranscript.value
@@ -220,6 +237,7 @@ function queueTranscript(text) {
 }
 
 async function flushTranscript() {
+  if (destroyed || !sessionActive.value) return
   if (turnBusy.value) {
     scheduleSubmit(600)
     return
@@ -231,6 +249,7 @@ async function flushTranscript() {
 }
 
 async function sendManual() {
+  if (destroyed || !sessionActive.value) return
   const transcript = manualText.value.trim()
   if (!transcript) return
   manualText.value = ''
@@ -251,6 +270,7 @@ function setFocusedStep(stepId) {
 async function submitTranscript(transcript) {
   await openSession()
   if (!sessionActive.value) return
+  const runToken = voiceRunToken
 
   pushTurn({ role: 'user', text: transcript, meta: stepTitle(focusedStepId.value) })
   turnBusy.value = true
@@ -262,6 +282,7 @@ async function submitTranscript(transcript) {
       confirmed: forceOverride.value,
       override: forceOverride.value,
     })
+    if (!isVoiceRunCurrent(runToken)) return
     const data = res?.data || {}
     if (data.currentStepId) setFocusedStep(data.currentStepId)
     pushTurn({
@@ -274,10 +295,11 @@ async function submitTranscript(transcript) {
       needsConfirmation: data.needsConfirmation,
     })
     emit('updated', data)
-    if (autoSpeak.value && data.replyText) {
+    if (isVoiceRunCurrent(runToken) && autoSpeak.value && data.replyText) {
       speech.speak(`task-voice-${props.taskId}-${Date.now()}`, data.replyText)
     }
   } catch (err) {
+    if (!isVoiceRunCurrent(runToken)) return
     sessionError.value = err.message || '语音处理失败'
     pushTurn({
       role: 'assistant',
@@ -289,7 +311,7 @@ async function submitTranscript(transcript) {
   } finally {
     forceOverride.value = false
     turnBusy.value = false
-    if (pendingTranscript.value.trim()) scheduleSubmit(600)
+    if (isVoiceRunCurrent(runToken) && pendingTranscript.value.trim()) scheduleSubmit(600)
   }
 }
 
