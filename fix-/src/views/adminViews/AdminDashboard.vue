@@ -567,16 +567,14 @@ onBeforeUnmount(() => {
 .dash-stat.info .stat-spark { stroke: var(--signal-strong); }
 .dash-stat.success .stat-spark { stroke: var(--plaza-success); }
 
-/* —— 管理控制台 暖咖面板 —— */
+/* —— 管理控制台 面板（跟随主题换色）—— */
 .hero {
   position: relative; overflow: hidden;
   margin-top: 14px;
   border-radius: var(--plaza-radius-lg);
   padding: 20px 22px 22px;
   color: var(--plaza-panel-bg);
-  background:
-    radial-gradient(120% 120% at 10% -10%, var(--signal-line), transparent 55%),
-    linear-gradient(160deg, var(--plaza-heading) 0%, var(--plaza-heading) 70%);
+  background: var(--plaza-console-grad);
   border: 1px solid var(--signal-soft);
   box-shadow: 0 26px 60px -22px rgba(0, 0, 0, .55), inset 0 0 0 1px rgba(255,255,255,.02);
 }
