@@ -412,10 +412,10 @@ function roleText(role) {
         </div>
         <p v-if=”latestAssistantTurn”>{{ latestAssistantTurn.text }}</p>
         <p v-else class=”muted”>你可以直接说”完成了””回到第二步””这一步怎么判断”。</p>
-        <div v-if="latestAssistantTurn?.action || latestAssistantTurn?.result || latestAssistantTurn?.meta" class="voice-meta">
-          <em v-if="latestAssistantTurn?.action">{{ latestAssistantTurn.action }}</em>
-          <em v-if="latestAssistantTurn?.result">{{ latestAssistantTurn.result }}</em>
-          <em v-if="latestAssistantTurn?.meta">{{ latestAssistantTurn.meta }}</em>
+        <div v-if="latestAssistantTurn && (latestAssistantTurn.action || latestAssistantTurn.result || latestAssistantTurn.meta)" class="voice-meta">
+          <em v-if="latestAssistantTurn && latestAssistantTurn.action">{{ latestAssistantTurn.action }}</em>
+          <em v-if="latestAssistantTurn && latestAssistantTurn.result">{{ latestAssistantTurn.result }}</em>
+          <em v-if="latestAssistantTurn && latestAssistantTurn.meta">{{ latestAssistantTurn.meta }}</em>
         </div>
         <button v-if="showOverrideAction" type="button" class="voice-confirm-btn" :disabled="turnBusy" @click="confirmOverrideFromUi">
           <el-icon><Warning /></el-icon>
