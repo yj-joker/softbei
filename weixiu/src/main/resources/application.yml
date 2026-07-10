@@ -78,8 +78,11 @@ aliyun:
     access-key-secret: ${OSS_ACCESS_KEY_SECRET}
 apikey: ${APIKEY}
 ai:
-  python-service-url: http://localhost:8000
+  # Python 服务地址，Docker 部署时通过 PYTHON_SERVICE_URL 环境变量覆盖
+  python-service-url: ${PYTHON_SERVICE_URL:http://localhost:8000}
   internal-token: ${INTERNAL_TOKEN:fix-agent-internal-2026}
+  # Python 端全站鉴权 token，与 FixAgent .env 中的 API_TOKEN 保持一致
+  api-token: ${AI_API_TOKEN:}
 weixiu:
   task-validate:
     enabled: true        # 入口校验总开关

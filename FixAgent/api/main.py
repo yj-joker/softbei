@@ -9,7 +9,7 @@ from functools import partial
 from typing import List
 from fastapi import FastAPI, HTTPException, Request
 from typing import Any, List
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -201,6 +201,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def verify_api_token_middleware(request: Request, call_next):
+    """全站鉴权中间件：所有 /ai/* 接口均需携带 X-Api-Token。
+    放行：FastAPI 文档页、静态文件目录、CORS 预检（OPTIONS）。
+    未配置 API_TOKEN 时服务处于锁闭状态，拒绝所有请求。
+    """
+    path = request.url.path
+    if (
+        request.method == "OPTIONS"
+        or path in ("/docs", "/redoc", "/openapi.json")
+        or path.startswith(_settings.file_public_base_url + "/")
+    ):
+        return await call_next(request)
+
+    token = request.headers.get("x-api-token", "")
+    if not _settings.api_token or token != _settings.api_token:
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+    return await call_next(request)
 
 
 @app.post("/ai/domain-rules/upsert")

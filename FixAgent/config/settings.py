@@ -6,6 +6,9 @@ load_dotenv()
 class Settings:
     dashscope_api_key = os.getenv("DASHSCOPE_API_KEY")
     llm_model = os.getenv("LLM_MODEL", "qwen-plus")
+    # LLM 推理 endpoint，默认阿里云百炼；换本地模型只需改 .env 中的 LLM_API_BASE
+    # 示例（Ollama）: LLM_API_BASE=http://localhost:11434/v1
+    llm_api_base = os.getenv("LLM_API_BASE", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     intent_router_model = os.getenv("INTENT_ROUTER_MODEL", "qwen-turbo")
     vlm_model = os.getenv("VLM_MODEL", "qwen-vl-max")
     llm_temperature = float(os.getenv("LLM_TEMPERATURE", "0.7"))
@@ -27,6 +30,10 @@ class Settings:
 
     # 内部服务鉴权令牌（与 Java 端 ai.internal-token 保持一致）
     internal_token = os.getenv("INTERNAL_TOKEN", "fix-agent-internal-2026")
+
+    # Python 端全站 API token（Java 调 Python 时携带，防止未授权访问）
+    # 必须配置，未配置时 Python 服务将拒绝所有请求
+    api_token = os.getenv("API_TOKEN", "")
 
     file_storage_backend = os.getenv("FILE_STORAGE_BACKEND", "local")
     file_public_base_url = os.getenv("FILE_PUBLIC_BASE_URL", "/files")

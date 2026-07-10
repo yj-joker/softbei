@@ -24,7 +24,7 @@ class LLMService:
         self.settings = get_settings()
         self.api_key = self.settings.dashscope_api_key
         self.model = self.settings.llm_model
-        self.api_base = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        self.api_base = self.settings.llm_api_base
         self.client = httpx.AsyncClient(
             timeout=httpx.Timeout(180.0,connect=10.0),
             limits=httpx.Limits(max_keepalive_connections=20, max_connections=100)
