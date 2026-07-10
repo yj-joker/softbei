@@ -25,5 +25,7 @@ public class TaskVoiceTurnVO {
     private String originalTranscript;
     /** 整理后发给主模型的文本，供前端展示「理解为」；与原文相同时为 null */
     private String cleanedTranscript;
+    /** 开启语音时返回的历史对话记录，供前端恢复显示；每项含 transcript/replyText/agentAction/executionResult/createdAt */
+    private List<Map<String, Object>> voiceHistory;
 }
 

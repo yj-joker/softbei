@@ -73,6 +73,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         vo.setCurrentStepId(currentStepId);
         vo.setVoiceSummary(task.getVoiceSummary());
         vo.setSteps(taskService.listSteps(taskId));
+        vo.setVoiceHistory(recentEvents(taskId, 20));
         return vo;
     }
 
@@ -206,12 +207,13 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         if (step == null) {
             return ExecutionOutcome.rejected(currentStepId, "TARGET_STEP_NOT_FOUND", "没有找到要完成的步骤", "我没确定你要完成哪一步，请说清楚步骤序号或步骤名称。");
         }
-        // 需要确认且未确认 → 挂起（由前端通过 needsConfirmation 控制）
+        // 需要确认且未确认 → 挂起，并强制覆盖 AI 回复，避免 AI 说"进入下一步了"但实际未执行
         if (Boolean.TRUE.equals(decision.getNeedsConfirmation())
                 && !Boolean.TRUE.equals(dto.getConfirmed())
                 && !Boolean.TRUE.equals(dto.getOverride())
                 && !forceOverride) {
-            return ExecutionOutcome.pending(step.getId(), "PENDING_CONFIRMATION", "等待工人确认");
+            return ExecutionOutcome.pendingWithReply(step.getId(), "PENDING_CONFIRMATION", "等待工人确认",
+                    "这一步有风险点，需要你口头确认才能完成。请说「确认完成」继续，或说「强制通过」跳过。");
         }
 
         if (!"EXECUTING".equals(task.getStatus())) {
@@ -233,7 +235,8 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
                 && !Boolean.TRUE.equals(dto.getConfirmed())
                 && !Boolean.TRUE.equals(dto.getOverride())
                 && !forceOverride) {
-            return ExecutionOutcome.pending(step.getId(), "PENDING_CONFIRMATION", "缺少必要证据，等待确认或补充");
+            return ExecutionOutcome.pendingWithReply(step.getId(), "PENDING_CONFIRMATION", "缺少必要证据，等待确认或补充",
+                    "完成这一步需要先补充所需证据（照片、备注或确认检查项），请先补充后再说「完成」，或者说「强制通过」跳过。");
         }
         boolean overrideFlag = forceOverride
                 || Boolean.TRUE.equals(dto.getOverride())
@@ -481,6 +484,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
     private List<Map<String, Object>> recentEvents(Long taskId, int limit) {
         return recentVoiceEvents(taskId, limit).stream().map(event -> {
             Map<String, Object> item = new LinkedHashMap<>();
+            item.put("id", event.getId());
             item.put("transcript", event.getTranscript());
             item.put("replyText", event.getReplyText());
             item.put("agentAction", event.getAgentAction());
@@ -708,6 +712,12 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
 
         static ExecutionOutcome pending(Long targetStepId, String result, String detail) {
             return done(targetStepId, result, detail, false);
+        }
+
+        static ExecutionOutcome pendingWithReply(Long targetStepId, String result, String detail, String reply) {
+            ExecutionOutcome o = done(targetStepId, result, detail, false);
+            o.replyTextOverride = reply;
+            return o;
         }
 
         static ExecutionOutcome rejected(String result, String detail, String replyTextOverride) {
