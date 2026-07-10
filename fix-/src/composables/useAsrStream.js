@@ -24,8 +24,16 @@ export function useAsrStream() {
   let sourceNode = null
   let mediaStream = null
   let onFinal = null
+  let cleanupTimer = null  // 跟踪 stop() 里的延迟清理定时器，防止 stop→start 竞争
 
   async function start(handlers = {}) {
+    // 若上次 stop() 的1.2s清理定时器还未触发，先取消它并立即清理旧连接，
+    // 否则定时器会在新连接建立后才触发，把新 ws/audioCtx 一并销毁。
+    if (cleanupTimer !== null) {
+      clearTimeout(cleanupTimer)
+      cleanupTimer = null
+      cleanup()
+    }
     onFinal = handlers.onFinal || null
     error.value = ''
     partial.value = ''
@@ -94,10 +102,18 @@ export function useAsrStream() {
     try {
       if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'stop' }))
     } catch (e) { /* ignore */ }
-    setTimeout(cleanup, 1200)
+    cleanupTimer = setTimeout(() => {
+      cleanupTimer = null
+      cleanup()
+    }, 1200)
   }
 
   function cleanup() {
+    // 若有待触发的延迟清理定时器也一并取消
+    if (cleanupTimer !== null) {
+      clearTimeout(cleanupTimer)
+      cleanupTimer = null
+    }
     try { sourceNode && sourceNode.disconnect() } catch (e) {}
     try { workletNode && workletNode.disconnect() } catch (e) {}
     try { sinkNode && sinkNode.disconnect() } catch (e) {}
