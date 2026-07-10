@@ -176,7 +176,13 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
                                            TaskVoiceAction action) {
         Long nextStepId = currentStepId;
         return switch (action) {
-            case GO_NEXT_STEP -> completeCurrentStep(task, steps, currentStepId, dto, decision, false);
+            case GO_NEXT_STEP -> {
+                // go_next_step 语义是「完成当前步骤然后推进」，AI 有时会把 target_step_id 误填为下一步的 id，
+                // 导致 resolveTargetStep 返回错误步骤。这里强制将 target 覆盖为当前步骤，确保完成的是正确步骤。
+                decision.setTargetStepId(currentStepId);
+                decision.setTargetStepOrder(null);
+                yield completeCurrentStep(task, steps, currentStepId, dto, decision, false);
+            }
             case GO_PREV_STEP -> {
                 TaskStepRecord prev = previousStep(steps, currentStepId);
                 yield moveTo(prev, "FOCUS_PREVIOUS");
