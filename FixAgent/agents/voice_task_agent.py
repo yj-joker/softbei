@@ -10,6 +10,7 @@ from config.settings import get_settings
 from schemas.voice_task import VoiceTaskDecision, VoiceTaskRequest
 from services.llm.react_loop import ReActLoop
 from services.llm.service import get_llm_service
+from services.llm.transcript_cleaner import clean_transcript
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,13 @@ class VoiceTaskAgent(FixAgent):
 
     async def decide(self, request: VoiceTaskRequest) -> VoiceTaskDecision:
         start = time.time()
+
+        # ── 1. 先用小模型清洗 ASR 原文（去重复/语气词/同音字），再传给主模型 ──
+        original_transcript = request.transcript
+        cleaned = await clean_transcript(original_transcript, get_llm_service())
+        # 用整理后的文本替换 request（不改原对象，创建副本）
+        request = request.model_copy(update={"transcript": cleaned})
+
         context = dict(request.context or {})
         if request.user_id is not None:
             context["user_id"] = request.user_id
@@ -289,6 +297,9 @@ class VoiceTaskAgent(FixAgent):
             data["confidence"] = max(0.0, min(1.0, float(data.get("confidence") or 0.0)))
             decision = VoiceTaskDecision(**data)
             decision = _align_explicit_step_target(decision, request)
+            # 把清洗前后文本写入 decision，供 Java 透传给前端
+            decision.original_transcript = original_transcript
+            decision.cleaned_transcript = cleaned if cleaned != original_transcript else None
             decision.raw_model_output = raw_content
             decision.execution_payload.setdefault("tools_used", [
                 call.get("name")

@@ -24,7 +24,7 @@ const props = defineProps({
 
 const emit = defineEmits(['updated', 'exit', 'focus-step'])
 
-const SUBMIT_DELAY_MS = 2000
+const SUBMIT_DELAY_MS = 4000
 
 const asr = useAsrStream()
 const speech = useSpeech()
@@ -216,6 +216,12 @@ function clearSubmitTimer() {
   }
 }
 
+/** 丢弃当前待提交的识别内容（取消4秒定时提交），麦克风继续监听 */
+function discardPending() {
+  clearSubmitTimer()
+  pendingTranscript.value = ''
+}
+
 function scheduleSubmit(delay = SUBMIT_DELAY_MS) {
   clearSubmitTimer()
   if (destroyed || !sessionActive.value) return
@@ -293,6 +299,8 @@ async function submitTranscript(transcript) {
       meta: stepTitle(data.currentStepId || data.targetStepId || focusedStepId.value),
       override: data.overrideRecommended,
       needsConfirmation: data.needsConfirmation,
+      originalTranscript: data.originalTranscript || null,
+      cleanedTranscript: data.cleanedTranscript || null,
     })
     emit('updated', data)
     if (isVoiceRunCurrent(runToken) && autoSpeak.value && data.replyText) {
@@ -378,6 +386,10 @@ function roleText(role) {
             <el-icon><Position /></el-icon>
             立即发送
           </button>
+          <button v-if="waitingSubmit" type="button" class="voice-mini-btn discard" @click="discardPending">
+            <el-icon><Close /></el-icon>
+            取消
+          </button>
           <button v-if="voiceError" type="button" class="voice-mini-btn recover" :disabled="sessionBusy" @click="reconnectSession">
             <el-icon><SwitchButton /></el-icon>
             恢复连接
@@ -385,10 +397,21 @@ function roleText(role) {
         </div>
       </div>
 
-      <article class="voice-feedback">
-        <span class="voice-section-label">AI 当前反馈</span>
-        <p v-if="latestAssistantTurn">{{ latestAssistantTurn.text }}</p>
-        <p v-else class="muted">你可以直接说“完成了”“回到第二步”“这一步怎么判断”。</p>
+      <article class=”voice-feedback”>
+        <span class=”voice-section-label”>AI 当前反馈</span>
+        <!-- 识别到 / 理解为 对比（仅在整理后与原文不同时才显示） -->
+        <div v-if=”latestAssistantTurn?.cleanedTranscript” class=”transcript-compare”>
+          <div class=”tc-row”>
+            <em>识别到</em>
+            <span>{{ latestAssistantTurn.originalTranscript }}</span>
+          </div>
+          <div class=”tc-row cleaned”>
+            <em>理解为</em>
+            <span>{{ latestAssistantTurn.cleanedTranscript }}</span>
+          </div>
+        </div>
+        <p v-if=”latestAssistantTurn”>{{ latestAssistantTurn.text }}</p>
+        <p v-else class=”muted”>你可以直接说”完成了””回到第二步””这一步怎么判断”。</p>
         <div v-if="latestAssistantTurn?.action || latestAssistantTurn?.result || latestAssistantTurn?.meta" class="voice-meta">
           <em v-if="latestAssistantTurn?.action">{{ latestAssistantTurn.action }}</em>
           <em v-if="latestAssistantTurn?.result">{{ latestAssistantTurn.result }}</em>
@@ -573,6 +596,54 @@ function roleText(role) {
   color: #c5402c;
   border-color: rgba(197, 64, 44, 0.28);
   background: var(--plaza-danger-soft);
+}
+
+/* 取消/丢弃按钮 */
+.voice-mini-btn.discard {
+  color: var(--plaza-text-muted);
+  border-color: var(--plaza-border-strong);
+  background: var(--plaza-bg-card);
+}
+.voice-mini-btn.discard:hover {
+  color: #c5402c;
+  border-color: rgba(197, 64, 44, 0.4);
+  background: var(--plaza-danger-soft);
+}
+
+/* 识别到 / 理解为 对比区 */
+.transcript-compare {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 8px;
+  padding: 7px 9px;
+  border-radius: 7px;
+  background: rgba(0, 0, 0, 0.03);
+  border: 1px solid var(--plaza-border);
+}
+.tc-row {
+  display: grid;
+  grid-template-columns: 46px minmax(0, 1fr);
+  gap: 6px;
+  align-items: baseline;
+  font-size: 11px;
+}
+.tc-row em {
+  color: var(--plaza-text-muted);
+  font-style: normal;
+  font-weight: 700;
+}
+.tc-row span {
+  color: var(--plaza-text);
+  line-height: 1.4;
+  word-break: break-all;
+}
+.tc-row.cleaned em {
+  color: var(--plaza-accent);
+}
+.tc-row.cleaned span {
+  font-weight: 700;
+  color: var(--plaza-heading);
 }
 
 .voice-tool:hover,

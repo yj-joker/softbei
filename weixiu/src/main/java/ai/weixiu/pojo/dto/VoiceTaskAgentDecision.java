@@ -52,5 +52,13 @@ public class VoiceTaskAgentDecision {
 
     @JsonProperty("raw_model_output")
     private String rawModelOutput;
+
+    /** ASR 原始识别文本（清洗前），由 Python 小模型整理后回传 */
+    @JsonProperty("original_transcript")
+    private String originalTranscript;
+
+    /** 整理后发给主模型的文本；与原文相同时 Python 返回 null */
+    @JsonProperty("cleaned_transcript")
+    private String cleanedTranscript;
 }
 

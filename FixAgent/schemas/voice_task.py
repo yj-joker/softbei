@@ -33,4 +33,7 @@ class VoiceTaskDecision(BaseModel):
     execution_payload: dict[str, Any] = Field(default_factory=dict)
     summary_update: Optional[str] = None
     raw_model_output: Optional[str] = None
+    # 清洗前后的转写文本（供前端展示"识别到 / 理解为"对比）
+    original_transcript: Optional[str] = None
+    cleaned_transcript: Optional[str] = None
 

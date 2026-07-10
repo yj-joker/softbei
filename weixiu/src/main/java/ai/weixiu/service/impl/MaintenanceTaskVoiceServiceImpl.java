@@ -140,6 +140,8 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         vo.setVoiceSummary(task.getVoiceSummary());
         vo.setAgentDecision(toMap(decision));
         vo.setSteps(taskService.listSteps(taskId));
+        vo.setOriginalTranscript(decision.getOriginalTranscript());
+        vo.setCleanedTranscript(decision.getCleanedTranscript());
         return vo;
     }
 
