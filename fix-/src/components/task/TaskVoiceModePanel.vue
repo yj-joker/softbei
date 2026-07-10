@@ -161,6 +161,17 @@ async function openSession() {
     if (destroyed || runToken !== voiceRunToken) return
     const data = res?.data || {}
     if (data.currentStepId) setFocusedStep(data.currentStepId)
+    // 从后端历史事件恢复对话记录（最近20条，最新的在 turns[0]）
+    if (Array.isArray(data.voiceHistory) && data.voiceHistory.length) {
+      const flat = []
+      for (const event of data.voiceHistory) {
+        if (event.transcript)
+          flat.push({ id: `h-u-${event.id}`, role: 'user', text: event.transcript })
+        if (event.replyText)
+          flat.push({ id: `h-a-${event.id}`, role: 'assistant', text: event.replyText, action: event.agentAction, result: event.executionResult })
+      }
+      turns.value = flat.reverse() // unshift 约定：index 0 = 最新，所以这里反转后存入
+    }
     sessionActive.value = true
     pushTurn({ role: 'system', text: '语音检修已开启', meta: stepTitle(focusedStepId.value) })
   } catch (err) {
