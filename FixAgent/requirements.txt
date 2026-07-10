@@ -8,8 +8,9 @@ pydantic>=2.5.0
 redis>=5.0.0
 neo4j>=5.0.0
 httpx>=0.25.0
-pdfplumber>=0.10.0
-PyMuPDF>=1.23.0
+pdfplumber==0.7.6  # 龙芯用 --no-deps 安装（start.sh 已处理），避免拉 pypdfium2
+# PyMuPDF 在 loongarch64 无预编译包，代码已做可选降级，此处不作硬依赖
+# pip install PyMuPDF  # 如在 x86 环境可手动安装以获得完整图片提取能力
 python-multipart>=0.0.9
 minio>=7.2.0
 aio-pika>=9.4.0
