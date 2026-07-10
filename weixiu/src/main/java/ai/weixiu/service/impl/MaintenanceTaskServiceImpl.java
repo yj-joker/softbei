@@ -3,6 +3,7 @@ package ai.weixiu.service.impl;
 import ai.weixiu.config.RabbitMQConfig;
 import ai.weixiu.entity.*;
 import ai.weixiu.enumerate.BucketEnum;
+import ai.weixiu.exception.ForbiddenException;
 import ai.weixiu.exception.NotFoundException;
 import ai.weixiu.exception.TaskStateException;
 import ai.weixiu.mapper.KnowledgeDocumentMapper;
@@ -1283,6 +1284,15 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             throw new NotFoundException("任务不存在: " + taskId);
         }
         return task;
+    }
+
+    @Override
+    public void assertTaskAccess(Long taskId, Long userId, Integer userType) {
+        if (userType != null && userType == 1) return; // 管理员放行
+        MaintenanceTask task = getTaskOrThrow(taskId);
+        if (!userId.equals(task.getReporterId())) {
+            throw new ForbiddenException("无权操作他人的检修任务");
+        }
     }
 
     private MaintenanceTaskVO toVO(MaintenanceTask task, List<TaskStepRecord> steps) {

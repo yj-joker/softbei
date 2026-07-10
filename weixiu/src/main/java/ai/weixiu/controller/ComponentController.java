@@ -1,6 +1,7 @@
 package ai.weixiu.controller;
 
 import ai.weixiu.entity.Component;
+import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.ComponentDTO;
@@ -25,6 +26,7 @@ public class ComponentController {
     private final ComponentService componentService;
 
     @PostMapping("/save")
+    @RequireAdmin
     @Operation(summary = "新增部件")
     public Result<ComponentVO> save(@RequestBody ComponentDTO componentDTO) {
         return Result.success(VoConverter.convert(componentService.save(componentDTO), ComponentVO.class));
@@ -37,6 +39,7 @@ public class ComponentController {
     }
 
     @DeleteMapping("/{id}")
+    @RequireAdmin
     @Operation(summary = "根据 ID 删除部件")
     public Result deleteById(@PathVariable String id) {
         componentService.deleteById(id);
@@ -44,6 +47,7 @@ public class ComponentController {
     }
 
     @PutMapping("/update")
+    @RequireAdmin
     @Operation(summary = "更新部件信息")
     public Result<ComponentVO> update(@RequestBody ComponentDTO componentDTO) {
         return Result.success(VoConverter.convert(componentService.update(componentDTO), ComponentVO.class));

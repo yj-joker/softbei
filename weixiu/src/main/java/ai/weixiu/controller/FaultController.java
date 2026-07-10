@@ -1,5 +1,6 @@
 package ai.weixiu.controller;
 
+import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.FaultDTO;
@@ -27,6 +28,7 @@ public class FaultController {
     private final CaseRecordService caseRecordService;
 
     @PostMapping("/save")
+    @RequireAdmin
     @Operation(summary = "新增故障")
     public Result<FaultVO> save(@RequestBody FaultDTO faultDTO) {
         return Result.success(VoConverter.convert(faultService.save(faultDTO), FaultVO.class));
@@ -39,6 +41,7 @@ public class FaultController {
     }
 
     @DeleteMapping("/{id}")
+    @RequireAdmin
     @Operation(summary = "根据 ID 删除故障")
     public Result deleteById(@PathVariable String id) {
         faultService.deleteById(id);
@@ -46,6 +49,7 @@ public class FaultController {
     }
 
     @PutMapping("/update")
+    @RequireAdmin
     @Operation(summary = "更新故障信息")
     public Result<FaultVO> update(@RequestBody FaultDTO faultDTO) {
         return Result.success(VoConverter.convert(faultService.update(faultDTO), FaultVO.class));

@@ -1,5 +1,6 @@
 package ai.weixiu.controller;
 
+import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.RelationCreateDTO;
 import ai.weixiu.service.RelationService;
@@ -17,6 +18,7 @@ import org.springframework.web.bind.annotation.RestController;
 public class RelationController {
     private final RelationService relationService;
     @PostMapping("/creat")
+    @RequireAdmin
     public Result creatRelation(@RequestBody RelationCreateDTO relationCreateDTO) {
         relationService.create(relationCreateDTO);
         return Result.success();

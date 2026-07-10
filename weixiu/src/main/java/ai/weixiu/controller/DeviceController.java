@@ -1,5 +1,6 @@
 package ai.weixiu.controller;
 
+import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.entity.Device;
 import ai.weixiu.entity.Fault;
 import ai.weixiu.pojo.PageResult;
@@ -29,12 +30,14 @@ public class DeviceController {
     private final CreateEntityUtils createEntityUtils;
 
     @PostMapping("/save")
+    @RequireAdmin
     @Operation(summary = "新增设备")
     public Result<DeviceVO> save(@RequestBody DeviceDTO deviceDTO) {
         return Result.success(VoConverter.convert(deviceService.save(deviceDTO), DeviceVO.class));
     }
 
     @DeleteMapping("/{id}")
+    @RequireAdmin
     @Operation(summary = "根据 ID 删除设备")
     public Result deleteById(@PathVariable String id) {
         deviceService.deleteById(id);
@@ -42,6 +45,7 @@ public class DeviceController {
     }
 
     @PutMapping("/update")
+    @RequireAdmin
     @Operation(summary = "更新设备信息")
     public Result<DeviceVO> update(@RequestBody DeviceDTO deviceDTO) {
         return Result.success(VoConverter.convert(deviceService.update(deviceDTO), DeviceVO.class));
@@ -67,6 +71,7 @@ public class DeviceController {
     }
 
     @PostMapping("/generate-test-data")
+    @RequireAdmin
     @Operation(summary = "生成200个测试知识图谱实体（含向量和关系）")
     public Result<String> generateTestData() {
         createEntityUtils.generateTestData();

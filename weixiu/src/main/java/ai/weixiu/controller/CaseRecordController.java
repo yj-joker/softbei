@@ -1,7 +1,13 @@
 package ai.weixiu.controller;
 
 import ai.weixiu.annotation.OpLog;
+import ai.weixiu.annotation.RequireAdmin;
+import ai.weixiu.entity.CaseRecord;
+import ai.weixiu.entity.User;
+import ai.weixiu.exception.ForbiddenException;
+import ai.weixiu.mapper.UserMapper;
 import ai.weixiu.pojo.PageResult;
+import ai.weixiu.utils.BaseContext;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.CaseRecordDTO;
 import ai.weixiu.pojo.vo.CaseDraftVO;
@@ -24,6 +30,7 @@ import java.util.List;
 public class CaseRecordController {
 
     private final CaseRecordService caseRecordService;
+    private final UserMapper userMapper;
 
     @PostMapping("/save")
     @Operation(summary = "新增案例记录")
@@ -40,6 +47,15 @@ public class CaseRecordController {
     @DeleteMapping("/{id}")
     @Operation(summary = "根据 ID 删除案例记录")
     public Result deleteById(@PathVariable String id) {
+        // 非管理员只能删除自己提交的案例
+        Long currentUserId = BaseContext.getCurrentId();
+        User user = userMapper.selectById(currentUserId);
+        if (user == null || user.getType() != 1) {
+            CaseRecord record = caseRecordService.findById(id).get();
+            if (!currentUserId.equals(record.getSubmittedById())) {
+                throw new ForbiddenException("无权删除他人的案例");
+            }
+        }
         caseRecordService.deleteById(id);
         return Result.success();
     }
@@ -77,6 +93,7 @@ public class CaseRecordController {
     }
 
     @GetMapping("/pending")
+    @RequireAdmin
     @Operation(summary = "待审案例分页(管理员)")
     public Result<PageResult<CaseRecordVO>> pending(@RequestParam(defaultValue = "1") int page,
                                                     @RequestParam(defaultValue = "10") int size) {
@@ -84,6 +101,7 @@ public class CaseRecordController {
     }
 
     @PostMapping("/{id}/approve")
+    @RequireAdmin
     @Operation(summary = "审核通过(向量化+尽力连边)")
     @OpLog(value = "审核通过了检修案例", targetType = "case", status = "approved")
     public Result<Void> approve(@PathVariable String id, @RequestBody CaseRecordDTO dto) {
@@ -92,6 +110,7 @@ public class CaseRecordController {
     }
 
     @PostMapping("/{id}/reject")
+    @RequireAdmin
     @Operation(summary = "审核驳回")
     @OpLog(value = "驳回了检修案例", targetType = "case", status = "pending")
     public Result<Void> reject(@PathVariable String id, @RequestParam String comment) {

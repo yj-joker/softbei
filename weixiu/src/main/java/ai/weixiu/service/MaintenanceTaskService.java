@@ -43,6 +43,9 @@ public interface MaintenanceTaskService {
     /** 查询任务的步骤列表 */
     List<TaskStepRecordVO> listSteps(Long taskId);
 
+    /** 校验当前用户是否有权访问指定任务（非管理员只能访问自己报修的任务） */
+    void assertTaskAccess(Long taskId, Long userId, Integer userType);
+
     /** 管理员跳过沉淀（标记为无沉淀价值） */
     void skipPromotion(Long taskId, String type);
 

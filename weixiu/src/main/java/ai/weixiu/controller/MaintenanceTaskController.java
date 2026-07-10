@@ -2,6 +2,7 @@ package ai.weixiu.controller;
 
 import ai.weixiu.annotation.OpLog;
 import ai.weixiu.annotation.RequireAdmin;
+import ai.weixiu.exception.ForbiddenException;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.MaintenanceTaskDTO;
@@ -59,6 +60,7 @@ public class MaintenanceTaskController {
     /** 开始执行任务（GENERATED → EXECUTING） */
     @PostMapping("/{taskId}/start")
     public Result<Void> startExecute(@PathVariable Long taskId) {
+        verifyAccess(taskId);
         taskService.startExecute(taskId);
         return Result.success(null);
     }
@@ -69,6 +71,7 @@ public class MaintenanceTaskController {
             @PathVariable Long taskId,
             @PathVariable Long stepId,
             @RequestBody StepExecuteDTO dto) {
+        verifyAccess(taskId);
         TaskStepRecordVO vo = taskService.executeStep(taskId, stepId, dto);
         return Result.success(vo);
     }
@@ -79,6 +82,7 @@ public class MaintenanceTaskController {
             @PathVariable Long taskId,
             @PathVariable Long stepId,
             @RequestBody Map<String, Object> body) {
+        verifyAccess(taskId);
         String reason = (String) body.getOrDefault("reason", "");
         TaskStepRecordVO vo = taskService.forceCompleteStep(taskId, stepId, reason);
         return Result.success(vo);
@@ -90,6 +94,7 @@ public class MaintenanceTaskController {
             @PathVariable Long taskId,
             @PathVariable Long stepId,
             @RequestBody(required = false) Map<String, Object> body) {
+        verifyAccess(taskId);
         String reason = body == null ? "" : String.valueOf(body.getOrDefault("reason", ""));
         TaskStepRecordVO vo = taskService.reopenStep(taskId, stepId, reason);
         return Result.success(vo);
@@ -111,6 +116,7 @@ public class MaintenanceTaskController {
 
     @GetMapping("/{taskId}")
     public Result<MaintenanceTaskVO> getTaskDetail(@PathVariable Long taskId) {
+        verifyAccess(taskId);
         MaintenanceTaskVO vo = taskService.getTaskDetail(taskId);
         return Result.success(vo);
     }
@@ -128,6 +134,7 @@ public class MaintenanceTaskController {
     /** 查询任务的步骤列表 */
     @GetMapping("/{taskId}/steps")
     public Result<List<TaskStepRecordVO>> listSteps(@PathVariable Long taskId) {
+        verifyAccess(taskId);
         List<TaskStepRecordVO> steps = taskService.listSteps(taskId);
         return Result.success(steps);
     }
@@ -220,6 +227,7 @@ public class MaintenanceTaskController {
     /** 拉取任务的完整对话历史（前端进面板时渲染） */
     @GetMapping("/{taskId}/chat/history")
     public Result<List<TaskChatMessage>> taskChatHistory(@PathVariable Long taskId) {
+        verifyAccess(taskId);
         return Result.success(taskService.getChatHistory(taskId));
     }
 
@@ -227,9 +235,20 @@ public class MaintenanceTaskController {
     @DeleteMapping("/{taskId}")
     @OpLog(value = "删除了检修任务", targetType = "task")
     public Result<Void> deleteTask(@PathVariable Long taskId) {
+        verifyAccess(taskId);
         taskService.deleteTask(taskId);
         return Result.success(null);
     }
 
+    /**
+     * 非管理员只能操作自己报修的任务。
+     * 管理员（userType == 1）直接放行；普通用户由 assertTaskAccess 校验归属。
+     */
+    private void verifyAccess(Long taskId) {
+        Long userId = BaseContext.getCurrentId();
+        User user = userMapper.selectById(userId);
+        Integer userType = user != null ? user.getType() : 0;
+        taskService.assertTaskAccess(taskId, userId, userType);
+    }
 
 }

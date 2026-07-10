@@ -1,6 +1,7 @@
 package ai.weixiu.controller;
 
 import ai.weixiu.entity.Solution;
+import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.SolutionDTO;
@@ -22,6 +23,7 @@ public class SolutionController {
     private final SolutionService solutionService;
 
     @PostMapping("/save")
+    @RequireAdmin
     @Operation(summary = "新增解决方案")
     public Result<SolutionVO> save(@RequestBody SolutionDTO solutionDTO) {
         return Result.success(VoConverter.convert(solutionService.save(solutionDTO), SolutionVO.class));
@@ -34,6 +36,7 @@ public class SolutionController {
     }
 
     @DeleteMapping("/{id}")
+    @RequireAdmin
     @Operation(summary = "根据 ID 删除解决方案")
     public Result deleteById(@PathVariable String id) {
         solutionService.deleteById(id);
@@ -41,6 +44,7 @@ public class SolutionController {
     }
 
     @PutMapping("/update")
+    @RequireAdmin
     @Operation(summary = "更新解决方案信息")
     public Result<SolutionVO> update(@RequestBody SolutionDTO solutionDTO) {
         return Result.success(VoConverter.convert(solutionService.update(solutionDTO), SolutionVO.class));

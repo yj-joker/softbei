@@ -3,6 +3,10 @@ package ai.weixiu.controller;
 
 import ai.weixiu.annotation.OpLog;
 import ai.weixiu.annotation.RequireAdmin;
+import ai.weixiu.entity.User;
+import ai.weixiu.exception.ForbiddenException;
+import ai.weixiu.mapper.UserMapper;
+import ai.weixiu.utils.BaseContext;
 import ai.weixiu.enumerate.BucketEnum;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.UserDTO;
@@ -50,6 +54,7 @@ public class UserController {
     private final UserService userService;
     private final AliyunUpLoadUtils aliyunUpLoadUtils;
     private final MioIOUpLoadService minIOUpLoadService;
+    private final UserMapper userMapper;
 
     /*
      * Excel 批量注册用户（仅管理员）
@@ -100,6 +105,14 @@ public class UserController {
     @PostMapping("/getUserById")
     @Operation(summary = "根据用户id查询用户信息")
     public Result getUserById(Integer id) {
+        // 非管理员只能查询本人信息
+        Long currentId = BaseContext.getCurrentId();
+        if (!currentId.equals(Long.valueOf(id))) {
+            User current = userMapper.selectById(currentId);
+            if (current == null || current.getType() != 1) {
+                throw new ForbiddenException("只能查询本人信息");
+            }
+        }
         UserVO userVO = userService.getUserById(id);
         return Result.success(userVO);
     }
@@ -108,6 +121,7 @@ public class UserController {
      * 根据用户id批量删除用户
      * */
     @DeleteMapping("/deleteByIds")
+    @RequireAdmin
     @Operation(summary = "根据用户id批量删除用户")
     public Result deleteByIds(@RequestBody List<Integer> ids) {
         userService.removeUserByIds(ids);
@@ -120,6 +134,14 @@ public class UserController {
     @Operation(summary = "修改用户信息")
     @OpLog(value = "更新了用户信息", targetType = "user")
     public Result updateById(@RequestBody UserDTO userDTO) {
+        // 非管理员只能修改本人信息
+        Long currentId = BaseContext.getCurrentId();
+        if (!currentId.equals(Long.valueOf(userDTO.getId()))) {
+            User current = userMapper.selectById(currentId);
+            if (current == null || current.getType() != 1) {
+                throw new ForbiddenException("只能修改本人信息");
+            }
+        }
         userService.updateUser(userDTO);
         return Result.success();
     }
@@ -127,6 +149,7 @@ public class UserController {
      * 分页查询所有用户
      * */
     @PostMapping("/list")
+    @RequireAdmin
     @Operation(summary = "分页查询所有用户")
     public Result<List<UserVO>> list(@RequestBody UserQuery userQuery) {
         List<UserVO> userVOList = userService.getUserList(userQuery);
