@@ -400,7 +400,7 @@ function roleText(role) {
       <article class=”voice-feedback”>
         <span class=”voice-section-label”>AI 当前反馈</span>
         <!-- 识别到 / 理解为 对比（仅在整理后与原文不同时才显示） -->
-        <div v-if=”latestAssistantTurn?.cleanedTranscript” class=”transcript-compare”>
+        <div v-if=”latestAssistantTurn && latestAssistantTurn.cleanedTranscript” class=”transcript-compare”>
           <div class=”tc-row”>
             <em>识别到</em>
             <span>{{ latestAssistantTurn.originalTranscript }}</span>
