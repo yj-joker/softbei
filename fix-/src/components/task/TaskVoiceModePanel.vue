@@ -72,6 +72,27 @@ const waitingSubmit = computed(() => Boolean(submitTimer && pendingTranscript.va
 const latestAssistantTurn = computed(() => turns.value.find((turn) => turn.role === 'assistant') || null)
 const latestUserTurn = computed(() => turns.value.find((turn) => turn.role === 'user') || null)
 const visibleTurns = computed(() => turns.value.filter((turn) => turn.role !== 'system').slice(0, 4))
+// 按问答对分组，oldest-first，最新对在底部
+const conversationPairs = computed(() => {
+  const filtered = turns.value.filter((t) => t.role !== 'system').slice().reverse()
+  const pairs = []
+  let i = 0
+  while (i < filtered.length) {
+    const t = filtered[i]
+    if (t.role === 'user') {
+      const next = filtered[i + 1]
+      pairs.push({
+        id: t.id,
+        user: t,
+        assistant: next?.role === 'assistant' ? next : null,
+      })
+      i += next?.role === 'assistant' ? 2 : 1
+    } else {
+      i++
+    }
+  }
+  return pairs.slice(-5)
+})
 const showOverrideAction = computed(() =>
   Boolean(latestAssistantTurn.value?.needsConfirmation || latestAssistantTurn.value?.override),
 )
@@ -126,7 +147,7 @@ function pushTurn(turn) {
   turns.value = turns.value.slice(0, 20)
   nextTick(() => {
     const el = historyRef.value
-    if (el) el.scrollTop = 0
+    if (el) el.scrollTop = el.scrollHeight
   })
 }
 
@@ -436,11 +457,18 @@ function roleText(role) {
       </button>
     </div>
 
-    <div v-if="visibleTurns.length" ref="historyRef" class="voice-history">
-      <article v-for="turn in visibleTurns" :key="turn.id" class="voice-turn" :class="turn.role">
-        <span>{{ roleText(turn.role) }}</span>
-        <p>{{ turn.text }}</p>
-      </article>
+    <div v-if="conversationPairs.length" ref="historyRef" class="voice-history">
+      <div v-for="pair in conversationPairs" :key="pair.id" class="voice-pair">
+        <article class="voice-turn user">
+          <span>工人</span>
+          <p>{{ pair.user.text }}</p>
+        </article>
+        <article class="voice-turn assistant">
+          <span>AI</span>
+          <p v-if="pair.assistant">{{ pair.assistant.text }}</p>
+          <p v-else class="muted">处理中…</p>
+        </article>
+      </div>
     </div>
   </section>
 </template>
@@ -837,11 +865,17 @@ button:disabled {
 }
 
 .voice-history {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.voice-pair {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 7px;
-  max-height: 150px;
-  overflow-y: auto;
 }
 
 .voice-turn {
@@ -899,7 +933,7 @@ button:disabled {
     justify-content: flex-start;
   }
 
-  .voice-history {
+  .voice-pair {
     grid-template-columns: 1fr;
   }
 }
