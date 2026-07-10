@@ -397,21 +397,21 @@ function roleText(role) {
         </div>
       </div>
 
-      <article class=”voice-feedback”>
-        <span class=”voice-section-label”>AI 当前反馈</span>
+      <article class="voice-feedback">
+        <span class="voice-section-label">AI 当前反馈</span>
         <!-- 识别到 / 理解为 对比（仅在整理后与原文不同时才显示） -->
-        <div v-if=”latestAssistantTurn && latestAssistantTurn.cleanedTranscript” class=”transcript-compare”>
-          <div class=”tc-row”>
+        <div v-if="latestAssistantTurn && latestAssistantTurn.cleanedTranscript" class="transcript-compare">
+          <div class="tc-row">
             <em>识别到</em>
             <span>{{ latestAssistantTurn.originalTranscript }}</span>
           </div>
-          <div class=”tc-row cleaned”>
+          <div class="tc-row cleaned">
             <em>理解为</em>
             <span>{{ latestAssistantTurn.cleanedTranscript }}</span>
           </div>
         </div>
-        <p v-if=”latestAssistantTurn”>{{ latestAssistantTurn.text }}</p>
-        <p v-else class=”muted”>你可以直接说”完成了””回到第二步””这一步怎么判断”。</p>
+        <p v-if="latestAssistantTurn">{{ latestAssistantTurn.text }}</p>
+        <p v-else class="muted">你可以直接说"完成了""回到第二步""这一步怎么判断"。</p>
         <div v-if="latestAssistantTurn && (latestAssistantTurn.action || latestAssistantTurn.result || latestAssistantTurn.meta)" class="voice-meta">
           <em v-if="latestAssistantTurn && latestAssistantTurn.action">{{ latestAssistantTurn.action }}</em>
           <em v-if="latestAssistantTurn && latestAssistantTurn.result">{{ latestAssistantTurn.result }}</em>
