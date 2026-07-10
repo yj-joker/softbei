@@ -30,6 +30,9 @@ public interface MaintenanceTaskService {
 
     TaskStepRecordVO reopenStep(Long taskId, Long stepId, String reason);
 
+    /** 批量回退：将 targetStepId 及之后所有已完成/提交/AI通过的步骤重置为 PENDING */
+    List<TaskStepRecordVO> rollbackToStep(Long taskId, Long stepId, String reason);
+
     Long saveFocusStep(Long taskId, Long userId, Long stepId, String mode);
 
     Long resolveFocusStep(Long taskId, Long userId, Long preferredStepId, String mode);

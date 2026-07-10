@@ -14,7 +14,7 @@ import {
   VideoPause,
   Warning,
 } from '@element-plus/icons-vue'
-import { executeStep, forceCompleteStep, reopenStep } from '@/api/maintenanceTask'
+import { executeStep, forceCompleteStep, reopenStep, rollbackToStep } from '@/api/maintenanceTask'
 import { uploadImage } from '@/api/user'
 import { notifyStore } from '@/stores/notifyStore'
 import { stepStatus, stepActionable } from '@/constants/taskStatus'
@@ -38,6 +38,8 @@ const canAct = computed(() => props.executing && props.active && stepActionable(
 const rejected = computed(() => props.step.status === 'AI_REJECTED')
 const done = computed(() => ['AI_PASSED', 'COMPLETED', 'SKIPPED'].includes(props.step.status))
 const canReopen = computed(() => props.executing && ['SUBMITTED', 'AI_PASSED', 'COMPLETED', 'SKIPPED'].includes(props.step.status))
+// 「从此步回退」：任务执行中，且该步骤已完成/提交/通过（有东西可重置）
+const canRollback = computed(() => props.executing && ['SUBMITTED', 'COMPLETED', 'AI_PASSED'].includes(props.step.status))
 const showBody = computed(() => canAct.value || rejected.value || expanded.value)
 const requirementCount = computed(() =>
   [props.step.requirePhoto, props.step.requireNote, props.step.isCheckpoint].filter(Boolean).length,
@@ -110,6 +112,16 @@ async function reopen() {
   } catch (err) { ElMessage.error('操作失败：' + (err.message || '')) }
   finally { submitting.value = false }
 }
+
+async function rollback() {
+  submitting.value = true
+  try {
+    await rollbackToStep(props.taskId, props.step.id, '工人要求从此步重做')
+    ElMessage.success(`已回退到第 ${props.step.sortOrder} 步，该步骤及之后步骤已重置`)
+    emit('reopened')   // 复用 reopened 事件触发父组件刷新
+  } catch (err) { ElMessage.error('回退失败：' + (err.message || '')) }
+  finally { submitting.value = false }
+}
 </script>
 
 <template>
@@ -157,6 +169,9 @@ async function reopen() {
           </button>
           <button v-if="canReopen" type="button" class="ask-button" :disabled="submitting" @click="reopen">
             重新执行
+          </button>
+          <button v-if="canRollback" type="button" class="ask-button rollback-btn" :disabled="submitting" @click="rollback" :title="`重置第 ${step.sortOrder} 步及之后所有步骤`">
+            从此步回退
           </button>
           <button
             v-if="!canAct"
@@ -450,6 +465,8 @@ async function reopen() {
 .ask-button:hover,
 .detail-toggle:hover { border-color: var(--plaza-accent); color: var(--plaza-accent); background: var(--plaza-accent-soft); }
 .ask-button.reading { border-color: var(--plaza-accent); color: #fff; background: var(--plaza-accent); }
+.rollback-btn { border-color: rgba(197, 64, 44, 0.3); color: #c5402c; }
+.rollback-btn:hover { border-color: #c5402c; color: #fff; background: #c5402c; }
 
 .step-body { padding: 14px 15px 15px; border-top: 1px solid var(--plaza-border); }
 .step-content { margin: 0 0 11px; color: var(--plaza-text); font-size: 12px; line-height: 1.75; white-space: pre-wrap; }

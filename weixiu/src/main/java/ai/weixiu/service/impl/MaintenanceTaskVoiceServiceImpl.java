@@ -197,6 +197,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
             case CONFIRM_CHECKPOINT -> confirmCheckpoint(steps, currentStepId, dto, decision);
             case UNDO_STEP_COMPLETION -> undoStepCompletion(steps, currentStepId, decision);
             case REOPEN_STEP -> reopenStep(task, steps, currentStepId, decision);
+            case ROLLBACK_TO_STEP -> rollbackFromVoice(task, steps, currentStepId, decision);
             case EXIT_VOICE_MODE -> ExecutionOutcome.done(currentStepId, "VOICE_SESSION_ENDED", "语音检修模式已结束", false);
             case ANSWER_QUESTION, REPEAT_CURRENT_STEP, REQUEST_PHOTO, CLARIFY, NO_OP ->
                     noStateChange(currentStepId, decision, action);
@@ -333,6 +334,19 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
                 firstText(decision.getAuditReason(), decision.getRiskReason(), "语音要求重新执行")
         );
         return ExecutionOutcome.done(reopened.getId(), "STEP_REOPENED", "已重新打开步骤，可重新上传证据或继续执行", false);
+    }
+
+    private ExecutionOutcome rollbackFromVoice(MaintenanceTask task, List<TaskStepRecord> steps,
+                                                Long currentStepId, VoiceTaskAgentDecision decision) {
+        TaskStepRecord target = resolveTargetStep(steps, currentStepId, decision);
+        if (target == null) {
+            return ExecutionOutcome.rejected(currentStepId, "TARGET_STEP_NOT_FOUND", "没有找到要回退到的步骤",
+                    "我没有确定要回退到哪一步，请说清楚第几步，比如「从第二步重做」。");
+        }
+        String reason = firstText(decision.getAuditReason(), decision.getRiskReason(), "语音要求批量回退");
+        taskService.rollbackToStep(task.getId(), target.getId(), reason);
+        return ExecutionOutcome.done(target.getId(), "ROLLED_BACK",
+                "已回退到第" + target.getSortOrder() + "步，该步骤及之后的步骤已重置，请重新执行", false);
     }
 
     private ExecutionOutcome moveTo(TaskStepRecord target, String result) {

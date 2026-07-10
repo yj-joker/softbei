@@ -33,6 +33,10 @@ export function reopenStep(taskId, stepId, reason = '') {
   return request({ url: `${BASE}/${taskId}/steps/${stepId}/reopen`, method: 'POST', data: { reason }, throwOnError: true })
 }
 
+export function rollbackToStep(taskId, stepId, reason = '') {
+  return request({ url: `${BASE}/${taskId}/steps/${stepId}/rollback`, method: 'POST', data: { reason }, throwOnError: true })
+}
+
 export function updateTaskFocus(taskId, currentStepId, mode = 'NORMAL') {
   return request({ url: `${BASE}/${taskId}/focus`, method: 'POST', data: { currentStepId, mode }, throwOnError: true })
 }

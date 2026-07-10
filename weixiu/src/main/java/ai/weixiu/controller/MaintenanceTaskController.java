@@ -100,6 +100,18 @@ public class MaintenanceTaskController {
         return Result.success(vo);
     }
 
+    /** 批量回退：将目标步骤及其之后所有已完成/验证的步骤重置为 PENDING */
+    @PostMapping("/{taskId}/steps/{stepId}/rollback")
+    public Result<List<TaskStepRecordVO>> rollbackToStep(
+            @PathVariable Long taskId,
+            @PathVariable Long stepId,
+            @RequestBody(required = false) Map<String, Object> body) {
+        verifyAccess(taskId);
+        String reason = body == null ? "" : String.valueOf(body.getOrDefault("reason", ""));
+        List<TaskStepRecordVO> steps = taskService.rollbackToStep(taskId, stepId, reason);
+        return Result.success(steps);
+    }
+
     @PostMapping("/{taskId}/focus")
     public Result<Map<String, Object>> updateFocus(
             @PathVariable Long taskId,

@@ -363,6 +363,55 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
 
     @Override
     @Transactional
+    public List<TaskStepRecordVO> rollbackToStep(Long taskId, Long stepId, String reason) {
+        MaintenanceTask task = getTaskOrThrow(taskId);
+        if (!"EXECUTING".equals(task.getStatus()) && !"CLOSED".equals(task.getStatus())) {
+            throw new TaskStateException("任务未在执行中，当前状态: " + task.getStatus());
+        }
+        TaskStepRecord target = stepMapper.selectById(stepId);
+        if (target == null || !target.getTaskId().equals(taskId)) {
+            throw new NotFoundException("步骤不存在");
+        }
+        int targetOrder = target.getSortOrder();
+        List<TaskStepRecord> allSteps = loadSteps(taskId);
+
+        // 将 sortOrder >= targetOrder 且已进入完成/验证状态的步骤全部重置为 PENDING
+        List<TaskStepRecord> toReset = allSteps.stream()
+                .filter(s -> s.getSortOrder() != null && s.getSortOrder() >= targetOrder)
+                .filter(s -> !("PENDING".equals(s.getStatus()) || "AI_REJECTED".equals(s.getStatus())))
+                .collect(Collectors.toList());
+
+        for (TaskStepRecord step : toReset) {
+            step.setStatus("PENDING");
+            step.setImages(null);
+            step.setNote(null);
+            step.setCheckpointConfirmed(false);
+            step.setAiPass(null);
+            step.setAiConfidence(null);
+            step.setAiReason(null);
+            step.setCompletedAt(null);
+            stepMapper.updateById(step);
+        }
+
+        // 在目标步骤写入审计备注（重新加载避免覆盖上面的 null）
+        target = stepMapper.selectById(stepId);
+        target.setNote("[批量回退: " + (StringUtils.hasText(reason) ? reason : "工人要求回退") + "]");
+        stepMapper.updateById(target);
+
+        if ("CLOSED".equals(task.getStatus())) {
+            task.setStatus("EXECUTING");
+            task.setUpdatedAt(LocalDateTime.now());
+            taskMapper.updateById(task);
+        }
+
+        saveFocusStep(taskId, BaseContext.getCurrentId(), stepId, "NORMAL");
+        log.info("[任务] 批量回退 taskId={} stepId={} targetOrder={} resetCount={} reason={}",
+                taskId, stepId, targetOrder, toReset.size(), reason);
+        return listSteps(taskId);
+    }
+
+    @Override
+    @Transactional
     public Long saveFocusStep(Long taskId, Long userId, Long stepId, String mode) {
         getTaskOrThrow(taskId);
         List<TaskStepRecord> steps = loadSteps(taskId);
