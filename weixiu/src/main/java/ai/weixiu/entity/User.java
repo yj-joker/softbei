@@ -11,6 +11,7 @@ import lombok.EqualsAndHashCode;
 import lombok.experimental.Accessors;
 
 import java.io.Serializable;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
 
 /**
@@ -87,7 +88,7 @@ public class User implements Serializable {
      */
     @ExcelProperty(value = "入职日期")
     @DateTimeFormat("yyyy-MM-dd")
-    private LocalDateTime hireDate;
+    private LocalDate hireDate;
 
     /**
      * 0=未激活, 1=已激活
