@@ -22,7 +22,9 @@ import java.util.concurrent.TimeUnit;
 public class SessionInterceptor implements HandlerInterceptor {
     /** 纯内部前缀：只允许 Python 通过内部 token 访问，不允许用户 session 访问 */
     private static final List<String> INTERNAL_ONLY_PREFIXES = List.of(
-            "/weixiu/memory/"
+            "/weixiu/memory/",
+            "/weixiu/kg/internal/",
+            "/weixiu/expiration/internal/"
             // 注意：不要把 /weixiu/path/ 列为纯内部前缀——诊断路径召回（/weixiu/path/search）
             // 同时供「用户端语义召回」使用，需允许登录 session 访问；Python 仍可带 X-Internal-Token 调用。
     );
