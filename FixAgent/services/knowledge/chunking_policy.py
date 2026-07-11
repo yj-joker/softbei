@@ -75,9 +75,9 @@ def _stable_hash(value: Any) -> str:
     return hashlib.sha1(normalized.encode("utf-8")).hexdigest()[:12]
 
 
-def _source_anchor(section_index: int, chunk_type: str, chunk_label: str, page: Any, raw_text: str) -> str:
+def _source_anchor(section_index: int, chunk_type: str, chunk_label: str, page: Any, raw_text: str, section_title: str = "") -> str:
     page_value = _as_text(page)
-    return f"{_section_id(section_index)}|{chunk_type}|{chunk_label}|{page_value}|{_stable_hash(raw_text)}"
+    return f"{_section_id(section_index, section_title)}|{chunk_type}|{chunk_label}|{page_value}|{_stable_hash(raw_text)}"
 
 
 def _build_retrieval_text(
@@ -121,7 +121,12 @@ def _join_context_snippets(values: Iterable[Any], limit: int = VISUAL_CONTEXT_LI
     return _compact_text(" ".join(snippets), limit=limit)
 
 
-def _section_id(section_index: int) -> str:
+def _section_id(section_index: int, section_title: str = "") -> str:
+    """使用章节标题 hash 作为稳定身份，与文档内位置解耦；无标题时降级用 index。"""
+    if section_title:
+        normalized = re.sub(r"\s+", "", section_title.lower())
+        title_hash = hashlib.sha1(normalized.encode()).hexdigest()[:10]
+        return f"sec:{title_hash}"
     return f"sec:{section_index:04d}"
 
 
@@ -132,7 +137,7 @@ def _base_metadata(section: Dict[str, Any], section_index: int) -> Dict[str, Any
         "section_index": section_index,
         "section_title": _as_text(section.get("section_title")),
         "page_range": _as_text(section.get("page_range")),
-        "parent_section_id": _section_id(section_index),
+        "parent_section_id": _section_id(section_index, _as_text(section.get("section_title"))),
     }
 
 
@@ -151,11 +156,18 @@ def _emit_chunk(
     extra_context: Iterable[tuple[str, Any]] | None = None,
     augment_text: bool = False,
     toc_path: str | None = None,
+    stable_suffix: str | None = None,
 ) -> Dict[str, Any] | None:
     clean = _as_text(text)
     if not clean:
         return None
-    local_id = f"{_section_id(section_index)}:{chunk_type}:{len(chunks):04d}"
+    section_title = _as_text(section.get("section_title"))
+    sec_id = _section_id(section_index, section_title)
+    local_id = (
+        f"{sec_id}:{chunk_type}:{stable_suffix}"
+        if stable_suffix is not None
+        else f"{sec_id}:{chunk_type}:{len(chunks):04d}"
+    )
     retrieval_text = _build_retrieval_text(
         clean,
         chunk_type=chunk_type,
@@ -171,7 +183,7 @@ def _emit_chunk(
         "chunk_label": chunk_label,
         "raw_text": clean,
         "contextual_text": retrieval_text,
-        "source_anchor": _source_anchor(section_index, chunk_type, chunk_label, page, clean),
+        "source_anchor": _source_anchor(section_index, chunk_type, chunk_label, page, clean, section_title),
         "retrieval_text_version": RETRIEVAL_TEXT_VERSION,
     }
     # 目录路径仅作为 metadata 信号（供精排"同节救援"用），不进嵌入文本 → 向量与 v21 一致
@@ -553,9 +565,11 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
     step_chunk_ids: List[str] = []
     text_chunk_ids: List[str] = []
     text_context_snippets: List[str] = []
+    # 稳定的 section 身份：优先使用标题 hash，保证跨版本 provenance 可追踪
+    sec_id = _section_id(section_index, _as_text(section.get("section_title")))
 
     for source_index, raw in enumerate(section.get("text_chunks") or []):
-        parent_chunk_id = f"{_section_id(section_index)}:source:{source_index:04d}"
+        parent_chunk_id = f"{sec_id}:source:{source_index:04d}"
         if isinstance(raw, dict):
             text = _as_text(raw.get("text"))
             page = raw.get("page")
@@ -758,12 +772,13 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 section_index=section_index,
                 page=page,
                 source_index=table_index,
-                parent_chunk_id=f"{_section_id(section_index)}:table:{table_index:04d}",
+                parent_chunk_id=f"{sec_id}:table:{table_index:04d}",
                 extra_context=(
                     ("Caption", caption),
                     ("Headers", " | ".join(headers)),
                 ),
                 metadata=table_meta,
+                stable_suffix=f"{table_index:04d}",
             )
 
         for row_index, row in enumerate(data_rows):
@@ -784,7 +799,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 section_index=section_index,
                 page=page,
                 source_index=table_index,
-                parent_chunk_id=table_full_chunk["id"] if table_full_chunk else f"{_section_id(section_index)}:table:{table_index:04d}",
+                parent_chunk_id=table_full_chunk["id"] if table_full_chunk else f"{sec_id}:table:{table_index:04d}",
                 extra_context=(
                     ("Caption", caption),
                     ("Headers", " | ".join(headers)),
@@ -802,6 +817,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                     "parameter_query_candidate": parameter_query_candidate,
                     "parent_table_chunk_id": table_full_chunk["id"] if table_full_chunk else "",
                 },
+                stable_suffix=f"{table_index:04d}:row:{row_index:04d}",
             )
 
     for image_index, image in enumerate(section.get("images") or []):
@@ -825,7 +841,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             section_index=section_index,
             page=page,
             source_index=image_index,
-            parent_chunk_id=f"{_section_id(section_index)}:image:{image_index:04d}",
+        parent_chunk_id=f"{sec_id}:image:{image_index:04d}",
             extra_context=(
                 ("Image name", image_name),
                 ("Caption", caption),
