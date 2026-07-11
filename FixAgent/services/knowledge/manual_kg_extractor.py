@@ -242,6 +242,20 @@ class ManualKGExtractor:
                         )
 
                     for item in items:
+                        # comp_id 为空说明当前 section 没有识别出 Component：
+                        # 不能用全局 MERGE 写 Fault（会跨设备污染），统一进 review_items 等人工处理。
+                        if not comp_id:
+                            result.review_items.append({
+                                "reason": "no_component_id",
+                                "fault_name": item.fault_name,
+                                "solution_title": item.solution_title,
+                                "confidence": item.confidence,
+                                "chunk_uid": item.source_chunk_uid,
+                                "section_title": sec_title,
+                                "device_name": device.name,
+                            })
+                            continue
+
                         async with sem_api:
                             fs_resp = await self._call_java("/weixiu/kg/internal/upsert-fault-solution", {
                                 "componentId": comp_id,

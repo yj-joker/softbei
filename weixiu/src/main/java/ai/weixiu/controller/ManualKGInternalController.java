@@ -195,60 +195,40 @@ public class ManualKGInternalController {
                 return Result.error("500", "solutionTitle is required");
             }
 
-            String stepsText = String.join("\n", solutionSteps);
-
-            // --- Fault MERGE ---
-            String faultCypher;
-            if (componentId != null && !componentId.isBlank()) {
-                faultCypher = """
-                        MATCH (c:Component {id: $componentId})
-                        MERGE (f:Fault {name: $faultName})<-[:CAUSES]-(c)
-                        ON CREATE SET
-                            f.id                = randomUUID(),
-                            f.description       = $faultDescription,
-                            f.source            = 'manual',
-                            f.verified          = false,
-                            f.status            = 'active',
-                            f.manual_confidence = $confidence,
-                            f.source_chunk_uid  = $chunkUid,
-                            f.created_at        = datetime()
-                        ON MATCH SET
-                            f.updated_at        = datetime(),
-                            f.description       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $faultDescription ELSE f.description END,
-                            f.manual_confidence = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $confidence         ELSE f.manual_confidence END
-                        RETURN f.id AS faultId, (f.updated_at IS NULL) AS faultCreated
-                        """;
-            } else {
-                faultCypher = """
-                        MERGE (f:Fault {name: $faultName})
-                        ON CREATE SET
-                            f.id                = randomUUID(),
-                            f.description       = $faultDescription,
-                            f.source            = 'manual',
-                            f.verified          = false,
-                            f.status            = 'active',
-                            f.manual_confidence = $confidence,
-                            f.source_chunk_uid  = $chunkUid,
-                            f.created_at        = datetime()
-                        ON MATCH SET
-                            f.updated_at        = datetime(),
-                            f.description       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $faultDescription ELSE f.description END,
-                            f.manual_confidence = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $confidence         ELSE f.manual_confidence END
-                        RETURN f.id AS faultId, (f.updated_at IS NULL) AS faultCreated
-                        """;
+            // componentId 必须有值——无 Component 锚点的 Fault 不允许入图（防跨设备污染）
+            if (componentId == null || componentId.isBlank()) {
+                return Result.error("400", "componentId required: Fault must be anchored to a Component");
             }
 
-            var faultQuery = neo4jClient.query(faultCypher)
+            String stepsText = String.join("\n", solutionSteps);
+
+            // --- Fault MERGE（严格要求 componentId）---
+            String faultCypher = """
+                    MATCH (c:Component {id: $componentId})
+                    MERGE (f:Fault {name: $faultName})<-[:CAUSES]-(c)
+                    ON CREATE SET
+                        f.id                = randomUUID(),
+                        f.description       = $faultDescription,
+                        f.source            = 'manual',
+                        f.verified          = false,
+                        f.status            = 'active',
+                        f.manual_confidence = $confidence,
+                        f.source_chunk_uid  = $chunkUid,
+                        f.created_at        = datetime()
+                    ON MATCH SET
+                        f.updated_at        = datetime(),
+                        f.description       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $faultDescription ELSE f.description END,
+                        f.manual_confidence = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $confidence         ELSE f.manual_confidence END
+                    RETURN f.id AS faultId, (f.updated_at IS NULL) AS faultCreated
+                    """;
+
+            Optional<Map<String, Object>> faultRow = neo4jClient.query(faultCypher)
+                    .bind(componentId).to("componentId")
                     .bind(faultName).to("faultName")
                     .bind(faultDescription).to("faultDescription")
                     .bind(confidence).to("confidence")
-                    .bind(chunkUid).to("chunkUid");
-
-            if (componentId != null && !componentId.isBlank()) {
-                faultQuery = faultQuery.bind(componentId).to("componentId");
-            }
-
-            Optional<Map<String, Object>> faultRow = faultQuery.fetch().first();
+                    .bind(chunkUid).to("chunkUid")
+                    .fetch().first();
             if (faultRow.isEmpty()) {
                 return Result.error("500", "fault upsert returned no row (componentId not found?)");
             }
