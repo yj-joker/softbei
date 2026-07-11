@@ -106,7 +106,8 @@ public class ExpirationServiceImpl implements ExpirationService {
         }
     }
 
-(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType) {
+    @Override
+    public void checkManualUpgradeAsync(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType) {
         try {
             // 1. 触发旧版过期判定（粗粒度，文档级别）
             Map<String, Object> upgradeBody = Map.of(

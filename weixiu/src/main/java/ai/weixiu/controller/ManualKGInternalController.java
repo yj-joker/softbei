@@ -30,7 +30,7 @@ public class ManualKGInternalController {
         try {
             String name = (String) body.get("name");
             if (name == null || name.isBlank()) {
-                return Result.error("name is required");
+                return Result.error("500", "name is required");
             }
             String model        = (String) body.getOrDefault("model", "");
             String manufacturer = (String) body.getOrDefault("manufacturer", "");
@@ -64,7 +64,7 @@ public class ManualKGInternalController {
 
         } catch (Exception e) {
             log.warn("upsert-device failed: {}", e.getMessage(), e);
-            return Result.error("upsert-device failed: " + e.getMessage());
+            return Result.error("500", "upsert-device failed: " + e.getMessage());
         }
     }
 
@@ -77,7 +77,7 @@ public class ManualKGInternalController {
             String deviceId    = (String) body.get("deviceId");
             String name        = (String) body.get("name");
             if (name == null || name.isBlank()) {
-                return Result.error("name is required");
+                return Result.error("500", "name is required");
             }
 
             String componentType = (String) body.getOrDefault("componentType", "");
@@ -135,7 +135,7 @@ public class ManualKGInternalController {
 
             Map<String, Object> result = new HashMap<>();
             if (row.isEmpty()) {
-                return Result.error("component upsert returned no row (deviceId not found?)");
+                return Result.error("500", "component upsert returned no row (deviceId not found?)");
             }
 
             String componentId = (String) row.get().get("id");
@@ -167,7 +167,7 @@ public class ManualKGInternalController {
 
         } catch (Exception e) {
             log.warn("upsert-component failed: {}", e.getMessage(), e);
-            return Result.error("upsert-component failed: " + e.getMessage());
+            return Result.error("500", "upsert-component failed: " + e.getMessage());
         }
     }
 
@@ -189,10 +189,10 @@ public class ManualKGInternalController {
             Double confidence        = confidenceRaw == null ? null : ((Number) confidenceRaw).doubleValue();
 
             if (faultName == null || faultName.isBlank()) {
-                return Result.error("faultName is required");
+                return Result.error("500", "faultName is required");
             }
             if (solutionTitle == null || solutionTitle.isBlank()) {
-                return Result.error("solutionTitle is required");
+                return Result.error("500", "solutionTitle is required");
             }
 
             String stepsText = String.join("\n", solutionSteps);
@@ -250,7 +250,7 @@ public class ManualKGInternalController {
 
             Optional<Map<String, Object>> faultRow = faultQuery.fetch().first();
             if (faultRow.isEmpty()) {
-                return Result.error("fault upsert returned no row (componentId not found?)");
+                return Result.error("500", "fault upsert returned no row (componentId not found?)");
             }
 
             String  faultId      = (String)  faultRow.get().get("faultId");
@@ -286,7 +286,7 @@ public class ManualKGInternalController {
                     .first();
 
             if (solutionRow.isEmpty()) {
-                return Result.error("solution upsert returned no row");
+                return Result.error("500", "solution upsert returned no row");
             }
 
             String  solutionId      = (String)  solutionRow.get().get("solutionId");
@@ -321,7 +321,7 @@ public class ManualKGInternalController {
 
         } catch (Exception e) {
             log.warn("upsert-fault-solution failed: {}", e.getMessage(), e);
-            return Result.error("upsert-fault-solution failed: " + e.getMessage());
+            return Result.error("500", "upsert-fault-solution failed: " + e.getMessage());
         }
     }
 
@@ -335,7 +335,7 @@ public class ManualKGInternalController {
             return Result.success(Map.of("message", "all nodes deleted"));
         } catch (Exception e) {
             log.warn("clear-all failed: {}", e.getMessage(), e);
-            return Result.error("clear-all failed: " + e.getMessage());
+            return Result.error("500", "clear-all failed: " + e.getMessage());
         }
     }
 }
