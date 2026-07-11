@@ -904,6 +904,26 @@ class VectorService:
             logger.warning(f"list_document_chunks failed: document_id={document_id} err={e}")
             return []
 
+    def list_all_manifests(self) -> List[Dict[str, Any]]:
+        """列出所有已导入文档的 manifest（供全量重抽使用）。"""
+        try:
+            manifests = []
+            for key in self.redis.scan_iter(match=f"{self.DOCUMENT_KEY_PREFIX}*", count=500):
+                raw = self.redis.hget(key, "manifest")
+                if raw is None:
+                    continue
+                try:
+                    import json as _json
+                    m = _json.loads(raw.decode() if isinstance(raw, bytes) else raw)
+                    if isinstance(m, dict):
+                        manifests.append(m)
+                except Exception:
+                    pass
+            return manifests
+        except Exception as e:
+            logger.warning(f"list_all_manifests failed: {e}")
+            return []
+
     def put_document_manifest(self, document_id: str, manifest: Dict[str, Any]) -> bool:
         """Persist import lifecycle metadata outside individual chunk vectors."""
         if not document_id:

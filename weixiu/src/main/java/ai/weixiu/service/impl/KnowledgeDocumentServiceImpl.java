@@ -250,6 +250,13 @@ public class KnowledgeDocumentServiceImpl
                                 log.warn("触发图谱过期判定失败（非阻塞）: manualId={}, err={}",
                                         doc.getManualId(), e.getMessage());
                             }
+
+                            // 触发 KG 实体抽取（手册→图谱节点）
+                            try {
+                                expirationService.triggerKGExtractAsync(documentId, "");
+                            } catch (Exception e) {
+                                log.warn("触发KG抽取失败（非阻塞）: manualId={}, err={}", doc.getManualId(), e.getMessage());
+                            }
                         }
                     });
                 }

@@ -84,7 +84,29 @@ public class ExpirationServiceImpl implements ExpirationService {
     }
 
     @Override
-    public void checkManualUpgradeAsync(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType) {
+    public void triggerKGExtractAsync(String documentId, String deviceType) {
+        if (documentId == null || documentId.isBlank()) return;
+        try {
+            Map<String, Object> body = Map.of(
+                    "document_id", documentId,
+                    "device_type", deviceType != null ? deviceType : ""
+            );
+            webClient.post()
+                    .uri("/ai/manual-kg/extract")
+                    .header("X-Api-Token", internalToken)
+                    .bodyValue(body)
+                    .retrieve()
+                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                    .subscribe(
+                            resp -> log.info("[KG抽取] 已触发: documentId={}", documentId),
+                            e   -> log.warn("[KG抽取] 触发失败（非阻塞）: documentId={} err={}", documentId, e.getMessage())
+                    );
+        } catch (Exception e) {
+            log.warn("[KG抽取] 调度异常（非阻塞）: documentId={} err={}", documentId, e.getMessage());
+        }
+    }
+
+(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType) {
         try {
             // 1. 触发旧版过期判定（粗粒度，文档级别）
             Map<String, Object> upgradeBody = Map.of(

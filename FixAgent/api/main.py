@@ -5076,3 +5076,82 @@ async def manual_upgrade_sync(request: Request):
             "errors": summary.errors,
         },
     }
+
+
+# ==================== 手册 KG 实体抽取 ====================
+
+@app.post("/ai/manual-kg/extract")
+async def manual_kg_extract(request: Request):
+    """
+    从一个已导入的手册文档中抽取实体并写入知识图谱（内部/管理接口）。
+
+    由 Java 端在手册导入完成后异步触发，或管理员手动触发重抽。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+
+    document_id     = (body.get("document_id") or "").strip()
+    device_type_hint = (body.get("device_type") or "").strip()
+
+    if not document_id:
+        raise HTTPException(status_code=400, detail="document_id required")
+
+    logger.info("[KG抽取API] 触发: document_id=%s device_hint=%s", document_id, device_type_hint)
+
+    from services.knowledge.manual_kg_extractor import get_manual_kg_extractor
+    result = await get_manual_kg_extractor().extract_document(document_id, device_type_hint)
+
+    return {
+        "success": True,
+        "message": "操作成功",
+        "code": 200,
+        "data": {
+            "document_id":       result.document_id,
+            "device_name":       result.device_name,
+            "device_id":         result.device_id,
+            "components_created": result.components_created,
+            "faults_created":    result.faults_created,
+            "solutions_created": result.solutions_created,
+            "review_count":      len(result.review_items),
+            "error_count":       len(result.errors),
+            "errors":            result.errors,
+        },
+    }
+
+
+@app.post("/ai/manual-kg/reextract-all")
+async def manual_kg_reextract_all(request: Request):
+    """
+    全量重抽：遍历所有已导入手册，重新抽取并 MERGE 图谱实体。
+
+    用于周期性修正或首次批量建图。耗时较长（每文档约数十秒），请异步调用。
+    """
+    logger.info("[KG全量重抽API] 触发")
+
+    from services.knowledge.manual_kg_extractor import get_manual_kg_extractor
+    result = await get_manual_kg_extractor().reextract_all()
+
+    return {
+        "success": True,
+        "message": "操作成功",
+        "code": 200,
+        "data": result,
+    }
+
+
+@app.post("/ai/manual-kg/clear-all")
+async def manual_kg_clear_all(request: Request):
+    """清空 Neo4j 所有节点（测试用，内部接口）。"""
+    from config.settings import get_settings
+    import httpx as _httpx
+
+    settings = get_settings()
+    async with _httpx.AsyncClient(timeout=10.0) as client:
+        resp = await client.post(
+            f"{settings.java_service_url}/weixiu/kg/internal/clear-all",
+            json={},
+            headers={"X-Internal-Token": settings.internal_token},
+        )
+    return resp.json()

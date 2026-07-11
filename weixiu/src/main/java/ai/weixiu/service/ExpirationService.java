@@ -73,4 +73,11 @@ public interface ExpirationService {
      * @param adminName 管理员用户名
      */
     void rejectReview(Long reviewId, String adminName);
+    /**
+     * 手册导入完成后，触发 KG 实体抽取（Python 端 /ai/manual-kg/extract）。
+     *
+     * @param documentId  新导入文档的 documentId
+     * @param deviceType  设备类型提示（可空）
+     */
+    void triggerKGExtractAsync(String documentId, String deviceType);
 }
