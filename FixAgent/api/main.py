@@ -5020,3 +5020,59 @@ async def check_manual_upgrade_expiration(request: Request):
         "code": 200,
         "data": result,
     }
+
+
+@app.post("/ai/manual-upgrade/sync")
+async def manual_upgrade_sync(request: Request):
+    """
+    手册版本升级 → 知识图谱 chunk 级别同步（内部接口）。
+
+    由 Java 端在新版手册向量导入完成后异步触发。
+    对比 old_document_id / new_document_id 的 chunk diff，
+    按 MODIFIED / ADDED / DELETED 三类处理图谱节点。
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="invalid JSON body")
+
+    old_document_id = (body.get("old_document_id") or "").strip()
+    new_document_id = (body.get("new_document_id") or "").strip()
+    device_type = (body.get("device_type") or "").strip()
+    manual_id = body.get("manual_id")
+
+    if not new_document_id:
+        raise HTTPException(status_code=400, detail="new_document_id required")
+
+    logger.info(
+        "[手册升级同步API] 触发: old=%s new=%s device=%s manualId=%s",
+        old_document_id, new_document_id, device_type, manual_id,
+    )
+
+    from services.knowledge.manual_upgrade_sync import get_manual_upgrade_sync
+    svc = get_manual_upgrade_sync()
+    summary = await svc.sync(
+        old_document_id=old_document_id,
+        new_document_id=new_document_id,
+        device_type=device_type,
+        manual_id=manual_id,
+    )
+
+    return {
+        "success": True,
+        "message": "操作成功",
+        "code": 200,
+        "data": {
+            "deleted_count": summary.deleted_count,
+            "deprecated_count": summary.deprecated_count,
+            "modified_count": summary.modified_count,
+            "modified_replaced": summary.modified_replaced,
+            "modified_supplemented": summary.modified_supplemented,
+            "added_count": summary.added_count,
+            "added_created": summary.added_created,
+            "added_enriched": summary.added_enriched,
+            "review_queue_size": len(summary.review_queue),
+            "review_queue": summary.review_queue,
+            "errors": summary.errors,
+        },
+    }

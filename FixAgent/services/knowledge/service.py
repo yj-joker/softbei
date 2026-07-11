@@ -239,14 +239,15 @@ class KnowledgeService:
             "document_version": document_version,
         }
         if replace_existing and old_document_id:
-            # 删除旧版本的向量数据，用旧版本的 document_id（而非当前新版本的）
-            logger.info("删除旧版本向量: old_document_id=%s", old_document_id)
-            self.vector_svc.delete_by_document(old_document_id)
+            # 注意：不在这里立即删除旧向量，保留旧版本以便 chunk diff 可以比较两版本差异。
+            # 旧向量的最终清理由 Java 端 MQ 任务（sendDeleteTask）在导入完成后异步处理。
+            logger.info("replace_existing=True，旧版本向量保留至 KG 同步完成: old_document_id=%s", old_document_id)
         self.vector_svc.put_document_manifest(document_id, {
             **common_metadata,
             "status": "indexing",
             "category": category,
             "tags": tags or [],
+            **({"prev_document_id": old_document_id} if old_document_id else {}),
         })
 
         text_count = 0

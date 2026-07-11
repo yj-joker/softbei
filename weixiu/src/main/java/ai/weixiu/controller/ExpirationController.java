@@ -199,4 +199,201 @@ public class ExpirationController {
         log.info("[过期判定] 应用判决完成: {} 个节点标记为 deprecated", applied);
         return Result.success("ok: " + applied + " nodes marked deprecated");
     }
+
+    // ──────────────── 手册升级同步专用接口 ────────────────
+
+    /**
+     * 标记节点过期（带置信度）。
+     * 与 /apply 区别：支持设置 confidence（降分但不立即完全废弃）。
+     */
+    @PostMapping("/deprecate-node")
+    @Operation(summary = "标记节点过期（手册升级，内部）")
+    public Result<String> deprecateNode(@RequestBody Map<String, Object> body) {
+        String nodeId = (String) body.get("nodeId");
+        if (nodeId == null || nodeId.isBlank()) {
+            return Result.success("ok: no nodeId");
+        }
+        double confidence = body.get("confidence") instanceof Number n ? n.doubleValue() : 0.2;
+        String reason = (String) body.getOrDefault("reason", "");
+        String deprecatedBy = (String) body.getOrDefault("deprecatedBy", "manual_upgrade_sync");
+
+        try {
+            neo4jClient.query(
+                "MATCH (n) WHERE n.id = $id " +
+                "SET n.status = 'deprecated', " +
+                "    n.deprecated_at = datetime(), " +
+                "    n.deprecated_by = $deprecatedBy, " +
+                "    n.confidence = $confidence, " +
+                "    n.deprecated_reason = $reason " +
+                "RETURN n.id AS id"
+            ).bind(nodeId).to("id")
+             .bind(deprecatedBy).to("deprecatedBy")
+             .bind(confidence).to("confidence")
+             .bind(reason).to("reason")
+             .run();
+            log.info("[手册升级] 节点标记过期: id={} confidence={}", nodeId, confidence);
+        } catch (Exception e) {
+            log.warn("[手册升级] 标记节点过期失败: id={} err={}", nodeId, e.getMessage());
+        }
+        return Result.success("ok");
+    }
+
+    /**
+     * 更新节点的手册来源字段（MODIFIED chunk 场景）。
+     * 只写 manual_content / source_chunk_uid / source_content_hash，
+     * 保留 task/experience 来源的字段（verified, estimated_time 等）不变。
+     */
+    @PostMapping("/update-manual-fields")
+    @Operation(summary = "更新节点手册内容字段（内部）")
+    public Result<String> updateManualFields(@RequestBody Map<String, Object> body) {
+        String nodeId = (String) body.get("nodeId");
+        if (nodeId == null || nodeId.isBlank()) {
+            return Result.success("ok: no nodeId");
+        }
+        String newContent = (String) body.getOrDefault("newContent", "");
+        String sourceChunkUid = (String) body.getOrDefault("sourceChunkUid", "");
+        String sourceContentHash = (String) body.getOrDefault("sourceContentHash", "");
+        String reason = (String) body.getOrDefault("reason", "");
+
+        try {
+            neo4jClient.query(
+                "MATCH (n) WHERE n.id = $id " +
+                "SET n.manual_content = $content, " +
+                "    n.source_chunk_uid = $chunkUid, " +
+                "    n.source_content_hash = $contentHash, " +
+                "    n.manual_updated_at = datetime(), " +
+                "    n.manual_update_reason = $reason " +
+                "RETURN n.id AS id"
+            ).bind(nodeId).to("id")
+             .bind(newContent).to("content")
+             .bind(sourceChunkUid).to("chunkUid")
+             .bind(sourceContentHash).to("contentHash")
+             .bind(reason).to("reason")
+             .run();
+            log.info("[手册升级] 更新节点手册字段: id={} chunkUid={}", nodeId, sourceChunkUid);
+        } catch (Exception e) {
+            log.warn("[手册升级] 更新节点手册字段失败: id={} err={}", nodeId, e.getMessage());
+        }
+        return Result.success("ok");
+    }
+
+    /**
+     * 在节点上追加手册补充内容（SUPPLEMENT 场景）。
+     * 将新版手册的额外信息附加到节点属性，不修改任务验证数据。
+     */
+    @PostMapping("/add-supplement-edge")
+    @Operation(summary = "追加手册补充内容到节点（内部）")
+    public Result<String> addSupplementEdge(@RequestBody Map<String, Object> body) {
+        String fromNodeId = (String) body.get("fromNodeId");
+        if (fromNodeId == null || fromNodeId.isBlank()) {
+            return Result.success("ok: no fromNodeId");
+        }
+        String sourceChunkUid = (String) body.getOrDefault("sourceChunkUid", "");
+        String note = (String) body.getOrDefault("note", "");
+        String reason = (String) body.getOrDefault("reason", "");
+
+        try {
+            // 追加到 manual_supplements 列表属性（不覆盖已有补充）
+            neo4jClient.query(
+                "MATCH (n) WHERE n.id = $id " +
+                "SET n.manual_supplements = coalesce(n.manual_supplements, []) + [$supplement], " +
+                "    n.last_supplement_at = datetime() " +
+                "RETURN n.id AS id"
+            ).bind(fromNodeId).to("id")
+             .bind(sourceChunkUid + ": " + note.substring(0, Math.min(note.length(), 200))).to("supplement")
+             .run();
+            log.info("[手册升级] 追加补充内容: id={} chunkUid={}", fromNodeId, sourceChunkUid);
+        } catch (Exception e) {
+            log.warn("[手册升级] 追加补充内容失败: id={} err={}", fromNodeId, e.getMessage());
+        }
+        return Result.success("ok");
+    }
+
+    /**
+     * 通过 source_chunk_uid 查询 Neo4j 节点（精确匹配手册 chunk 来源）。
+     * 返回节点 id / name / title / has_task_edges（是否有任务/经验来源的出边）。
+     */
+    @PostMapping("/nodes-by-chunk-uid")
+    @Operation(summary = "按 source_chunk_uid 查询节点（内部）")
+    public Result<List<Map<String, Object>>> getNodesByChunkUid(@RequestBody Map<String, Object> body) {
+        String chunkUid = (String) body.get("chunkUid");
+        if (chunkUid == null || chunkUid.isBlank()) {
+            return Result.success(List.of());
+        }
+        try {
+            var result = neo4jClient.query(
+                "MATCH (n) WHERE n.source_chunk_uid = $chunkUid " +
+                "OPTIONAL MATCH (n)-[e]->() WHERE e.source IN ['task', 'experience'] " +
+                "RETURN n.id AS id, n.name AS name, n.title AS title, " +
+                "       n.status AS status, count(e) > 0 AS hasTaskEdges"
+            ).bind(chunkUid).to("chunkUid")
+             .fetch().all();
+
+            List<Map<String, Object>> nodes = new ArrayList<>();
+            for (var r : result) {
+                Map<String, Object> node = new LinkedHashMap<>();
+                node.put("id", r.get("id"));
+                node.put("name", r.get("name"));
+                node.put("title", r.get("title"));
+                node.put("status", r.get("status"));
+                node.put("has_task_edges", r.get("hasTaskEdges"));
+                nodes.add(node);
+            }
+            return Result.success(nodes);
+        } catch (Exception e) {
+            log.warn("[手册升级] 按 chunkUid 查节点失败: uid={} err={}", chunkUid, e.getMessage());
+            return Result.success(List.of());
+        }
+    }
+
+    /**
+     * 创建新的 Solution 节点（ADDED chunk → CREATE 场景）。
+     * 节点初始 status = pending_review，等待人工将其关联到合适的 Fault 路径。
+     * 带 source_chunk_uid / source_content_hash 以便下次版本升级时精确定位。
+     */
+    @PostMapping("/create-solution-node")
+    @Operation(summary = "从手册 chunk 创建 Solution 节点（内部）")
+    public Result<Map<String, Object>> createSolutionNode(@RequestBody Map<String, Object> body) {
+        String title = (String) body.getOrDefault("title", "");
+        String description = (String) body.getOrDefault("description", "");
+        String deviceType = (String) body.getOrDefault("deviceType", "");
+        String sourceChunkUid = (String) body.getOrDefault("sourceChunkUid", "");
+        String sourceContentHash = (String) body.getOrDefault("sourceContentHash", "");
+        String chunkLabel = (String) body.getOrDefault("chunkLabel", "general");
+        Object manualIdObj = body.get("manualId");
+
+        // 生成稳定 ID：manual:sha1(chunk_uid)[:16]
+        String nodeId = "manual:" + Integer.toHexString(sourceChunkUid.hashCode()).replace("-", "0");
+
+        try {
+            neo4jClient.query(
+                "MERGE (s:Solution {id: $id}) " +
+                "ON CREATE SET s.title = $title, " +
+                "              s.description = $description, " +
+                "              s.device_type = $deviceType, " +
+                "              s.source_chunk_uid = $chunkUid, " +
+                "              s.source_content_hash = $contentHash, " +
+                "              s.chunk_label = $chunkLabel, " +
+                "              s.manual_id = $manualId, " +
+                "              s.status = 'pending_review', " +
+                "              s.source = 'manual', " +
+                "              s.created_at = datetime() " +
+                "RETURN s.id AS id"
+            ).bind(nodeId).to("id")
+             .bind(title).to("title")
+             .bind(description).to("description")
+             .bind(deviceType).to("deviceType")
+             .bind(sourceChunkUid).to("chunkUid")
+             .bind(sourceContentHash).to("contentHash")
+             .bind(chunkLabel).to("chunkLabel")
+             .bind(manualIdObj != null ? manualIdObj.toString() : "").to("manualId")
+             .run();
+
+            log.info("[手册升级] 创建 Solution 节点: id={} title={}", nodeId, title);
+            return Result.success(Map.of("nodeId", nodeId));
+        } catch (Exception e) {
+            log.warn("[手册升级] 创建 Solution 节点失败: chunkUid={} err={}", sourceChunkUid, e.getMessage());
+            return Result.success(Map.of("nodeId", "", "error", e.getMessage()));
+        }
+    }
 }

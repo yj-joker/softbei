@@ -237,10 +237,15 @@ public class KnowledgeDocumentServiceImpl
                                     log.warn("删除旧版本 MinIO 文件失败: {}", finalOldMinioObjectName, e);
                                 }
                             }
-                            // 触发图谱知识过期判定（手动切换 active 后，检查旧手册派生的知识是否过期）
+                            // 触发图谱知识过期判定 + chunk 级别 KG 同步
+                            // finalOldDocumentId 已有：用于 chunk diff；deviceType 当前手册表无此字段，传空串
                             try {
                                 expirationService.checkManualUpgradeAsync(
-                                        doc.getManualId(), documentId, manual.getManualName());
+                                        doc.getManualId(),
+                                        documentId,
+                                        finalOldDocumentId,   // 可为 null，无旧版本时只做文档级过期判定
+                                        manual.getManualName(),
+                                        "");
                             } catch (Exception e) {
                                 log.warn("触发图谱过期判定失败（非阻塞）: manualId={}, err={}",
                                         doc.getManualId(), e.getMessage());

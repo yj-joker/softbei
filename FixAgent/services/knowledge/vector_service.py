@@ -861,6 +861,49 @@ class VectorService:
             logger.error(f"delete_by_document failed: {e}", exc_info=True)
             return 0
 
+    def list_document_chunks(
+        self,
+        document_id: str,
+        exclude_derived: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """列出一个文档的所有主 chunk（不含 step_raw / image_summary 派生条目）。
+
+        返回字段：doc_id, text, metadata（含 chunk_uid, raw_text, source_anchor 等）。
+        供 manual_upgrade_sync 做跨版本 diff。
+        """
+        if not document_id:
+            return []
+        try:
+            self._ensure_index()
+            query = build_redis_filter(document_id=document_id)
+            # 先用较大批次扫出所有 id，再按需读 metadata
+            results = self.redis.execute_command(
+                "FT.SEARCH",
+                self.INDEX_NAME,
+                query,
+                "RETURN", "3", "id", "text", "metadata",
+                "LIMIT", "0", "50000",
+                "DIALECT", "2",
+            )
+            records = []
+            if not results or len(results) <= 1:
+                return records
+            for i in range(1, len(results), 2):
+                fallback = self._decode_redis_value(results[i]).removeprefix(self.VECTOR_KEY_PREFIX)
+                record = self._decode_search_result_fields(results[i + 1], fallback_doc_id=fallback)
+                if not record:
+                    continue
+                meta = record.get("metadata") or {}
+                if exclude_derived:
+                    label = meta.get("chunk_label") or meta.get("chunk_type") or ""
+                    if label in ("step_raw", "image_summary"):
+                        continue
+                records.append(record)
+            return records
+        except Exception as e:
+            logger.warning(f"list_document_chunks failed: document_id={document_id} err={e}")
+            return []
+
     def put_document_manifest(self, document_id: str, manifest: Dict[str, Any]) -> bool:
         """Persist import lifecycle metadata outside individual chunk vectors."""
         if not document_id:

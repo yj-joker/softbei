@@ -28,13 +28,15 @@ public interface ExpirationService {
     void checkNewKnowledgeAsync(String deviceName, java.util.List<String> newFaultIds, java.util.List<String> newSolIds);
 
     /**
-     * 手册更新触发：检查图谱中来自旧手册的知识是否过期。
+     * 手册更新触发：检查图谱中来自旧手册的知识是否过期，并执行 chunk 级别的 KG 同步。
      *
      * @param manualId         手册 ID
      * @param newDocumentId    新版本的 documentId（kdoc_xxx）
+     * @param oldDocumentId    旧版本的 documentId（可为 null，无则跳过 chunk diff 同步）
      * @param manualName       手册名称
+     * @param deviceType       设备类型（用于 KG 候选过滤）
      */
-    void checkManualUpgradeAsync(Long manualId, String newDocumentId, String manualName);
+    void checkManualUpgradeAsync(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType);
 
     /**
      * 标记 Neo4j 节点为 deprecated。

@@ -84,9 +84,10 @@ public class ExpirationServiceImpl implements ExpirationService {
     }
 
     @Override
-    public void checkManualUpgradeAsync(Long manualId, String newDocumentId, String manualName) {
+    public void checkManualUpgradeAsync(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType) {
         try {
-            Map<String, Object> body = Map.of(
+            // 1. 触发旧版过期判定（粗粒度，文档级别）
+            Map<String, Object> upgradeBody = Map.of(
                     "manual_id", manualId != null ? manualId : 0,
                     "new_document_id", newDocumentId != null ? newDocumentId : "",
                     "manual_name", manualName != null ? manualName : ""
@@ -95,7 +96,7 @@ public class ExpirationServiceImpl implements ExpirationService {
             webClient.post()
                     .uri("/ai/expiration/check-manual-upgrade")
                     .header("X-Internal-Token", internalToken)
-                    .bodyValue(body)
+                    .bodyValue(upgradeBody)
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
                     .subscribe(
@@ -105,6 +106,39 @@ public class ExpirationServiceImpl implements ExpirationService {
                             },
                             e -> log.warn("[过期判定] 手册更新判定调度失败: {}", e.getMessage())
                     );
+
+            // 2. 如果有旧版 documentId，触发 chunk 级别 KG 同步（细粒度）
+            if (oldDocumentId != null && !oldDocumentId.isBlank()) {
+                Map<String, Object> syncBody = Map.of(
+                        "old_document_id", oldDocumentId,
+                        "new_document_id", newDocumentId != null ? newDocumentId : "",
+                        "device_type", deviceType != null ? deviceType : "",
+                        "manual_id", manualId != null ? manualId : 0
+                );
+
+                webClient.post()
+                        .uri("/ai/manual-upgrade/sync")
+                        .header("X-Internal-Token", internalToken)
+                        .bodyValue(syncBody)
+                        .retrieve()
+                        .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                        .subscribe(
+                                resp -> {
+                                    Map<?, ?> data = resp != null ? (Map<?, ?>) resp.get("data") : null;
+                                    if (data != null) {
+                                        log.info("[KG同步] 手册升级chunk同步完成: manualId={} old={} new={} deprecated={} created={} review={}",
+                                                manualId, oldDocumentId, newDocumentId,
+                                                data.get("deprecated_count"),
+                                                data.get("added_created"),
+                                                data.get("review_queue_size"));
+                                        // review_queue 也持久化
+                                        persistReviewQueue(resp);
+                                    }
+                                },
+                                e -> log.warn("[KG同步] chunk同步调度失败: manualId={} err={}", manualId, e.getMessage())
+                        );
+            }
+
         } catch (Exception e) {
             log.warn("[过期判定] 调度异常（非阻塞）: {}", e.getMessage());
         }
