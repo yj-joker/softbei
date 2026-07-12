@@ -638,14 +638,16 @@ def _extract_model_from_name(name: str) -> str:
 
 
 def _procedure_title(section_title: str, component_name: str) -> str:
-    """构造维修规程标题：优先用 section_title（含动作），降级用 部件+维修规程。"""
+    """构造维修规程标题：优先用 section_title（含真实维修动作），降级用 部件+维修规程。"""
     t = (section_title or "").strip()
-    # section_title 已含动作词（拆卸/安装等）时直接用
-    if t and re.search(r"(拆卸|拆装|安装|检查|检验|测量|调整|更换|保养|装配|分解)", t):
-        # 去掉章节号前缀
-        t = _CHAPTER_PREFIX.sub("", t).strip()
-        t = _NUMBER_PREFIX.sub("", t).strip()
-        return t[:80] if t else f"{component_name}维修规程"
+    t = _CHAPTER_PREFIX.sub("", t).strip()
+    t = _NUMBER_PREFIX.sub("", t).strip()
+    # "清单/明细/一览"类是表格章节，不是维修动作 → 降级
+    is_list_section = bool(re.search(r"(清单|明细|一览|BOM)", t))
+    # 真实维修动作词（不含"装配"——"装配部件清单"是表格不是动作）
+    has_action = bool(re.search(r"(拆卸|拆装|安装|检查|检验|测量|调整|更换|保养|分解|维修|检修)", t))
+    if t and has_action and not is_list_section:
+        return t[:80]
     return f"{component_name}维修规程" if component_name else (t[:80] or "维修规程")
 
 

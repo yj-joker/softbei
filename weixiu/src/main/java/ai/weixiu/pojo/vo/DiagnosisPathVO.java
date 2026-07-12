@@ -43,5 +43,6 @@ public class DiagnosisPathVO {
         private Integer estimatedTime;
         private Boolean verified;
         private String status;
+        private String kind; // fault_solution（诊断方案）| procedure（维修规程）
     }
 }

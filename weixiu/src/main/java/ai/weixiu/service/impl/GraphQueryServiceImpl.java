@@ -134,12 +134,17 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         }
 
         // ===== 6. OR Cypher + matchScore 排序（单次查询同时返回 records 和 total）=====
+        // 设备硬隔离：用户传了 keyword 就进入过滤模式——
+        //   - 匹配到设备 → 只返回该设备的部件
+        //   - 没匹配到任何设备 → deviceIds 为空，结果为空（用户想查的设备图谱里没有，不该返回别的设备）
+        // 用户没传 keyword → 不过滤（宽容返回，不误伤"不报设备名"的查询）
+        boolean deviceFilterActive = hasKeyword;
         QueryResult queryResult;
         try {
-            queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, skip, safeSize);
+            queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, deviceFilterActive, skip, safeSize);
         } catch (Exception e) {
-            log.error("Cypher查询失败: devices={} components={} faults={} skip={} limit={} err={}",
-                    deviceIds, componentIds, faultIds, skip, safeSize, e.getMessage(), e);
+            log.error("Cypher查询失败: devices={} components={} faults={} deviceFilter={} skip={} limit={} err={}",
+                    deviceIds, componentIds, faultIds, deviceFilterActive, skip, safeSize, e.getMessage(), e);
             throw e;
         }
         List<DiagnosisPathVO> records = queryResult.records;
@@ -182,6 +187,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             List<String> deviceIds,
             List<String> componentIds,
             List<String> faultIds,
+            boolean deviceFilterActive,
             int skip,
             int limit
     ) {
@@ -200,22 +206,33 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             params.put("faultIds", faultIds);
         }
 
-        String whereClause = "(" + String.join(" OR ", orConditions) + ")"
-                + " AND (f.status IS NULL OR f.status <> 'deprecated')";
+        // 召回以 Component 为中心：Fault 可选（有故障走诊断路径，无故障走维修规程）
+        String whereClause = "(" + String.join(" OR ", orConditions) + ")";
 
         // 确保评分参数存在（即使为空列表）
         params.putIfAbsent("componentIds", List.of());
         params.putIfAbsent("faultIds", List.of());
         params.put("deviceIds", deviceIds != null ? deviceIds : List.of());
 
-        // 单次查询：先聚合全量路径得到 total，再切片当前页，最后只对当前页展开 Solution
+        // 设备硬隔离：keyword 匹配到设备时，强制 Component 必须属于该设备（OWNS 关系），
+        // 从根上排除跨设备的向量误召回。deviceFilterActive=false 时不加此约束。
+        String deviceFilterClause = deviceFilterActive
+                ? "AND EXISTS { MATCH (dev:Device)-[:OWNS]->(c) WHERE dev.id IN $deviceIds } "
+                : "";
+
+        // 方案X：以 Component 为锚点，Fault OPTIONAL。
+        // Solution 从两条边收集：Fault-HAS_SOLUTION（诊断方案）+ Component-HAS_PROCEDURE（维修规程）。
+        // 无 Fault 的 Component（纯拆装手册）也能通过 HAS_PROCEDURE 返回规程。
         String cypher = """
-                MATCH (c:Component)-[:CAUSES]->(f:Fault)
-                WHERE %s
+                MATCH (c:Component)
+                OPTIONAL MATCH (c)-[:CAUSES]->(f:Fault)
+                WHERE (f IS NULL OR f.status IS NULL OR f.status <> 'deprecated')
+                WITH c, f
+                WHERE %s %s
                 OPTIONAL MATCH (d:Device)-[:OWNS]->(c)
                 OPTIONAL MATCH (d)-[hf:HAS_FAULT]->(f)
                 WITH DISTINCT c, f, d, hf IS NOT NULL AS hasHistory,
-                     CASE WHEN f.id IN $faultIds THEN 1 ELSE 0 END +
+                     CASE WHEN f IS NOT NULL AND f.id IN $faultIds THEN 1 ELSE 0 END +
                      CASE WHEN c.id IN $componentIds THEN 1 ELSE 0 END +
                      CASE WHEN d IS NOT NULL AND d.id IN $deviceIds THEN 1 ELSE 0 END +
                      CASE WHEN hf IS NOT NULL THEN 1 ELSE 0 END AS matchScore
@@ -225,16 +242,28 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 UNWIND allPaths[$skip..$endIdx] AS path
                 WITH path.d AS d, path.c AS c, path.f AS f,
                      path.hasHistory AS hasHistory, path.matchScore AS matchScore, total
-                OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution)
-                WHERE (s.status IS NULL OR s.status <> 'deprecated')
+                // 诊断方案：Fault-HAS_SOLUTION->Solution
+                OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(fs:Solution)
+                WHERE (fs.status IS NULL OR fs.status <> 'deprecated')
                 WITH d, c, f, hasHistory, matchScore, total,
                      collect(DISTINCT {
-                         id: s.id,
-                         title: s.title,
-                         estimatedTime: s.estimated_time,
-                         verified: s.verified,
-                         status: coalesce(s.status, 'active')
-                     }) AS solutions
+                         id: fs.id, title: fs.title,
+                         estimatedTime: fs.estimated_time,
+                         verified: fs.verified,
+                         status: coalesce(fs.status, 'active'),
+                         kind: coalesce(fs.solution_kind, 'fault_solution')
+                     }) AS faultSolutions
+                // 维修规程：Component-HAS_PROCEDURE->Solution
+                OPTIONAL MATCH (c)-[:HAS_PROCEDURE]->(ps:Solution)
+                WHERE (ps.status IS NULL OR ps.status <> 'deprecated')
+                WITH d, c, f, hasHistory, matchScore, total, faultSolutions,
+                     collect(DISTINCT {
+                         id: ps.id, title: ps.title,
+                         estimatedTime: ps.estimated_time,
+                         verified: ps.verified,
+                         status: coalesce(ps.status, 'active'),
+                         kind: 'procedure'
+                     }) AS procedures
                 RETURN d.id AS deviceId,
                        d.name AS deviceName,
                        c.id AS componentId,
@@ -244,9 +273,9 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                        f.severity AS faultSeverity,
                        hasHistory,
                        matchScore,
-                       solutions,
+                       faultSolutions + procedures AS solutions,
                        total
-                """.formatted(whereClause);
+                """.formatted(whereClause, deviceFilterClause);
 
         List<DiagnosisPathVO> records = new ArrayList<>();
         long[] totalHolder = {0L};
@@ -277,19 +306,22 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         vo.setFaultSeverity(record.get("faultSeverity").asString(null));
         vo.setMatchScore(record.get("matchScore").asInt(0));
 
-        // 解析聚合的 solutions 列表
+        // 解析聚合的 solutions 列表（含诊断方案 + 维修规程，按 id 去重、过滤空对象）
         List<DiagnosisPathVO.SolutionBrief> solutions = new ArrayList<>();
+        java.util.Set<String> seenSolutionIds = new java.util.HashSet<>();
         var solutionNodes = record.get("solutions").asList();
         for (Object obj : solutionNodes) {
             if (obj instanceof Map<?, ?> map) {
                 Object id = map.get("id");
-                if (id == null) continue;
+                if (id == null) continue;              // OPTIONAL MATCH 未命中产生的空对象
+                if (!seenSolutionIds.add(id.toString())) continue;  // 去重
                 solutions.add(new DiagnosisPathVO.SolutionBrief(
                         id.toString(),
                         map.get("title") != null ? map.get("title").toString() : null,
                         map.get("estimatedTime") != null ? ((Number) map.get("estimatedTime")).intValue() : null,
                         map.get("verified") != null ? (Boolean) map.get("verified") : null,
-                        map.get("status") != null ? map.get("status").toString() : "active"
+                        map.get("status") != null ? map.get("status").toString() : "active",
+                        map.get("kind") != null ? map.get("kind").toString() : "fault_solution"
                 ));
             }
         }
