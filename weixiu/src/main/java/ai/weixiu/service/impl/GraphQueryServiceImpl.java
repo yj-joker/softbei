@@ -141,7 +141,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         boolean deviceFilterActive = hasKeyword;
         QueryResult queryResult;
         try {
-            queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, deviceFilterActive, skip, safeSize);
+            queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, deviceFilterActive,
+                    compScoreMap, faultScoreMap, skip, safeSize);
         } catch (Exception e) {
             log.error("Cypher查询失败: devices={} components={} faults={} deviceFilter={} skip={} limit={} err={}",
                     deviceIds, componentIds, faultIds, deviceFilterActive, skip, safeSize, e.getMessage(), e);
@@ -188,12 +189,17 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             List<String> componentIds,
             List<String> faultIds,
             boolean deviceFilterActive,
+            Map<String, Double> compScoreMap,
+            Map<String, Double> faultScoreMap,
             int skip,
             int limit
     ) {
         Map<String, Object> params = new HashMap<>();
         params.put("skip", skip);
         params.put("endIdx", skip + limit);
+        // 向量分数传入，作为 matchScore 同分时的次级排序键（防止同分随机顺序把正确答案切掉）
+        params.put("compScores", compScoreMap != null ? compScoreMap : Map.of());
+        params.put("faultScores", faultScoreMap != null ? faultScoreMap : Map.of());
 
         // 构建 OR 条件
         List<String> orConditions = new ArrayList<>();
@@ -235,8 +241,12 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                      CASE WHEN f IS NOT NULL AND f.id IN $faultIds THEN 1 ELSE 0 END +
                      CASE WHEN c.id IN $componentIds THEN 1 ELSE 0 END +
                      CASE WHEN d IS NOT NULL AND d.id IN $deviceIds THEN 1 ELSE 0 END +
-                     CASE WHEN hf IS NOT NULL THEN 1 ELSE 0 END AS matchScore
-                ORDER BY matchScore DESC, hasHistory DESC
+                     CASE WHEN hf IS NOT NULL THEN 1 ELSE 0 END AS matchScore,
+                     // 向量分数次级键：取 component/fault 向量分中较大者
+                     CASE WHEN coalesce($compScores[c.id], 0.0) > coalesce($faultScores[f.id], 0.0)
+                          THEN coalesce($compScores[c.id], 0.0)
+                          ELSE coalesce($faultScores[f.id], 0.0) END AS vecScore
+                ORDER BY matchScore DESC, vecScore DESC, hasHistory DESC
                 WITH collect({d: d, c: c, f: f, hasHistory: hasHistory, matchScore: matchScore}) AS allPaths
                 WITH allPaths, size(allPaths) AS total
                 UNWIND allPaths[$skip..$endIdx] AS path

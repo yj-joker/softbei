@@ -1,0 +1,7 @@
+// KG检索评测——手写种子用例（isolation隔离 + negative负例）
+// 这些场景无法从图谱自动生成，需人工设计。会被 kg_gen_golden.py 追加进评测集。
+{"case_id": "kg_iso_001", "query_component": "液压泵密封圈泄漏", "query_fault": "", "query_keyword": "液压配比系统", "expected_components": [], "expected_solutions": [], "expected_device": "", "should_be_empty": true, "case_type": "isolation", "note": "图谱无液压设备，指定该设备应返回空（防跨设备污染）"}
+{"case_id": "kg_iso_002", "query_component": "比例阀压力异常", "query_fault": "", "query_keyword": "Reactor", "expected_components": [], "expected_solutions": [], "expected_device": "", "should_be_empty": true, "case_type": "isolation", "note": "Reactor设备图谱里没有，应返回空"}
+{"case_id": "kg_iso_003", "query_component": "起动电机", "query_fault": "", "query_keyword": "汽车发动机", "expected_components": [], "expected_solutions": [], "expected_device": "", "should_be_empty": true, "case_type": "isolation", "note": "起动电机在摩托车有，但指定汽车发动机→应隔离返回空"}
+{"case_id": "kg_neg_001", "query_component": "涡轮增压器", "query_fault": "", "query_keyword": "", "expected_components": [], "expected_solutions": [], "expected_device": "摩托车发动机", "should_be_empty": false, "case_type": "negative", "note": "摩托车手册无涡轮增压器，无设备名时不应高分误召回（弱约束，人工判断分数）"}
+{"case_id": "kg_neg_002", "query_component": "刹车片磨损", "query_fault": "", "query_keyword": "", "expected_components": [], "expected_solutions": [], "expected_device": "", "should_be_empty": false, "case_type": "negative", "note": "刹车系统不在发动机手册范围，向量应低分"}
