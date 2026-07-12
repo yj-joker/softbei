@@ -2,12 +2,15 @@ package ai.weixiu.controller;
 
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.query.DiagnosisSearchQuery;
+import ai.weixiu.pojo.vo.ComponentDeviceVO;
 import ai.weixiu.pojo.vo.DiagnosisSearchVO;
 import ai.weixiu.service.GraphQueryService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.AllArgsConstructor;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
 
 
 @RestController
@@ -33,5 +36,15 @@ public class PathController {
     @Operation(summary = "验证解决方案标题是否存在于知识图谱中（模糊匹配）")
     public Result<Boolean> solutionExists(@RequestParam String title) {
         return Result.success(graphQueryService.solutionExists(title));
+    }
+
+    @GetMapping("/reverse-device")
+    @Operation(summary = "部件反查设备（四态诊断-状态2：无设备反查）")
+    public Result<List<ComponentDeviceVO>> reverseQueryDevicesByComponent(
+            @RequestParam String componentDescription,
+            @RequestParam(defaultValue = "10") Long limit,
+            @RequestParam(defaultValue = "0.70") Double minScore
+    ) {
+        return Result.success(graphQueryService.reverseQueryDevicesByComponent(componentDescription, limit, minScore));
     }
 }

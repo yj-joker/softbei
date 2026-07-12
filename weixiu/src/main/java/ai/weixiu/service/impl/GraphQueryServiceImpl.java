@@ -3,6 +3,7 @@ package ai.weixiu.service.impl;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.query.DiagnosisSearchQuery;
 import ai.weixiu.pojo.vo.CaseRecordVO;
+import ai.weixiu.pojo.vo.ComponentDeviceVO;
 import ai.weixiu.pojo.vo.ComponentVO;
 import ai.weixiu.pojo.vo.DeviceVO;
 import ai.weixiu.pojo.vo.DiagnosisPathVO;
@@ -413,6 +414,72 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         return neo4jClient.query(cypher)
                 .bind(title).to("title")
                 .fetch().first().isPresent();
+    }
+
+    @Override
+    public List<ComponentDeviceVO> reverseQueryDevicesByComponent(String componentDescription, Long limit, Double minScore) {
+        if (!hasText(componentDescription)) {
+            return List.of();
+        }
+
+        long safeLimit = limit != null ? Math.max(limit, 1) : 10L;
+        double safeMinScore = minScore != null ? minScore : 0.70;
+
+        log.info("部件反查设备: desc={}, limit={}, minScore={}", componentDescription, safeLimit, safeMinScore);
+
+        // 1. 向量召回 Component（复用现有 ComponentService）
+        List<ComponentVO> components = componentService.getComponentByEmbedding(componentDescription, safeLimit, safeMinScore);
+        if (components.isEmpty()) {
+            log.info("部件反查设备: 向量召回0个部件");
+            return List.of();
+        }
+
+        List<String> componentIds = components.stream().map(ComponentVO::getId).toList();
+        Map<String, Double> scoreMap = new HashMap<>();
+        for (ComponentVO c : components) {
+            scoreMap.put(c.getId(), c.getScore());
+        }
+
+        log.debug("部件向量召回: {} 个部件", componentIds.size());
+
+        // 2. Cypher 反查 Device-OWNS->Component 关系
+        String cypher = """
+                MATCH (d:Device)-[:OWNS]->(c:Component)
+                WHERE c.id IN $componentIds
+                RETURN d.id AS deviceId,
+                       d.name AS deviceName,
+                       d.model AS deviceModel,
+                       d.location AS deviceLocation,
+                       c.id AS componentId,
+                       c.name AS componentName
+                """;
+
+        List<ComponentDeviceVO> results = new ArrayList<>();
+        neo4jClient.query(cypher)
+                .bind(componentIds).to("componentIds")
+                .fetchAs(ComponentDeviceVO.class)
+                .mappedBy((__, record) -> {
+                    ComponentDeviceVO vo = new ComponentDeviceVO();
+                    vo.setDeviceId(record.get("deviceId").asString(null));
+                    vo.setDeviceName(record.get("deviceName").asString(null));
+                    vo.setDeviceModel(record.get("deviceModel").asString(null));
+                    vo.setDeviceLocation(record.get("deviceLocation").asString(null));
+                    vo.setComponentId(record.get("componentId").asString(null));
+                    vo.setComponentName(record.get("componentName").asString(null));
+                    vo.setScore(scoreMap.get(vo.getComponentId()));
+                    return vo;
+                })
+                .all()
+                .forEach(results::add);
+
+        // 3. 按向量分数降序排序
+        results.sort((a, b) -> Double.compare(
+                b.getScore() != null ? b.getScore() : 0.0,
+                a.getScore() != null ? a.getScore() : 0.0
+        ));
+
+        log.info("部件反查设备: 返回 {} 个设备+部件组合", results.size());
+        return results;
     }
 
     private boolean hasText(String value) {

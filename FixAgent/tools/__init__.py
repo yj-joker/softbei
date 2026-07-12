@@ -10,6 +10,7 @@ Agent 可调用的工具集合，每个工具封装一种外部能力。
 - DocumentParserTool     — PDF/Word 文档解析
 - ConversationDetailTool — 对话细节召回（FixAgent 按需调用）
 - ProcedureRecommendTool — 标准作业流程推荐（FixAgent 按需调用）
+- ComponentReverseDeviceTool — 部件反查设备（四态诊断-状态2）
 """
 
 from .base_tool import BaseTool, ToolResult, ToolError, ToolException
@@ -23,6 +24,7 @@ from .graph_java_tool import (
 from .document_tool import DocumentParserTool, get_document_parser
 from .conversation_detail_tool import ConversationDetailTool, get_conversation_detail_tool
 from .procedure_recommend_tool import ProcedureRecommendTool, get_procedure_recommend_tool
+from .component_reverse_device_tool import ComponentReverseDeviceTool, get_component_reverse_device_tool
 
 __all__ = [
     # 基类
@@ -47,4 +49,7 @@ __all__ = [
     # 标准流程推荐
     "ProcedureRecommendTool",
     "get_procedure_recommend_tool",
+    # 部件反查设备（四态诊断）
+    "ComponentReverseDeviceTool",
+    "get_component_reverse_device_tool",
 ]
