@@ -876,29 +876,39 @@ class VectorService:
         try:
             self._ensure_index()
             query = build_redis_filter(document_id=document_id)
-            # 先用较大批次扫出所有 id，再按需读 metadata
-            results = self.redis.execute_command(
-                "FT.SEARCH",
-                self.INDEX_NAME,
-                query,
-                "RETURN", "3", "id", "text", "metadata",
-                "LIMIT", "0", "50000",
-                "DIALECT", "2",
-            )
+            # RediSearch 默认 LIMIT 上限 10000，超过会报错。分页取全量。
+            page_size = 5000
+            offset = 0
             records = []
-            if not results or len(results) <= 1:
-                return records
-            for i in range(1, len(results), 2):
-                fallback = self._decode_redis_value(results[i]).removeprefix(self.VECTOR_KEY_PREFIX)
-                record = self._decode_search_result_fields(results[i + 1], fallback_doc_id=fallback)
-                if not record:
-                    continue
-                meta = record.get("metadata") or {}
-                if exclude_derived:
-                    label = meta.get("chunk_label") or meta.get("chunk_type") or ""
-                    if label in ("step_raw", "image_summary"):
+            while True:
+                results = self.redis.execute_command(
+                    "FT.SEARCH",
+                    self.INDEX_NAME,
+                    query,
+                    "RETURN", "3", "id", "text", "metadata",
+                    "LIMIT", str(offset), str(page_size),
+                    "DIALECT", "2",
+                )
+                if not results or len(results) <= 1:
+                    break
+                page_count = 0
+                for i in range(1, len(results), 2):
+                    page_count += 1
+                    fallback = self._decode_redis_value(results[i]).removeprefix(self.VECTOR_KEY_PREFIX)
+                    record = self._decode_search_result_fields(results[i + 1], fallback_doc_id=fallback)
+                    if not record:
                         continue
-                records.append(record)
+                    meta = record.get("metadata") or {}
+                    if exclude_derived:
+                        label = meta.get("chunk_label") or meta.get("chunk_type") or ""
+                        if label in ("step_raw", "image_summary"):
+                            continue
+                    records.append(record)
+                if page_count < page_size:
+                    break
+                offset += page_size
+                if offset >= 100000:  # 安全上限，防止异常死循环
+                    break
             return records
         except Exception as e:
             logger.warning(f"list_document_chunks failed: document_id={document_id} err={e}")

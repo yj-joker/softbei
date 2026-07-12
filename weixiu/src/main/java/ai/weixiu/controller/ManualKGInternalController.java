@@ -86,52 +86,36 @@ public class ManualKGInternalController {
             String spec          = String.join(", ", keySpecs);
             String chunkUid      = (String) body.get("sourceChunkUid");
 
-            String cypher;
-            if (deviceId != null && !deviceId.isBlank()) {
-                cypher = """
-                        MATCH (d:Device {id: $deviceId})
-                        MERGE (c:Component {name: $name})
-                        MERGE (d)-[:OWNS]->(c)
-                        ON CREATE SET
-                            c.id               = randomUUID(),
-                            c.component_type   = $componentType,
-                            c.specification    = $spec,
-                            c.source           = 'manual',
-                            c.source_chunk_uid = $chunkUid,
-                            c.created_at       = datetime()
-                        ON MATCH SET
-                            c.updated_at       = datetime(),
-                            c.source_chunk_uid = coalesce($chunkUid, c.source_chunk_uid)
-                        RETURN c.id AS id, (c.updated_at IS NULL) AS created
-                        """;
-            } else {
-                cypher = """
-                        MERGE (c:Component {name: $name})
-                        ON CREATE SET
-                            c.id               = randomUUID(),
-                            c.component_type   = $componentType,
-                            c.specification    = $spec,
-                            c.source           = 'manual',
-                            c.source_chunk_uid = $chunkUid,
-                            c.created_at       = datetime()
-                        ON MATCH SET
-                            c.updated_at       = datetime(),
-                            c.source_chunk_uid = coalesce($chunkUid, c.source_chunk_uid)
-                        RETURN c.id AS id, (c.updated_at IS NULL) AS created
-                        """;
+            // deviceId 必填：Component 必须锚定到 Device（设备隔离，防跨设备同名合并）
+            if (deviceId == null || deviceId.isBlank()) {
+                return Result.error("400", "deviceId required: Component must be anchored to a Device");
             }
 
-            var query = neo4jClient.query(cypher)
+            // 用整个 (d)-[:OWNS]->(c{name}) 模式做 MERGE key：
+            // 同一 Device 下同名 Component 才合并；跨 Device 不共享。
+            String cypher = """
+                    MATCH (d:Device {id: $deviceId})
+                    MERGE (d)-[:OWNS]->(c:Component {name: $name})
+                    ON CREATE SET
+                        c.id               = randomUUID(),
+                        c.component_type   = $componentType,
+                        c.specification    = $spec,
+                        c.source           = 'manual',
+                        c.source_chunk_uid = $chunkUid,
+                        c.created_at       = datetime()
+                    ON MATCH SET
+                        c.updated_at       = datetime(),
+                        c.source_chunk_uid = coalesce($chunkUid, c.source_chunk_uid)
+                    RETURN c.id AS id, (c.updated_at IS NULL) AS created
+                    """;
+
+            Optional<Map<String, Object>> row = neo4jClient.query(cypher)
+                    .bind(deviceId).to("deviceId")
                     .bind(name).to("name")
                     .bind(componentType).to("componentType")
                     .bind(spec).to("spec")
-                    .bind(chunkUid).to("chunkUid");
-
-            if (deviceId != null && !deviceId.isBlank()) {
-                query = query.bind(deviceId).to("deviceId");
-            }
-
-            Optional<Map<String, Object>> row = query.fetch().first();
+                    .bind(chunkUid).to("chunkUid")
+                    .fetch().first();
 
             Map<String, Object> result = new HashMap<>();
             if (row.isEmpty()) {
@@ -302,6 +286,74 @@ public class ManualKGInternalController {
         } catch (Exception e) {
             log.warn("upsert-fault-solution failed: {}", e.getMessage(), e);
             return Result.error("500", "upsert-fault-solution failed: " + e.getMessage());
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // 3.5 Upsert Procedure (维修规程，直接挂 Component，不经过 Fault)
+    // -------------------------------------------------------------------------
+    /**
+     * MERGE 维修规程 Solution 节点并建立 Component-HAS_PROCEDURE->Solution 关系。
+     * 用于拆装/操作类手册——内容是"怎么做这个维修动作"，不对应具体故障。
+     */
+    @PostMapping("/upsert-procedure")
+    public Result<Map<String, Object>> upsertProcedure(@RequestBody Map<String, Object> body) {
+        try {
+            String componentId   = (String) body.get("componentId");
+            String title         = (String) body.get("title");
+            String description   = (String) body.getOrDefault("description", "");
+            @SuppressWarnings("unchecked")
+            List<String> steps   = (List<String>) body.getOrDefault("steps", Collections.emptyList());
+            String chunkUid      = (String) body.get("sourceChunkUid");
+
+            if (componentId == null || componentId.isBlank()) {
+                return Result.error("400", "componentId required");
+            }
+            if (title == null || title.isBlank()) {
+                return Result.error("400", "title required");
+            }
+            String stepsText = String.join("\n", steps);
+
+            String cypher = """
+                    MATCH (c:Component {id: $componentId})
+                    MERGE (c)-[:HAS_PROCEDURE]->(s:Solution {title: $title})
+                    ON CREATE SET
+                        s.id               = randomUUID(),
+                        s.description      = $description,
+                        s.steps_text       = $stepsText,
+                        s.solution_kind    = 'procedure',
+                        s.source           = 'manual',
+                        s.verified         = false,
+                        s.status           = 'active',
+                        s.source_chunk_uid = $chunkUid,
+                        s.created_at       = datetime()
+                    ON MATCH SET
+                        s.updated_at       = datetime(),
+                        s.description      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $description ELSE s.description END,
+                        s.steps_text       = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $stepsText  ELSE s.steps_text END
+                    RETURN s.id AS solutionId, (s.updated_at IS NULL) AS created
+                    """;
+
+            Optional<Map<String, Object>> row = neo4jClient.query(cypher)
+                    .bind(componentId).to("componentId")
+                    .bind(title).to("title")
+                    .bind(description).to("description")
+                    .bind(stepsText).to("stepsText")
+                    .bind(chunkUid).to("chunkUid")
+                    .fetch().first();
+
+            if (row.isEmpty()) {
+                return Result.error("500", "procedure upsert returned no row (componentId not found?)");
+            }
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("solutionId", row.get().get("solutionId"));
+            result.put("created",    row.get().get("created"));
+            return Result.success(result);
+
+        } catch (Exception e) {
+            log.warn("upsert-procedure failed: {}", e.getMessage(), e);
+            return Result.error("500", "upsert-procedure failed: " + e.getMessage());
         }
     }
 

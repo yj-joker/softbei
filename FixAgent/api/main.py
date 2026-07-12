@@ -5114,6 +5114,7 @@ async def manual_kg_extract(request: Request):
             "components_created": result.components_created,
             "faults_created":    result.faults_created,
             "solutions_created": result.solutions_created,
+            "procedures_created": result.procedures_created,
             "review_count":      len(result.review_items),
             "error_count":       len(result.errors),
             "errors":            result.errors,

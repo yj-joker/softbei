@@ -124,6 +124,7 @@ class ExtractionResult:
     components_created: int = 0
     faults_created: int = 0
     solutions_created: int = 0
+    procedures_created: int = 0  # 维修规程（step聚合，直接挂Component）
     review_items: List[Dict] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
 
@@ -136,6 +137,9 @@ class ManualKGExtractor:
     # 并发限制：LLM抽取、Java API调用
     _LLM_CONCURRENCY = 4
     _API_CONCURRENCY = 6
+    # Component MERGE 必须串行——Neo4j 的 MERGE 在并发事务下不加锁，
+    # 同名 Component 并发 MERGE 会产生重复节点。并发度=1 根治竞态。
+    _COMPONENT_CONCURRENCY = 1
 
     def __init__(self):
         self.settings = get_settings()
@@ -203,6 +207,8 @@ class ManualKGExtractor:
             # 5. 并发处理每个section：提取Component + Fault/Solution
             sem_llm = asyncio.Semaphore(self._LLM_CONCURRENCY)
             sem_api = asyncio.Semaphore(self._API_CONCURRENCY)
+            # Component MERGE 专用串行锁：根治 Neo4j 并发 MERGE 重复节点
+            sem_component = asyncio.Semaphore(self._COMPONENT_CONCURRENCY)
 
             async def process_section(sec_title: str, sec_chunks: List[Dict]) -> None:
                 # 5a. 提取 Component
@@ -210,7 +216,7 @@ class ManualKGExtractor:
                 comp_id = ""
                 if component:
                     sample_uid = _best_chunk_uid(sec_chunks)
-                    async with sem_api:
+                    async with sem_component:  # 串行化，避免同名 Component 并发 MERGE 重复
                         comp_resp = await self._call_java("/weixiu/kg/internal/upsert-component", {
                             "deviceId": device_id,
                             "name": component.name,
@@ -278,6 +284,33 @@ class ManualKGExtractor:
                                 "chunk_uid": item.source_chunk_uid,
                             })
 
+                # 5c. 维修规程：把 section 内的 step chunk 聚合成一个 Solution，
+                #     直接挂 Component（Component-HAS_PROCEDURE->Solution），不经过 Fault。
+                #     适配拆装/操作类手册——内容是"怎么做"而非"故障排除"。
+                if comp_id:
+                    step_chunks = [
+                        c for c in sec_chunks
+                        if (c.get("metadata") or {}).get("chunk_label") == "step"
+                    ]
+                    if step_chunks:
+                        steps_text = [
+                            ((c.get("metadata") or {}).get("raw_text") or c.get("text", "")).strip()
+                            for c in step_chunks
+                        ]
+                        steps_text = [s for s in steps_text if s]
+                        if steps_text:
+                            proc_title = _procedure_title(sec_title, component.name if component else "")
+                            async with sem_api:
+                                proc_resp = await self._call_java("/weixiu/kg/internal/upsert-procedure", {
+                                    "componentId": comp_id,
+                                    "title": proc_title,
+                                    "description": f"{component.name if component else ''}的维修操作规程",
+                                    "steps": steps_text,
+                                    "sourceChunkUid": _best_chunk_uid(step_chunks),
+                                })
+                            if (proc_resp or {}).get("solutionId"):
+                                result.procedures_created += 1
+
             # 并发处理所有section
             await asyncio.gather(
                 *[process_section(title, sec_chunks)
@@ -290,9 +323,10 @@ class ManualKGExtractor:
             result.errors.append(str(e))
 
         logger.info(
-            "[KG抽取] 完成: document_id=%s device=%s components=%d faults=%d solutions=%d",
+            "[KG抽取] 完成: document_id=%s device=%s components=%d faults=%d solutions=%d procedures=%d",
             document_id, result.device_name,
-            result.components_created, result.faults_created, result.solutions_created,
+            result.components_created, result.faults_created,
+            result.solutions_created, result.procedures_created,
         )
         return result
 
@@ -535,9 +569,18 @@ def _best_chunk_uid(chunks: List[Dict]) -> str:
     return ""
 
 
-_ACTION_VERBS = re.compile(
-    r"(的|与|及|和|或|、)?(拆卸|拆装|拆卸与安装|安装|检查|检验|维修|清洗|调整|更换|保养|"
-    r"故障排除|诊断|测量|检测|校准|润滑|修理|组装|分解|注意事项|说明|概述|简介).*$"
+_ACTION_WORDS = (
+    "拆卸与安装", "拆装", "拆卸", "安装", "检查", "检验", "维修", "清洗", "调整",
+    "更换", "保养", "故障排除", "诊断", "测量", "检测", "校准", "润滑", "修理",
+    "组装", "分解", "注意事项", "说明", "概述", "简介",
+)
+# 后缀动作：部件在前（如"火花塞的检查"）
+_ACTION_SUFFIX = re.compile(
+    r"(的|与|及|和|或)?(" + "|".join(_ACTION_WORDS) + r")(方法|步骤|流程|规程)?$"
+)
+# 前缀动作：动词在前（如"拆卸火花塞"）
+_ACTION_PREFIX = re.compile(
+    r"^(" + "|".join(_ACTION_WORDS) + r")(的)?"
 )
 _CHAPTER_PREFIX = re.compile(r"^第?\s*\d+\s*[章节条款]\s*[\.\s]*")
 _NUMBER_PREFIX = re.compile(r"^\d+(\.\d+)*\s+")
@@ -548,13 +591,24 @@ def _quick_extract_component(title: str) -> str:
     t = title.strip()
     t = _CHAPTER_PREFIX.sub("", t).strip()
     t = _NUMBER_PREFIX.sub("", t).strip()
-    t = _ACTION_VERBS.sub("", t).strip()
+    # 先去后缀动作（"火花塞的检查"→"火花塞"），再去前缀动作（"拆卸火花塞"→"火花塞"）
+    t = _ACTION_SUFFIX.sub("", t).strip()
+    t = _ACTION_PREFIX.sub("", t).strip()
+    # 去掉"装配部件清单/装配零件清单/部件清单/零件清单/清单"等表格类后缀
+    t = re.sub(r"(装配)?(部件|零件)?清单$", "", t).strip()
+    t = re.sub(r"(装配|分)?(部件|零件|组件|分部件)$", "", t).strip()
     # 去掉括号内内容
     t = re.sub(r"[（(][^）)]{0,30}[）)]", "", t).strip()
+    # 非部件章节黑名单（前言/目录/概述等）
+    if t in _NON_COMPONENT_TITLES or any(k in t for k in _NON_COMPONENT_TITLES):
+        return ""
     # 至少2个汉字，不超过12个字
     if 2 <= len(t) <= 12 and re.search(r"[一-鿿]", t):
         return t
     return ""
+
+
+_NON_COMPONENT_TITLES = ("前言", "目录", "概述", "简介", "说明", "序言", "注意事项", "总则", "附录")
 
 
 def _extract_specs_from_chunks(chunks: List[Dict]) -> List[str]:
@@ -581,6 +635,18 @@ def _extract_model_from_name(name: str) -> str:
     """从设备名中提取型号（字母+数字组合）。"""
     m = re.search(r"[A-Z]{1,5}\d{3,6}", name.upper())
     return m.group(0) if m else ""
+
+
+def _procedure_title(section_title: str, component_name: str) -> str:
+    """构造维修规程标题：优先用 section_title（含动作），降级用 部件+维修规程。"""
+    t = (section_title or "").strip()
+    # section_title 已含动作词（拆卸/安装等）时直接用
+    if t and re.search(r"(拆卸|拆装|安装|检查|检验|测量|调整|更换|保养|装配|分解)", t):
+        # 去掉章节号前缀
+        t = _CHAPTER_PREFIX.sub("", t).strip()
+        t = _NUMBER_PREFIX.sub("", t).strip()
+        return t[:80] if t else f"{component_name}维修规程"
+    return f"{component_name}维修规程" if component_name else (t[:80] or "维修规程")
 
 
 def _parse_json(text: str) -> Optional[Dict]:
