@@ -57,6 +57,7 @@ public class KnowledgeDocumentServiceImpl
     private final KnowledgeImportProducer knowledgeImportProducer;
     private final RedissonClient redissonClient;
     private final ExpirationService expirationService;
+    private final ai.weixiu.mapper.ManualDeviceMapper manualDeviceMapper;
 
     @Override
     @Transactional
@@ -253,8 +254,11 @@ public class KnowledgeDocumentServiceImpl
                         }
 
                         // 3. 触发 KG 实体抽取（手册→图谱节点）——每次导入都执行
+                        // 用户在上传时选择的"适用设备"作为图谱设备锚点：抽取锚定到该设备，
+                        // 同设备的多本手册会 MERGE 复用节点（用户主动决定关联，而非 LLM 自行识别导致误合并）。
                         try {
-                            expirationService.triggerKGExtractAsync(documentId, doc.getManualId(), "");
+                            String deviceHint = resolveDeviceHint(doc.getManualId());
+                            expirationService.triggerKGExtractAsync(documentId, doc.getManualId(), deviceHint);
                         } catch (Exception e) {
                             log.warn("触发KG抽取失败（非阻塞）: manualId={}, err={}", doc.getManualId(), e.getMessage());
                         }
@@ -265,6 +269,30 @@ public class KnowledgeDocumentServiceImpl
 
         log.info("解析成功: documentId={}, version={}, text={}, image={}, table={}",
                 documentId, doc.getVersion(), doc.getTextCount(), doc.getImageCount(), doc.getTableCount());
+    }
+
+    /**
+     * 取手册关联的"适用设备"名作为 KG 抽取的设备锚点。
+     * <p>
+     * 用户上传时选的设备决定图谱设备归属：抽取锚定到该设备名，同设备多手册 MERGE 复用节点。
+     * 手册可关联多个设备，但图谱设备根节点只能有一个 → 取第一个关联设备名。
+     * 未关联任何设备 → 返回空串，抽取回退到 LLM 自行识别设备名。
+     */
+    private String resolveDeviceHint(Long manualId) {
+        if (manualId == null) return "";
+        try {
+            java.util.List<ai.weixiu.entity.ManualDevice> links = manualDeviceMapper.selectList(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ai.weixiu.entity.ManualDevice>()
+                            .eq(ai.weixiu.entity.ManualDevice::getManualId, manualId));
+            for (ai.weixiu.entity.ManualDevice link : links) {
+                if (link.getDeviceName() != null && !link.getDeviceName().isBlank()) {
+                    return link.getDeviceName().trim();
+                }
+            }
+        } catch (Exception e) {
+            log.warn("查询手册关联设备失败（回退LLM识别）: manualId={}, err={}", manualId, e.getMessage());
+        }
+        return "";
     }
 
     @Override
