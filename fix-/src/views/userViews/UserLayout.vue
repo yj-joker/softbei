@@ -124,8 +124,8 @@ function goToLogin() {
           </svg>
         </div>
         <div class="brand-meta">
-          <span class="brand-name">检修系统</span>
-          <span class="brand-sub">MAINTENANCE&nbsp;OS</span>
+          <span class="brand-name">智维</span>
+          <span class="brand-sub">MaintAI</span>
         </div>
       </div>
 
