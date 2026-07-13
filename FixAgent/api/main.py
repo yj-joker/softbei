@@ -256,10 +256,14 @@ def _execution_mode(metadata: dict | None) -> str:
 
 
 def _is_deterministic_direct_output(output: AgentOutput) -> bool:
+    """检查是否为确定性直接输出，应跳过 review。"""
+    if output.metadata.get("deterministic_direct"):
+        return True
     return _execution_mode(output.metadata) in {
         "knowledge_inventory_direct",
         "domain_rule_direct",
         "causal_follow_up_resolved",
+        "insufficient_evidence_guard",
     }
 
 
@@ -4077,32 +4081,40 @@ async def chat(request: ChatRequest) -> ChatResponse:
         )
 
         direct_table_items = await _collect_direct_section_table_items(request.message, final_result.metadata)
-        table_answer = _format_inventory_table_answer_from_metadata(
-            request.message,
-            final_result.metadata,
-            direct_table_items,
-        )
-        if table_answer:
-            final_result.metadata["deterministic_table_answer"] = True
-            final_result.metadata["deterministic_table_answer_source"] = "api_response_override"
-            response_message = table_answer
-            diagnosis_items = None
-            verification = {}
-            has_issues = False
+
+        # 低置信度检索时，跳过表格答案覆盖，保留 review 后的原始答案+声明
+        low_confidence = final_result.metadata.get("low_confidence_retrieval", False)
+        if low_confidence:
+            response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
+            verification = final_result.metadata.get("verification", {})
+            has_issues = final_result.metadata.get("verification_has_issues", False)
         else:
-            manual_evidence_answer = _format_manual_evidence_answer_from_metadata(
+            table_answer = _format_inventory_table_answer_from_metadata(
                 request.message,
                 final_result.metadata,
+                direct_table_items,
             )
-            if manual_evidence_answer:
-                final_result.metadata["deterministic_manual_evidence_answer"] = True
-                final_result.metadata["deterministic_manual_evidence_answer_source"] = "api_response_override"
-                response_message = manual_evidence_answer
+            if table_answer:
+                final_result.metadata["deterministic_table_answer"] = True
+                final_result.metadata["deterministic_table_answer_source"] = "api_response_override"
+                response_message = table_answer
                 diagnosis_items = None
                 verification = {}
                 has_issues = False
             else:
-                response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
+                manual_evidence_answer = _format_manual_evidence_answer_from_metadata(
+                    request.message,
+                    final_result.metadata,
+                )
+                if manual_evidence_answer:
+                    final_result.metadata["deterministic_manual_evidence_answer"] = True
+                    final_result.metadata["deterministic_manual_evidence_answer_source"] = "api_response_override"
+                    response_message = manual_evidence_answer
+                    diagnosis_items = None
+                    verification = {}
+                    has_issues = False
+                else:
+                    response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
             if not manual_evidence_answer and not _is_deterministic_direct_output(final_result):
                 follow_up = build_follow_up(input_data.user_message, diagnosis_items, final_result.metadata)
                 if follow_up:
@@ -4374,9 +4386,13 @@ async def chat_stream(request: ChatRequest):
             # —— 检修助手出口兜底（仅 maintenance 场景）——
             # 模型若吐出控制结构 JSON（needs_more_tools / 残缺 {"message"..}）或套话式软拒答，
             # 则抛开 ReAct 用「上下文+历史」重答一次，避免把内部结构/拒答暴露给工人。
+            # **但**：如果是 low_confidence_retrieval（分数阈值拦截），那是有意拦截，不触发兜底。
             fallback_text = None
             maint_ctx = (input_data.context or {}).get("maintenance")
-            if maint_ctx and _is_unhelpful_maintenance_reply(full_message):
+            insufficient_reason = stream_metadata.get("insufficient_evidence_reason", "")
+            if (maint_ctx
+                and _is_unhelpful_maintenance_reply(full_message)
+                and insufficient_reason != "low_confidence_retrieval"):
                 fallback_text = await _maintenance_fallback_answer(input_data, maint_ctx)
                 if fallback_text:
                     logger.info("[chat_stream] 检修助手出口兜底已触发 session=%s", request.session_id)
@@ -4450,7 +4466,11 @@ async def chat_stream(request: ChatRequest):
                 # 检修助手：review 因"证据不足"把回答压成软拒答（"知识库未检索到…请补型号"）时，
                 # 不直接甩给工人——改用「上下文+常识」重答。通用原理/常见原因据此放开作答；
                 # 精确参数由 _maintenance_fallback_answer 的 prompt 约束为"给方向、以手册为准、不编数值"。
-                if maint_ctx and verified_output.metadata.get("blocked_for_insufficient_evidence"):
+                # **但**：如果是 low_confidence_retrieval（分数阈值拦截），说明召回结果不可信，这时应坚守拦截，不走常识兜底。
+                insufficient_reason = verified_output.metadata.get("insufficient_evidence_reason", "")
+                if (maint_ctx
+                    and verified_output.metadata.get("blocked_for_insufficient_evidence")
+                    and insufficient_reason != "low_confidence_retrieval"):
                     retry = await _maintenance_fallback_answer(input_data, maint_ctx)
                     if retry:
                         logger.info("[chat_stream] 检修助手证据不足→改用常识重答 session=%s", request.session_id)
@@ -5118,6 +5138,8 @@ async def manual_kg_extract(request: Request):
             "review_count":      len(result.review_items),
             "error_count":       len(result.errors),
             "errors":            result.errors,
+            "skipped":           result.skipped,
+            "skip_reason":       result.skip_reason,
         },
     }
 

@@ -1351,10 +1351,21 @@ class ReviewAgent:
         # ⑤ 不再调用 _move_unverified_critical_lines / _renumber，保留模型分好的步骤层次，不拍平
         held_for_confirmation = source_held
 
+        # 低置信度检索声明：检索分数过低时追加常识回答风险提示
+        low_confidence_disclaimer = None
+        if fix_output.metadata.get("low_confidence_retrieval"):
+            low_confidence_disclaimer = (
+                "以上回答基于检索到的手册内容结合模型常识推理给出，"
+                "但检索相关度较低，可能不完全适用于您的具体设备或情况。"
+                "建议核对设备铭牌型号、补充更具体的部件或故障描述后重新查询，"
+                "或以设备实际手册和铭牌为准。"
+            )
+
         final_message = _ResponseComposer.compose(
             base_message=final_message,
             safety=safety,
             policy=intent_policy,
+            low_confidence_disclaimer=low_confidence_disclaimer,
         )
         final_message = _OutputSanitizer.sanitize(final_message)
 
@@ -1484,6 +1495,7 @@ class _ResponseComposer:
         policy: Optional[Dict[str, Any]] = None,
         confirmed_values: Optional[List[str]] = None,
         pending_lines: str = "",
+        low_confidence_disclaimer: Optional[str] = None,
     ) -> str:
         policy = policy or {}
         base_message = _ResponseComposer._format_base_message(base_message, policy)
@@ -1507,6 +1519,9 @@ class _ResponseComposer:
             safety_title = "\u5b89\u5168\u63d0\u9192\uff1a"
             appended = _ResponseComposer._strip_repeated_section_prefix(appended, safety_title)
             sections.append(f"{safety_title}\n{appended}")
+
+        if low_confidence_disclaimer:
+            sections.append(f"**\u63d0\u793a\uff1a**\n{low_confidence_disclaimer}")
 
         return "\n\n".join(section for section in sections if section)
 
