@@ -159,6 +159,7 @@ class ManualKGExtractor:
         document_id: str,
         device_type_hint: str = "",
         manual_id: Optional[int] = None,
+        manual_name: str = "",
     ) -> ExtractionResult:
         """
         从一个文档抽取所有实体并写入 KG。
@@ -194,7 +195,7 @@ class ManualKGExtractor:
             logger.info("[KG抽取] 结构质检通过: document_id=%s stats=%s", document_id, gate["stats"])
 
             # 2. 识别 Device（一次LLM调用）
-            device = await self._identify_device(chunks, manifest, device_type_hint)
+            device = await self._identify_device(chunks, manifest, device_type_hint, manual_name)
             if not device:
                 logger.warning("[KG抽取] Device识别失败: document_id=%s", document_id)
                 result.errors.append("Device identification failed")
@@ -400,11 +401,14 @@ class ManualKGExtractor:
         chunks: List[Dict],
         manifest: Dict,
         device_type_hint: str,
+        manual_name: str = "",
     ) -> Optional[ExtractedDevice]:
-        """从文件名 + 前几个chunk 识别 Device。"""
-        file_name = manifest.get("file_name", "")
+        """识别 Device：优先用户选的设备名 → LLM 识别 → 原始手册名兜底。"""
+        # 显示名优先用原始手册名（如"摩托车发动机维修手册"）；
+        # manifest.file_name 往往是 MinIO 对象名(docparser_xxx)，不可读，只作最后兜底。
+        display_name = (manual_name or "").strip() or manifest.get("file_name", "")
 
-        # 快速规则：如果 device_type_hint 已经是明确设备名，直接用
+        # 快速规则：用户上传时选了适用设备 → 直接用作设备锚点（最可靠）
         if device_type_hint and len(device_type_hint) >= 3:
             return ExtractedDevice(
                 name=device_type_hint,
@@ -413,13 +417,13 @@ class ManualKGExtractor:
                 confidence=0.9,
             )
 
-        # LLM识别
+        # LLM识别（喂原始手册名，不喂对象名，避免 docparser_xxx 干扰）
         intro_text = "\n".join(
             (c.get("metadata") or {}).get("raw_text") or c.get("text", "")
             for c in chunks[:5]
         )[:1500]
 
-        prompt = f"文件名：{file_name}\n\n开头内容：\n{intro_text}"
+        prompt = f"手册名称：{display_name}\n\n开头内容：\n{intro_text}"
         try:
             resp = await self.llm.chat(
                 messages=[
@@ -442,13 +446,17 @@ class ManualKGExtractor:
         except Exception as e:
             logger.warning("[KG抽取] Device识别LLM失败: %s", e)
 
-        # 降级：从文件名截取
-        if file_name:
-            name = re.sub(r"[_\-]?(维修|使用|操作|说明|手册|manual).*", "", file_name, flags=re.IGNORECASE)
+        # 降级：从原始手册名截取（"摩托车发动机维修手册"→"摩托车发动机"）；
+        # 绝不用 MinIO 对象名(docparser_xxx)兜底——那会产出乱码设备名。
+        if manual_name and manual_name.strip():
+            name = re.sub(r"[_\-]?(维修|使用|操作|说明|手册|manual).*", "", manual_name.strip(), flags=re.IGNORECASE)
             name = re.sub(r"\.(pdf|PDF|docx?)$", "", name).strip()
-            if name:
+            if name and len(name) >= 2:
+                logger.info("[KG抽取] Device 降级用原始手册名: %s → %s", manual_name, name)
                 return ExtractedDevice(name=name, confidence=0.5)
 
+        # 原始名也没有 → 放弃，不入图（不用对象名产出乱码节点污染图谱）
+        logger.warning("[KG抽取] Device 无法识别（无用户选设备/LLM失败/无原始手册名），跳过入图")
         return None
 
     async def _extract_component(

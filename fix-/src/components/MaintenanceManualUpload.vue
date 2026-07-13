@@ -1,9 +1,9 @@
 <script setup>
 import { ref, onMounted } from 'vue'
 import { Upload, Document, Plus, Check, Close } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { uploadMaintenanceManual } from '@/api/maintenanceManual'
-import { searchDevices } from '@/api/graph'
+import { searchDevices, deviceApi } from '@/api/graph'
 import { notifyStore } from '@/stores/notifyStore'
 
 const emit = defineEmits(['success'])
@@ -13,9 +13,14 @@ const dragOver = ref(false)
 const uploadLoading = ref(false)
 const uploadedFiles = ref([])
 
-// 适用设备（本批次共用，应用到所有上传的文件）
+// 适用设备（本批次共用，作为图谱设备锚点；单选——图谱设备根节点唯一）
 const deviceOptions = ref([])
-const selectedDeviceIds = ref([])
+const selectedDeviceId = ref('')
+
+// 新建设备弹窗
+const createDialogVisible = ref(false)
+const createLoading = ref(false)
+const newDevice = ref({ name: '', model: '', manufacturer: '' })
 
 async function loadDevices() {
   try {
@@ -29,6 +34,41 @@ async function loadDevices() {
 }
 
 onMounted(loadDevices)
+
+function openCreateDialog() {
+  newDevice.value = { name: '', model: '', manufacturer: '' }
+  createDialogVisible.value = true
+}
+
+async function submitCreateDevice() {
+  const name = (newDevice.value.name || '').trim()
+  if (!name) {
+    ElMessage.warning('请填写设备名称')
+    return
+  }
+  createLoading.value = true
+  try {
+    const res = await deviceApi.save({
+      name,
+      model: (newDevice.value.model || '').trim(),
+      manufacturer: (newDevice.value.manufacturer || '').trim(),
+    })
+    const created = res.data
+    if (created && created.id) {
+      // 加入选项并自动选中
+      deviceOptions.value.unshift(created)
+      selectedDeviceId.value = created.id
+      createDialogVisible.value = false
+      ElMessage.success(`设备「${created.name}」已创建并选中`)
+    } else {
+      ElMessage.error(res.message || '创建设备失败')
+    }
+  } catch (e) {
+    ElMessage.error('创建设备失败: ' + (e.message || e))
+  } finally {
+    createLoading.value = false
+  }
+}
 
 function handleDragOver(e) {
   dragOver.value = true
@@ -87,6 +127,19 @@ async function uploadFiles() {
     return
   }
 
+  // 软提示：未选适用设备时确认——不选则图谱回退自动识别设备名，可能不准
+  if (!selectedDeviceId.value) {
+    try {
+      await ElMessageBox.confirm(
+        '未选择适用设备。知识图谱将尝试自动识别设备名（可能不准确或识别失败）。\n建议选择或新建一个设备以获得更可靠的图谱归属。是否仍要继续上传？',
+        '未选择设备',
+        { confirmButtonText: '仍要上传', cancelButtonText: '返回选择', type: 'warning' }
+      )
+    } catch {
+      return  // 用户选择返回
+    }
+  }
+
   uploadLoading.value = true
 
   for (const item of uploadedFiles.value) {
@@ -99,8 +152,10 @@ async function uploadFiles() {
     formData.append('manualName', nameWithoutExt)
     formData.append('manualImage', '')
     formData.append('manualDesc', '')
-    // 适用设备：每个 deviceId 作为重复表单字段，后端 @ModelAttribute 绑定为 List<String>
-    selectedDeviceIds.value.forEach(id => formData.append('deviceIds', id))
+    // 适用设备（单选，作为图谱设备锚点）：后端 @ModelAttribute 绑定为 List<String>，传单元素
+    if (selectedDeviceId.value) {
+      formData.append('deviceIds', selectedDeviceId.value)
+    }
 
     try {
       const res = await uploadMaintenanceManual(formData)
@@ -131,7 +186,7 @@ async function uploadFiles() {
 
 function resetState() {
   uploadedFiles.value = []
-  selectedDeviceIds.value = []
+  selectedDeviceId.value = ''
 }
 
 function formatSize(bytes) {
@@ -149,28 +204,57 @@ defineExpose({ uploadFiles, resetState })
 
 <template>
   <div class="manual-upload">
-    <!-- 适用设备（可选，本批次共用） -->
+    <!-- 适用设备（作为图谱设备锚点，单选；建议选择，可新建） -->
     <div class="device-field">
       <label class="device-label">
-        适用设备 <span class="optional">(可选，本批次全部文件共用；通用手册可不选)</span>
+        适用设备 <span class="optional">(建议选择，作为知识图谱的设备归属；未选则自动识别)</span>
       </label>
-      <el-select
-        v-model="selectedDeviceIds"
-        multiple
-        filterable
-        collapse-tags
-        collapse-tags-tooltip
-        placeholder="选择该手册适用的设备"
-        style="width: 100%"
-      >
-        <el-option
-          v-for="d in deviceOptions"
-          :key="d.id"
-          :label="d.name + (d.model ? ' / ' + d.model : '')"
-          :value="d.id"
-        />
-      </el-select>
+      <div class="device-row">
+        <el-select
+          v-model="selectedDeviceId"
+          filterable
+          clearable
+          placeholder="选择该手册适用的设备"
+          class="device-select"
+        >
+          <el-option
+            v-for="d in deviceOptions"
+            :key="d.id"
+            :label="d.name + (d.model ? ' / ' + d.model : '')"
+            :value="d.id"
+          />
+        </el-select>
+        <el-button @click="openCreateDialog">
+          <el-icon><Plus /></el-icon>新建设备
+        </el-button>
+      </div>
     </div>
+
+    <!-- 新建设备弹窗 -->
+    <el-dialog
+      v-model="createDialogVisible"
+      title="新建设备"
+      width="440px"
+      append-to-body
+    >
+      <el-form label-width="80px">
+        <el-form-item label="设备名称" required>
+          <el-input v-model="newDevice.name" placeholder="如：摩托车发动机" maxlength="60" />
+        </el-form-item>
+        <el-form-item label="型号">
+          <el-input v-model="newDevice.model" placeholder="可选，如：CG125" maxlength="60" />
+        </el-form-item>
+        <el-form-item label="制造商">
+          <el-input v-model="newDevice.manufacturer" placeholder="可选" maxlength="60" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="createLoading" @click="submitCreateDevice">
+          创建并选中
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- 拖拽区域 -->
     <div
@@ -258,6 +342,15 @@ defineExpose({ uploadFiles, resetState })
 .device-label .optional {
   font-weight: 400;
   color: var(--plaza-text-muted);
+}
+.device-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.device-select {
+  flex: 1;
+  min-width: 0;
 }
 
 .drop-zone {

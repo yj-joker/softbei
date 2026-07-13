@@ -84,13 +84,14 @@ public class ExpirationServiceImpl implements ExpirationService {
     }
 
     @Override
-    public void triggerKGExtractAsync(String documentId, Long manualId, String deviceType) {
+    public void triggerKGExtractAsync(String documentId, Long manualId, String deviceType, String manualName) {
         if (documentId == null || documentId.isBlank()) return;
         try {
             Map<String, Object> body = Map.of(
                     "document_id", documentId,
                     "manual_id", manualId != null ? manualId : 0L,
-                    "device_type", deviceType != null ? deviceType : ""
+                    "device_type", deviceType != null ? deviceType : "",
+                    "manual_name", manualName != null ? manualName : ""
             );
             webClient.post()
                     .uri("/ai/manual-kg/extract")

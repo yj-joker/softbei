@@ -78,7 +78,8 @@ public interface ExpirationService {
      *
      * @param documentId  新导入文档的 documentId
      * @param manualId    手册ID（稳定主键，作为图谱节点归属标识，供删手册时精确清理）
-     * @param deviceType  设备类型提示（可空）
+     * @param deviceType  设备锚点提示（用户选的适用设备名，可空）
+     * @param manualName  原始手册名（LLM 识别不出设备时的降级兜底，避免用 MinIO 对象名）
      */
-    void triggerKGExtractAsync(String documentId, Long manualId, String deviceType);
+    void triggerKGExtractAsync(String documentId, Long manualId, String deviceType, String manualName);
 }

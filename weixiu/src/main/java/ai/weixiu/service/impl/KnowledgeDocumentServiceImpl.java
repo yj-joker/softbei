@@ -258,7 +258,7 @@ public class KnowledgeDocumentServiceImpl
                         // 同设备的多本手册会 MERGE 复用节点（用户主动决定关联，而非 LLM 自行识别导致误合并）。
                         try {
                             String deviceHint = resolveDeviceHint(doc.getManualId());
-                            expirationService.triggerKGExtractAsync(documentId, doc.getManualId(), deviceHint);
+                            expirationService.triggerKGExtractAsync(documentId, doc.getManualId(), deviceHint, manual.getManualName());
                         } catch (Exception e) {
                             log.warn("触发KG抽取失败（非阻塞）: manualId={}, err={}", doc.getManualId(), e.getMessage());
                         }
