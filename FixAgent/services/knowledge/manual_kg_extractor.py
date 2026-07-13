@@ -127,6 +127,8 @@ class ExtractionResult:
     procedures_created: int = 0  # 维修规程（step聚合，直接挂Component）
     review_items: List[Dict] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+    skipped: bool = False        # 结构质检未通过，整本跳过入图（0 污染）
+    skip_reason: str = ""        # 跳过原因，供前端/日志展示
 
 
 # ──────────────── 主服务 ────────────────
@@ -178,6 +180,17 @@ class ManualKGExtractor:
                 return result
 
             manifest = self.vector_svc.get_document_manifest(document_id) or {}
+
+            # 结构质检闸门：section_title 结构塌陷的手册（如流程叙述型、
+            # PDF 标题未正确解析）整本跳过入图，宁可 0 入图也不产出脏节点污染图谱。
+            gate = assess_section_structure(chunks)
+            if not gate["ok"]:
+                logger.warning("[KG抽取] 结构质检未通过，跳过入图: document_id=%s reason=%s stats=%s",
+                               document_id, gate["reason"], gate["stats"])
+                result.skipped = True
+                result.skip_reason = gate["reason"]
+                return result
+            logger.info("[KG抽取] 结构质检通过: document_id=%s stats=%s", document_id, gate["stats"])
 
             # 2. 识别 Device（一次LLM调用）
             device = await self._identify_device(chunks, manifest, device_type_hint)
@@ -560,6 +573,81 @@ def _group_by_section(chunks: List[Dict]) -> Dict[str, List[Dict]]:
     return groups
 
 
+# 标题脏特征：含公式符号、换行、制表等——说明 PDF 解析没切出干净的章节标题
+_DIRTY_TITLE_CHARS = re.compile(r"[=＝\n\r\t]")
+
+
+def _is_structural_title(title: str) -> bool:
+    """判断一个 section_title 是否是"干净的部件级/章节级标题"。
+
+    干净标题：短（<=25字）、无公式/换行、不是一整句操作步骤。
+    脏标题（如 '0.1\\n外压力比＝ ='、'2.3 松开电机地脚螺栓...'）返回 False。
+    """
+    t = (title or "").strip()
+    if not t or t == "（无标题）":
+        return False
+    if _DIRTY_TITLE_CHARS.search(t):
+        return False
+    # 去掉章节号前缀后再判长度
+    core = _CHAPTER_PREFIX.sub("", t)
+    core = _NUMBER_PREFIX.sub("", core).strip()
+    if not core:
+        # 纯章节号（"第三章"、"1.5"），无实际标题文字——不算有效结构
+        return False
+    # 一整句操作步骤（含逗号/句号且很长）不是标题
+    if len(core) > 25:
+        return False
+    if len(core) > 12 and re.search(r"[，,。；;]", core):
+        return False
+    return True
+
+
+def assess_section_structure(chunks: List[Dict]) -> Dict[str, Any]:
+    """结构质检闸门：评估手册 section_title 的整体质量。
+
+    章节结构塌陷（大量 chunk 挤在极少数脏标题下）的手册，
+    抽取只会产出脏节点污染图谱。此时应整本跳过，宁可 0 入图。
+
+    返回 {"ok": bool, "reason": str, "stats": {...}}。
+    判据（任一不满足即拒绝）：
+      1. 唯一 section_title 数 >= 4（太少说明没切出章节）
+      2. "干净标题"数 >= 3
+      3. 归属到干净标题下的 chunk 占比 >= 30%
+    """
+    groups = _group_by_section(chunks)
+    total_chunks = sum(len(v) for v in groups.values()) or 1
+    unique_titles = len(groups)
+
+    clean_titles = [t for t in groups if _is_structural_title(t)]
+    clean_chunk_count = sum(len(groups[t]) for t in clean_titles)
+    clean_ratio = clean_chunk_count / total_chunks
+
+    stats = {
+        "unique_titles": unique_titles,
+        "clean_titles": len(clean_titles),
+        "clean_chunk_ratio": round(clean_ratio, 3),
+        "total_chunks": total_chunks,
+    }
+
+    if unique_titles < 4:
+        return {"ok": False,
+                "reason": f"章节结构塌陷：仅 {unique_titles} 个 section_title（<4），"
+                          f"手册标题未被正确解析，跳过入图以免污染",
+                "stats": stats}
+    if len(clean_titles) < 3:
+        return {"ok": False,
+                "reason": f"有效部件级标题不足：仅 {len(clean_titles)} 个干净标题（<3），"
+                          f"多为公式/整句/纯章节号，跳过入图",
+                "stats": stats}
+    if clean_ratio < 0.30:
+        return {"ok": False,
+                "reason": f"干净标题覆盖率过低：{clean_ratio:.0%}（<30%），"
+                          f"大量内容归属脏标题，跳过入图",
+                "stats": stats}
+
+    return {"ok": True, "reason": "", "stats": stats}
+
+
 def _best_chunk_uid(chunks: List[Dict]) -> str:
     """取一组chunk中第一个有效 chunk_uid。"""
     for c in chunks:
@@ -582,7 +670,7 @@ _ACTION_SUFFIX = re.compile(
 _ACTION_PREFIX = re.compile(
     r"^(" + "|".join(_ACTION_WORDS) + r")(的)?"
 )
-_CHAPTER_PREFIX = re.compile(r"^第?\s*\d+\s*[章节条款]\s*[\.\s]*")
+_CHAPTER_PREFIX = re.compile(r"^第?\s*[一二三四五六七八九十百零\d]+\s*[章节条款]\s*[\.\s]*")
 _NUMBER_PREFIX = re.compile(r"^\d+(\.\d+)*\s+")
 
 

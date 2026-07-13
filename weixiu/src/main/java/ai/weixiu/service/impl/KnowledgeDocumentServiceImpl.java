@@ -212,54 +212,54 @@ public class KnowledgeDocumentServiceImpl
                 manual.setUpdatedAt(LocalDateTime.now());
                 manualMapper.updateById(manual);
 
-                // 事务提交后清理旧版本资源（向量 + MinIO 文件）
+                // 事务提交后：无条件触发 KG 抽取 + 过期判定；仅在有旧版本时清理旧资源。
+                // 注意：KG 抽取必须每次导入都触发（含首次导入 oldDocumentId=null 的场景），
+                // 不能包在"有旧版本"条件里——否则首次导入永远不入图谱。
                 final String finalOldDocumentId = oldDocumentId;
                 final String finalOldMinioObjectName = oldMinioObjectName;
-                if (finalOldDocumentId != null || finalOldMinioObjectName != null) {
-                    TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
-                        @Override
-                        public void afterCommit() {
-                            // 删除旧版本向量
-                            if (finalOldDocumentId != null) {
-                                try {
-                                    knowledgeImportProducer.sendDeleteTask(finalOldDocumentId);
-                                    log.info("已发送旧版本向量删除任务: oldDocumentId={}", finalOldDocumentId);
-                                } catch (Exception e) {
-                                    log.warn("发送旧版本向量删除消息失败: oldDocumentId={}", finalOldDocumentId, e);
-                                }
-                            }
-                            // 删除旧版本 MinIO 文件
-                            if (finalOldMinioObjectName != null) {
-                                try {
-                                    mioIOUpLoadService.delete(finalOldMinioObjectName, BucketEnum.PRIVATE);
-                                    log.info("已删除旧版本 MinIO 文件: {}", finalOldMinioObjectName);
-                                } catch (Exception e) {
-                                    log.warn("删除旧版本 MinIO 文件失败: {}", finalOldMinioObjectName, e);
-                                }
-                            }
-                            // 触发图谱知识过期判定 + chunk 级别 KG 同步
-                            // finalOldDocumentId 已有：用于 chunk diff；deviceType 当前手册表无此字段，传空串
+                TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                    @Override
+                    public void afterCommit() {
+                        // 1. 清理旧版本资源（仅升级替换场景，首次导入跳过）
+                        if (finalOldDocumentId != null) {
                             try {
-                                expirationService.checkManualUpgradeAsync(
-                                        doc.getManualId(),
-                                        documentId,
-                                        finalOldDocumentId,   // 可为 null，无旧版本时只做文档级过期判定
-                                        manual.getManualName(),
-                                        "");
+                                knowledgeImportProducer.sendDeleteTask(finalOldDocumentId);
+                                log.info("已发送旧版本向量删除任务: oldDocumentId={}", finalOldDocumentId);
                             } catch (Exception e) {
-                                log.warn("触发图谱过期判定失败（非阻塞）: manualId={}, err={}",
-                                        doc.getManualId(), e.getMessage());
-                            }
-
-                            // 触发 KG 实体抽取（手册→图谱节点）
-                            try {
-                                expirationService.triggerKGExtractAsync(documentId, "");
-                            } catch (Exception e) {
-                                log.warn("触发KG抽取失败（非阻塞）: manualId={}, err={}", doc.getManualId(), e.getMessage());
+                                log.warn("发送旧版本向量删除消息失败: oldDocumentId={}", finalOldDocumentId, e);
                             }
                         }
-                    });
-                }
+                        if (finalOldMinioObjectName != null) {
+                            try {
+                                mioIOUpLoadService.delete(finalOldMinioObjectName, BucketEnum.PRIVATE);
+                                log.info("已删除旧版本 MinIO 文件: {}", finalOldMinioObjectName);
+                            } catch (Exception e) {
+                                log.warn("删除旧版本 MinIO 文件失败: {}", finalOldMinioObjectName, e);
+                            }
+                        }
+
+                        // 2. 触发图谱知识过期判定 + chunk 级别 KG 同步
+                        // finalOldDocumentId 已有：用于 chunk diff；无旧版本时只做文档级过期判定
+                        try {
+                            expirationService.checkManualUpgradeAsync(
+                                    doc.getManualId(),
+                                    documentId,
+                                    finalOldDocumentId,   // 可为 null，无旧版本时只做文档级过期判定
+                                    manual.getManualName(),
+                                    "");
+                        } catch (Exception e) {
+                            log.warn("触发图谱过期判定失败（非阻塞）: manualId={}, err={}",
+                                    doc.getManualId(), e.getMessage());
+                        }
+
+                        // 3. 触发 KG 实体抽取（手册→图谱节点）——每次导入都执行
+                        try {
+                            expirationService.triggerKGExtractAsync(documentId, "");
+                        } catch (Exception e) {
+                            log.warn("触发KG抽取失败（非阻塞）: manualId={}, err={}", doc.getManualId(), e.getMessage());
+                        }
+                    }
+                });
             }
         }
 

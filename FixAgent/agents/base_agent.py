@@ -113,6 +113,78 @@ def summarize_tool_result(tool_name: str, data, item_limit: int = 8, max_chars: 
     return {"tool": tool_name, "text": text[:max_chars * 3], "items": items}
 
 
+def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
+    """给"检索/图谱类"工具结果注入显式的证据质量信号，让 LLM 直接感知证据是否可靠。
+
+    分层降级核心（见记忆 rag-no-evidence-tiered-degradation）：没有好证据时必须让 LLM
+    明确知道"这次没有可靠依据"，而不是把空的/低分的原始结果塞给它，诱导它当权威依据编造。
+
+    处理两类返回：
+      1. 检索工具（knowledge_retrieval）：返回 VectorSearchResult 列表，读 metadata 里的
+         retrieval_confidence / final_quality / answer_policy，判定 empty/low/ok。
+      2. 图谱工具：字典已自带 evidence_status（在工具内部标注），此处不重复处理。
+
+    注入方式：把原结果包进 {"evidence_status", "evidence_notice", "results"} 结构，
+    notice 是给 LLM 的自然语言提示，排在最前，确保 json.dumps 后 LLM 第一时间读到。
+    """
+    # 图谱类工具已在自身返回里带 evidence_status，直接透传
+    if isinstance(data, dict) and "evidence_status" in data:
+        return data
+
+    if tool_name != "knowledge_retrieval":
+        return data
+
+    # 空结果：检索什么都没召回
+    if not data or (isinstance(data, list) and len(data) == 0):
+        return {
+            "evidence_status": "empty",
+            "evidence_notice": (
+                "⚠ 知识检索没有召回任何手册片段。本次没有可用证据。"
+                "请勿编造参数、步骤或结论；应明确告知用户知识库中暂无相关依据，"
+                "如作答请说明是基于通用常识而非本设备手册。"
+            ),
+            "results": [],
+        }
+
+    # 有结果：从首条 metadata 读质量信号
+    items = data if isinstance(data, list) else [data]
+    first = items[0]
+    meta = {}
+    if hasattr(first, "metadata"):
+        meta = first.metadata or {}
+    elif isinstance(first, dict):
+        meta = first.get("metadata") or {}
+
+    policy = str(meta.get("answer_policy") or "")
+    confidence = str(meta.get("retrieval_confidence") or "")
+    final_quality = str(meta.get("final_quality") or "")
+    is_low = (
+        policy == "insufficient_evidence"
+        or confidence == "low"
+        or final_quality == "low"
+    )
+
+    if is_low:
+        return {
+            "evidence_status": "low_confidence",
+            "evidence_notice": (
+                "⚠ 检索到的片段与问题相关度低，多半来自其他设备（跨设备召回）。按「方法可借鉴、参数必独立」处理：\n"
+                "1. 先判断片段是不是用户所问设备的内容。若明显来自别的设备"
+                "（如问中央空调却召回制冷机组、问挖掘机却召回电机联轴器），归为「跨设备通用参考」。\n"
+                "2. 跨设备通用参考：可以借鉴其中通用的维修方法、排查思路、操作原理"
+                "（如轴承拆装、螺栓对角紧固、油泵不出油的排查顺序），但必须声明"
+                "这是X设备的做法，供思路参考。\n"
+                "3. 绝对禁止把别的设备的精确参数（扭矩、间隙、型号、专属拆装顺序）套到用户设备上——"
+                "参数是设备专属的，套错会出事。参数一律说以你的设备手册或铭牌为准，绝不猜数值。\n"
+                "4. 若片段确实就是用户所问设备的内容，才可作为直接依据引用。"
+            ),
+            "results": _jsonable(data),
+        }
+
+    # 证据充分：原样返回（不加噪声）
+    return data
+
+
 class AgentInput(BaseModel):
     """Agent输入模型"""
     user_message: str = Field(description="当前轮用户消息（纯文本）")
@@ -747,7 +819,10 @@ class BaseAgent(ABC):
                                 )
                             except Exception:
                                 logger.exception("[%s][tool_result_emit_failed] tool=%s", self.name, t.name)
-                            return result.data if result.data is not None else {"result": "success"}
+                            if result.data is None:
+                                return {"result": "success"}
+                            # 注入证据质量信号：没有好证据时让 LLM 明确感知，避免被低质/空结果误导
+                            return wrap_evidence_quality(t.name, result.data)
                         else:
                             logger.warning(
                                 "[%s][tool_failure] tool=%s duration_ms=%s error=%s",

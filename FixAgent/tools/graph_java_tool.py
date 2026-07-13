@@ -149,7 +149,15 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                 return {
                     "paths_found": 0,
                     "cases_found": 0,
-                    "context": "【图谱查询结果】\n未找到匹配的诊断路径。\n"
+                    "evidence_status": "empty",
+                    "context": (
+                        "【图谱查询结果：无匹配数据】\n"
+                        "知识图谱中没有与本次查询相关的设备/部件/故障路径。\n"
+                        "⚠ 重要：本工具这次没有提供任何可用证据。请勿把没有数据当作设备正常或故障不存在，"
+                        "也不要基于空结果编造图谱里不存在的部件、故障或方案。\n"
+                        "正确做法：明确告知用户知识图谱暂无相关记录，改用其他工具（如知识检索）或基于通用检修常识回答，"
+                        "并说明这是通用建议而非图谱依据。"
+                    ),
                 }
 
             for i, r in enumerate(records):
@@ -172,6 +180,7 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                 "paths_found": len(records),
                 "cases_found": len(cases),
                 "total": total,
+                "evidence_status": "found",
                 "context": context,
                 "raw_records": records,
                 "raw_cases": cases,
