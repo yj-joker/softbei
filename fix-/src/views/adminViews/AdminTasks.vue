@@ -4,7 +4,6 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, DocumentAdd, Share, CloseBold, Right } from '@element-plus/icons-vue'
 import { getTaskList, promoteToProcedure, promoteToGraph, skipPromotion } from '@/api/task'
 import DistillationReviewPanel from '@/components/DistillationReviewPanel.vue'
-import CaseReviewPanel from '@/components/case/CaseReviewPanel.vue'
 import ExpirationReviewSection from '@/components/ExpirationReviewSection.vue'
 
 /* ========== Tab ========== */
@@ -534,16 +533,6 @@ onMounted(() => loadTasks(1))
           </span>
         </template>
         <DistillationReviewPanel :jump-to-id="focusTaskId" :key="activeTab === 'review' ? 'review' : 'idle'" />
-      </el-tab-pane>
-
-      <el-tab-pane name="case-review">
-        <template #label>
-          <span class="tab-label-custom">
-            案例审核
-            <span class="tab-badge">案例</span>
-          </span>
-        </template>
-        <CaseReviewPanel />
       </el-tab-pane>
 
       <el-tab-pane name="expiration-review">

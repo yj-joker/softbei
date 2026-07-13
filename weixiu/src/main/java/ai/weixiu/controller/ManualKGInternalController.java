@@ -34,6 +34,8 @@ public class ManualKGInternalController {
             }
             String model        = (String) body.getOrDefault("model", "");
             String manufacturer = (String) body.getOrDefault("manufacturer", "");
+            String documentId   = (String) body.getOrDefault("documentId", "");
+            Long manualId       = toLong(body.get("manualId"));
 
             String cypher = """
                     MERGE (d:Device {name: $name})
@@ -42,9 +44,16 @@ public class ManualKGInternalController {
                         d.model        = $model,
                         d.manufacturer = $manufacturer,
                         d.source       = 'manual',
+                        d.document_id  = $documentId,
+                        d.manual_ids   = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         d.created_at   = datetime()
                     ON MATCH SET
-                        d.updated_at   = datetime()
+                        d.updated_at   = datetime(),
+                        d.document_id  = coalesce($documentId, d.document_id),
+                        d.manual_ids   = CASE
+                            WHEN $manualId IS NULL THEN coalesce(d.manual_ids, [])
+                            WHEN $manualId IN coalesce(d.manual_ids, []) THEN d.manual_ids
+                            ELSE coalesce(d.manual_ids, []) + $manualId END
                     RETURN d.id AS id, (d.updated_at IS NULL) AS created
                     """;
 
@@ -52,6 +61,8 @@ public class ManualKGInternalController {
                     .bind(name).to("name")
                     .bind(model).to("model")
                     .bind(manufacturer).to("manufacturer")
+                    .bind(documentId).to("documentId")
+                    .bind(manualId).to("manualId")
                     .fetch()
                     .first();
 
@@ -85,6 +96,8 @@ public class ManualKGInternalController {
             List<String> keySpecs = (List<String>) body.getOrDefault("keySpecs", Collections.emptyList());
             String spec          = String.join(", ", keySpecs);
             String chunkUid      = (String) body.get("sourceChunkUid");
+            String documentId    = (String) body.getOrDefault("documentId", "");
+            Long manualId        = toLong(body.get("manualId"));
 
             // deviceId 必填：Component 必须锚定到 Device（设备隔离，防跨设备同名合并）
             if (deviceId == null || deviceId.isBlank()) {
@@ -102,10 +115,17 @@ public class ManualKGInternalController {
                         c.specification    = $spec,
                         c.source           = 'manual',
                         c.source_chunk_uid = $chunkUid,
+                        c.document_id      = $documentId,
+                        c.manual_ids       = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         c.created_at       = datetime()
                     ON MATCH SET
                         c.updated_at       = datetime(),
-                        c.source_chunk_uid = coalesce($chunkUid, c.source_chunk_uid)
+                        c.source_chunk_uid = coalesce($chunkUid, c.source_chunk_uid),
+                        c.document_id      = coalesce($documentId, c.document_id),
+                        c.manual_ids       = CASE
+                            WHEN $manualId IS NULL THEN coalesce(c.manual_ids, [])
+                            WHEN $manualId IN coalesce(c.manual_ids, []) THEN c.manual_ids
+                            ELSE coalesce(c.manual_ids, []) + $manualId END
                     RETURN c.id AS id, (c.updated_at IS NULL) AS created
                     """;
 
@@ -114,7 +134,9 @@ public class ManualKGInternalController {
                     .bind(name).to("name")
                     .bind(componentType).to("componentType")
                     .bind(spec).to("spec")
+                    .bind(manualId).to("manualId")
                     .bind(chunkUid).to("chunkUid")
+                    .bind(documentId).to("documentId")
                     .fetch().first();
 
             Map<String, Object> result = new HashMap<>();
@@ -169,6 +191,8 @@ public class ManualKGInternalController {
             @SuppressWarnings("unchecked")
             List<String> solutionSteps = (List<String>) body.getOrDefault("solutionSteps", Collections.emptyList());
             String chunkUid          = (String) body.get("sourceChunkUid");
+            String documentId        = (String) body.getOrDefault("documentId", "");
+            Long manualId            = toLong(body.get("manualId"));
             Object confidenceRaw     = body.get("confidence");
             Double confidence        = confidenceRaw == null ? null : ((Number) confidenceRaw).doubleValue();
 
@@ -198,11 +222,18 @@ public class ManualKGInternalController {
                         f.status            = 'active',
                         f.manual_confidence = $confidence,
                         f.source_chunk_uid  = $chunkUid,
+                        f.document_id       = $documentId,
+                        f.manual_ids        = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         f.created_at        = datetime()
                     ON MATCH SET
                         f.updated_at        = datetime(),
                         f.description       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $faultDescription ELSE f.description END,
-                        f.manual_confidence = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $confidence         ELSE f.manual_confidence END
+                        f.manual_confidence = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $confidence         ELSE f.manual_confidence END,
+                        f.document_id       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN coalesce($documentId, f.document_id) ELSE f.document_id END,
+                        f.manual_ids        = CASE
+                            WHEN $manualId IS NULL THEN coalesce(f.manual_ids, [])
+                            WHEN $manualId IN coalesce(f.manual_ids, []) THEN f.manual_ids
+                            ELSE coalesce(f.manual_ids, []) + $manualId END
                     RETURN f.id AS faultId, (f.updated_at IS NULL) AS faultCreated
                     """;
 
@@ -212,6 +243,8 @@ public class ManualKGInternalController {
                     .bind(faultDescription).to("faultDescription")
                     .bind(confidence).to("confidence")
                     .bind(chunkUid).to("chunkUid")
+                    .bind(documentId).to("documentId")
+                    .bind(manualId).to("manualId")
                     .fetch().first();
             if (faultRow.isEmpty()) {
                 return Result.error("500", "fault upsert returned no row (componentId not found?)");
@@ -232,11 +265,18 @@ public class ManualKGInternalController {
                         s.verified         = false,
                         s.status           = 'active',
                         s.source_chunk_uid = $chunkUid,
+                        s.document_id      = $documentId,
+                        s.manual_ids       = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         s.created_at       = datetime()
                     ON MATCH SET
                         s.updated_at       = datetime(),
                         s.description      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $solutionDesc ELSE s.description END,
-                        s.steps_text       = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $stepsText    ELSE s.steps_text END
+                        s.steps_text       = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $stepsText    ELSE s.steps_text END,
+                        s.document_id      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN coalesce($documentId, s.document_id) ELSE s.document_id END,
+                        s.manual_ids       = CASE
+                            WHEN $manualId IS NULL THEN coalesce(s.manual_ids, [])
+                            WHEN $manualId IN coalesce(s.manual_ids, []) THEN s.manual_ids
+                            ELSE coalesce(s.manual_ids, []) + $manualId END
                     RETURN s.id AS solutionId, (s.updated_at IS NULL) AS solutionCreated
                     """;
 
@@ -246,6 +286,8 @@ public class ManualKGInternalController {
                     .bind(solutionDesc).to("solutionDesc")
                     .bind(stepsText).to("stepsText")
                     .bind(chunkUid).to("chunkUid")
+                    .bind(documentId).to("documentId")
+                    .bind(manualId).to("manualId")
                     .fetch()
                     .first();
 
@@ -305,6 +347,8 @@ public class ManualKGInternalController {
             @SuppressWarnings("unchecked")
             List<String> steps   = (List<String>) body.getOrDefault("steps", Collections.emptyList());
             String chunkUid      = (String) body.get("sourceChunkUid");
+            String documentId    = (String) body.getOrDefault("documentId", "");
+            Long manualId        = toLong(body.get("manualId"));
 
             if (componentId == null || componentId.isBlank()) {
                 return Result.error("400", "componentId required");
@@ -326,11 +370,18 @@ public class ManualKGInternalController {
                         s.verified         = false,
                         s.status           = 'active',
                         s.source_chunk_uid = $chunkUid,
+                        s.document_id      = $documentId,
+                        s.manual_ids       = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         s.created_at       = datetime()
                     ON MATCH SET
                         s.updated_at       = datetime(),
                         s.description      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $description ELSE s.description END,
-                        s.steps_text       = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $stepsText  ELSE s.steps_text END
+                        s.steps_text       = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $stepsText  ELSE s.steps_text END,
+                        s.document_id      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN coalesce($documentId, s.document_id) ELSE s.document_id END,
+                        s.manual_ids       = CASE
+                            WHEN $manualId IS NULL THEN coalesce(s.manual_ids, [])
+                            WHEN $manualId IN coalesce(s.manual_ids, []) THEN s.manual_ids
+                            ELSE coalesce(s.manual_ids, []) + $manualId END
                     RETURN s.id AS solutionId, (s.updated_at IS NULL) AS created
                     """;
 
@@ -340,6 +391,8 @@ public class ManualKGInternalController {
                     .bind(description).to("description")
                     .bind(stepsText).to("stepsText")
                     .bind(chunkUid).to("chunkUid")
+                    .bind(documentId).to("documentId")
+                    .bind(manualId).to("manualId")
                     .fetch().first();
 
             if (row.isEmpty()) {
@@ -357,8 +410,83 @@ public class ManualKGInternalController {
         }
     }
 
+    /**
+     * 手册删除时分级安全清理图谱节点（按 manual_id 归属）。
+     * <p>
+     * 原则：删手册绝不能误删一线沉淀的实战经验。对该手册归属的每个节点分级处理：
+     * <ol>
+     *   <li>先从节点的 manual_ids 列表移除本手册 id（引用计数递减）；</li>
+     *   <li>仅当 ①移除后 manual_ids 为空（无其他手册共享）②节点自身非沉淀（非 verified、无 source_task_id）
+     *       ③节点没有挂着沉淀的下游节点（下游无 verified/source_task_id 的 Fault/Solution）——三者同时满足才 DETACH DELETE；</li>
+     *   <li>否则保留节点（仅摘除本手册 id），归入"因沉淀/共享而保留"清单返回给前端提示。</li>
+     * </ol>
+     * 沉淀节点特征（见 promoteToGraph）：verified=true 或 source_task_id 非空。
+     */
+    @PostMapping("/delete-by-manual")
+    public Result<Map<String, Object>> deleteByManual(@RequestBody Map<String, Object> body) {
+        try {
+            Long manualId = toLong(body.get("manualId"));
+            if (manualId == null) {
+                return Result.error("400", "manualId required");
+            }
+
+            // Step 1: 从所有归属本手册的节点的 manual_ids 中移除本 id
+            neo4jClient.query("""
+                    MATCH (n)
+                    WHERE $manualId IN coalesce(n.manual_ids, [])
+                    SET n.manual_ids = [x IN n.manual_ids WHERE x <> $manualId]
+                    """)
+                    .bind(manualId).to("manualId")
+                    .run();
+
+            // Step 2: 删除"可安全删除"的节点——manual_ids 空 + 自身非沉淀 + 下游无沉淀
+            // 沉淀判定：verified=true 或 source_task_id 非空
+            String deleteCypher = """
+                    MATCH (n)
+                    WHERE (n:Device OR n:Component OR n:Fault OR n:Solution)
+                      AND size(coalesce(n.manual_ids, [])) = 0
+                      AND coalesce(n.verified, false) = false
+                      AND n.source_task_id IS NULL
+                      AND NOT EXISTS {
+                          MATCH (n)-[*1..3]->(m)
+                          WHERE coalesce(m.verified, false) = true OR m.source_task_id IS NOT NULL
+                      }
+                    WITH collect(n) AS delNodes, count(n) AS delCnt
+                    FOREACH (x IN delNodes | DETACH DELETE x)
+                    RETURN delCnt
+                    """;
+            Long deleted = neo4jClient.query(deleteCypher)
+                    .fetchAs(Long.class)
+                    .mappedBy((t, r) -> r.get("delCnt").asLong(0))
+                    .first()
+                    .orElse(0L);
+
+            log.info("delete-by-manual 完成: manualId={}, 删除节点={}（含沉淀/共享的节点已保留）", manualId, deleted);
+            return Result.success(Map.of("deleted", deleted));
+        } catch (Exception e) {
+            log.warn("delete-by-manual failed: {}", e.getMessage(), e);
+            return Result.error("500", "delete-by-manual failed: " + e.getMessage());
+        }
+    }
+
+    /** 宽松转 Long：接受 Number / 数字字符串，无效或 0 返回 null（视为无归属）。 */
+    private static Long toLong(Object v) {
+        if (v instanceof Number n) {
+            long l = n.longValue();
+            return l == 0L ? null : l;
+        }
+        if (v instanceof String s && !s.isBlank()) {
+            try {
+                long l = Long.parseLong(s.trim());
+                return l == 0L ? null : l;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
+    }
+
     // -------------------------------------------------------------------------
-    // 4. Clear All (testing only)
+    // 5. Clear All (testing only)
     // -------------------------------------------------------------------------
     @PostMapping("/clear-all")
     public Result<Map<String, Object>> clearAll(@RequestBody Map<String, Object> body) {

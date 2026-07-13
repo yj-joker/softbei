@@ -254,7 +254,7 @@ public class KnowledgeDocumentServiceImpl
 
                         // 3. 触发 KG 实体抽取（手册→图谱节点）——每次导入都执行
                         try {
-                            expirationService.triggerKGExtractAsync(documentId, "");
+                            expirationService.triggerKGExtractAsync(documentId, doc.getManualId(), "");
                         } catch (Exception e) {
                             log.warn("触发KG抽取失败（非阻塞）: manualId={}, err={}", doc.getManualId(), e.getMessage());
                         }

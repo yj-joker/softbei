@@ -60,6 +60,7 @@ public class MaintenanceManualServiceImpl
     private final ManualDeviceMapper manualDeviceMapper;
     private final ManualReadRecordMapper manualReadRecordMapper;
     private final DeviceService deviceService;
+    private final org.springframework.data.neo4j.core.Neo4jClient neo4jClient;
 
     @Override
     @Transactional
@@ -178,8 +179,58 @@ public class MaintenanceManualServiceImpl
                         log.warn("删除 MinIO 文件失败: {}", objectName, e);
                     }
                 }
+                // 分级安全清理图谱节点（按 manual_id 归属，保护一线沉淀经验）
+                try {
+                    deleteGraphNodesByManual(id);
+                } catch (Exception e) {
+                    log.warn("删除手册图谱节点失败（非阻塞）: manualId={}", id, e);
+                }
             }
         });
+    }
+
+    /**
+     * 手册删除时分级安全清理图谱节点（按 manual_id 归属）。
+     * <p>
+     * 原则：绝不误删一线沉淀经验。步骤：
+     * ① 从所有归属本手册的节点的 manual_ids 移除本 id；
+     * ② 仅删除"manual_ids 变空 + 自身非沉淀(非verified/无source_task_id) + 下游无沉淀"的节点；
+     * ③ 有沉淀牵连或被其他手册共享的节点保留。
+     * 沉淀特征：verified=true 或 source_task_id 非空（见 promoteToGraph）。
+     */
+    private void deleteGraphNodesByManual(Long manualId) {
+        if (manualId == null) return;
+
+        // Step 1: 从 manual_ids 移除本手册 id
+        neo4jClient.query("""
+                MATCH (n)
+                WHERE $manualId IN coalesce(n.manual_ids, [])
+                SET n.manual_ids = [x IN n.manual_ids WHERE x <> $manualId]
+                """)
+                .bind(manualId).to("manualId")
+                .run();
+
+        // Step 2: 删除可安全删除的节点（manual_ids 空 + 非沉淀 + 下游无沉淀）
+        Long deleted = neo4jClient.query("""
+                MATCH (n)
+                WHERE (n:Device OR n:Component OR n:Fault OR n:Solution)
+                  AND size(coalesce(n.manual_ids, [])) = 0
+                  AND coalesce(n.verified, false) = false
+                  AND n.source_task_id IS NULL
+                  AND NOT EXISTS {
+                      MATCH (n)-[*1..3]->(m)
+                      WHERE coalesce(m.verified, false) = true OR m.source_task_id IS NOT NULL
+                  }
+                WITH collect(n) AS delNodes, count(n) AS delCnt
+                FOREACH (x IN delNodes | DETACH DELETE x)
+                RETURN delCnt
+                """)
+                .fetchAs(Long.class)
+                .mappedBy((t, r) -> r.get("delCnt").asLong(0))
+                .first()
+                .orElse(0L);
+
+        log.info("手册图谱节点清理: manualId={}, 已删除节点数={}（含沉淀/共享的节点已保留）", manualId, deleted);
     }
 
     @Override

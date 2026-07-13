@@ -5114,14 +5114,20 @@ async def manual_kg_extract(request: Request):
 
     document_id     = (body.get("document_id") or "").strip()
     device_type_hint = (body.get("device_type") or "").strip()
+    manual_id_raw   = body.get("manual_id")
+    # manual_id 作为图谱节点归属标识（供删手册时精确清理）；0/缺省视为无
+    try:
+        manual_id = int(manual_id_raw) if manual_id_raw not in (None, "", 0, "0") else None
+    except (TypeError, ValueError):
+        manual_id = None
 
     if not document_id:
         raise HTTPException(status_code=400, detail="document_id required")
 
-    logger.info("[KG抽取API] 触发: document_id=%s device_hint=%s", document_id, device_type_hint)
+    logger.info("[KG抽取API] 触发: document_id=%s manual_id=%s device_hint=%s", document_id, manual_id, device_type_hint)
 
     from services.knowledge.manual_kg_extractor import get_manual_kg_extractor
-    result = await get_manual_kg_extractor().extract_document(document_id, device_type_hint)
+    result = await get_manual_kg_extractor().extract_document(document_id, device_type_hint, manual_id=manual_id)
 
     return {
         "success": True,

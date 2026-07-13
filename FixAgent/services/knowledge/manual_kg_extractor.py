@@ -158,6 +158,7 @@ class ManualKGExtractor:
         self,
         document_id: str,
         device_type_hint: str = "",
+        manual_id: Optional[int] = None,
     ) -> ExtractionResult:
         """
         从一个文档抽取所有实体并写入 KG。
@@ -204,6 +205,8 @@ class ManualKGExtractor:
                 "name": device.name,
                 "model": device.model,
                 "manufacturer": device.manufacturer,
+                "documentId": document_id,   # 记录版本来源
+                "manualId": manual_id,       # 归属标识（数组），供删手册时精确清理
             })
             device_id = (device_resp or {}).get("deviceId", "")
             if not device_id:
@@ -236,6 +239,8 @@ class ManualKGExtractor:
                             "componentType": component.component_type,
                             "keySpecs": component.key_specs,
                             "sourceChunkUid": sample_uid,
+                            "documentId": document_id,
+                            "manualId": manual_id,
                         })
                     comp_id = (comp_resp or {}).get("componentId", "")
                     if comp_id:
@@ -285,6 +290,8 @@ class ManualKGExtractor:
                                 "solutionSteps": item.solution_steps,
                                 "sourceChunkUid": item.source_chunk_uid,
                                 "confidence": item.confidence,
+                                "documentId": document_id,
+                                "manualId": manual_id,
                             })
                         if (fs_resp or {}).get("faultId"):
                             result.faults_created += 1
@@ -320,6 +327,8 @@ class ManualKGExtractor:
                                     "description": f"{component.name if component else ''}的维修操作规程",
                                     "steps": steps_text,
                                     "sourceChunkUid": _best_chunk_uid(step_chunks),
+                                    "documentId": document_id,
+                                    "manualId": manual_id,
                                 })
                             if (proc_resp or {}).get("solutionId"):
                                 result.procedures_created += 1

@@ -77,7 +77,8 @@ public interface ExpirationService {
      * 手册导入完成后，触发 KG 实体抽取（Python 端 /ai/manual-kg/extract）。
      *
      * @param documentId  新导入文档的 documentId
+     * @param manualId    手册ID（稳定主键，作为图谱节点归属标识，供删手册时精确清理）
      * @param deviceType  设备类型提示（可空）
      */
-    void triggerKGExtractAsync(String documentId, String deviceType);
+    void triggerKGExtractAsync(String documentId, Long manualId, String deviceType);
 }

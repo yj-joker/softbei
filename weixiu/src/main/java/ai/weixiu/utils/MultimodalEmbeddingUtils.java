@@ -45,15 +45,18 @@ public class MultimodalEmbeddingUtils {
     private final ObjectMapper objectMapper;
     private final MinioClient minioClient;
     private final URI minioEndpointUri;
+    private final String apiToken;
 
     private static final Duration TIMEOUT = Duration.ofSeconds(120);
 
     public MultimodalEmbeddingUtils(
             @Value("${ai.python-service-url:http://localhost:8000}") String pythonServiceUrl,
+            @Value("${ai.internal-token:fix-agent-internal-2026}") String apiToken,
             ObjectMapper objectMapper,
             MinioClient minioClient,
             MinioProperties minioProperties
     ) {
+        this.apiToken = apiToken;
         HttpClient httpClient = HttpClient.create()
                 .option(ChannelOption.CONNECT_TIMEOUT_MILLIS, 10_000)
                 .responseTimeout(Duration.ofSeconds(120));
@@ -110,6 +113,7 @@ public class MultimodalEmbeddingUtils {
 
             String response = webClient.post()
                     .uri("/ai/embedding/multimodal")
+                    .header("X-Api-Token", apiToken)
                     .contentType(MediaType.APPLICATION_JSON)
                     .bodyValue(objectMapper.writeValueAsString(body))
                     .retrieve()
