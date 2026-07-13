@@ -60,7 +60,8 @@ public class MaintenanceManualServiceImpl
     private final ManualDeviceMapper manualDeviceMapper;
     private final ManualReadRecordMapper manualReadRecordMapper;
     private final DeviceService deviceService;
-    private final org.springframework.data.neo4j.core.Neo4jClient neo4jClient;
+    /** 直接用 Neo4j Driver 开独立 session：afterCommit 时 Spring 事务已提交，不能复用 Neo4jClient 的事务 session。 */
+    private final org.neo4j.driver.Driver neo4jDriver;
 
     @Override
     @Transactional
@@ -201,36 +202,36 @@ public class MaintenanceManualServiceImpl
     private void deleteGraphNodesByManual(Long manualId) {
         if (manualId == null) return;
 
-        // Step 1: 从 manual_ids 移除本手册 id
-        neo4jClient.query("""
-                MATCH (n)
-                WHERE $manualId IN coalesce(n.manual_ids, [])
-                SET n.manual_ids = [x IN n.manual_ids WHERE x <> $manualId]
-                """)
-                .bind(manualId).to("manualId")
-                .run();
+        // 用 Driver 开独立 session：此时 Spring 的 MySQL 事务已提交（afterCommit），
+        // 不能复用 Neo4jClient 绑定的事务 session，否则报 "transaction has been committed"。
+        try (org.neo4j.driver.Session session = neo4jDriver.session()) {
+            // Step 1: 从 manual_ids 移除本手册 id
+            session.run("""
+                    MATCH (n)
+                    WHERE $manualId IN coalesce(n.manual_ids, [])
+                    SET n.manual_ids = [x IN n.manual_ids WHERE x <> $manualId]
+                    """,
+                    org.neo4j.driver.Values.parameters("manualId", manualId));
 
-        // Step 2: 删除可安全删除的节点（manual_ids 空 + 非沉淀 + 下游无沉淀）
-        Long deleted = neo4jClient.query("""
-                MATCH (n)
-                WHERE (n:Device OR n:Component OR n:Fault OR n:Solution)
-                  AND size(coalesce(n.manual_ids, [])) = 0
-                  AND coalesce(n.verified, false) = false
-                  AND n.source_task_id IS NULL
-                  AND NOT EXISTS {
-                      MATCH (n)-[*1..3]->(m)
-                      WHERE coalesce(m.verified, false) = true OR m.source_task_id IS NOT NULL
-                  }
-                WITH collect(n) AS delNodes, count(n) AS delCnt
-                FOREACH (x IN delNodes | DETACH DELETE x)
-                RETURN delCnt
-                """)
-                .fetchAs(Long.class)
-                .mappedBy((t, r) -> r.get("delCnt").asLong(0))
-                .first()
-                .orElse(0L);
+            // Step 2: 删除可安全删除的节点（manual_ids 空 + 非沉淀 + 下游无沉淀）
+            long deleted = session.run("""
+                    MATCH (n)
+                    WHERE (n:Device OR n:Component OR n:Fault OR n:Solution)
+                      AND size(coalesce(n.manual_ids, [])) = 0
+                      AND coalesce(n.verified, false) = false
+                      AND n.source_task_id IS NULL
+                      AND NOT EXISTS {
+                          MATCH (n)-[*1..3]->(m)
+                          WHERE coalesce(m.verified, false) = true OR m.source_task_id IS NOT NULL
+                      }
+                    WITH collect(n) AS delNodes, count(n) AS delCnt
+                    FOREACH (x IN delNodes | DETACH DELETE x)
+                    RETURN delCnt
+                    """)
+                    .single().get("delCnt").asLong(0);
 
-        log.info("手册图谱节点清理: manualId={}, 已删除节点数={}（含沉淀/共享的节点已保留）", manualId, deleted);
+            log.info("手册图谱节点清理: manualId={}, 已删除节点数={}（含沉淀/共享的节点已保留）", manualId, deleted);
+        }
     }
 
     @Override
