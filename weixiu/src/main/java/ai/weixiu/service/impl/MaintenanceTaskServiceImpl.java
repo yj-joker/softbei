@@ -456,7 +456,8 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
                     .eq(MaintenanceTaskFocus::getTaskId, taskId)
                     .eq(MaintenanceTaskFocus::getUserId, userId)
                     .last("LIMIT 1"));
-            if (focus != null && validStepId(steps, focus.getCurrentStepId())) {
+            if (focus != null && validStepId(steps, focus.getCurrentStepId())
+                    && !isFocusStepDone(steps, focus.getCurrentStepId())) {
                 return focus.getCurrentStepId();
             }
         }
@@ -1319,6 +1320,23 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
 
     private boolean validStepId(List<TaskStepRecord> steps, Long stepId) {
         return stepId != null && steps != null && steps.stream().anyMatch(step -> Objects.equals(step.getId(), stepId));
+    }
+
+    // 保存的焦点步骤是否已完成：已完成或验证中则不应继续作为「当前步骤」，需自动推进到下一个待执行步骤
+    private boolean isFocusStepDone(List<TaskStepRecord> steps, Long stepId) {
+        if (stepId == null || steps == null) {
+            return false;
+        }
+        return steps.stream()
+                .filter(step -> Objects.equals(step.getId(), stepId))
+                .findFirst()
+                .map(step -> {
+                    String status = step.getStatus();
+                    // 已完成（COMPLETED/AI_PASSED/SKIPPED）或验证中（SUBMITTED）都应让出焦点
+                    return "COMPLETED".equals(status) || "AI_PASSED".equals(status)
+                            || "SKIPPED".equals(status) || "SUBMITTED".equals(status);
+                })
+                .orElse(false);
     }
 
     private String generateTaskNumber() {
