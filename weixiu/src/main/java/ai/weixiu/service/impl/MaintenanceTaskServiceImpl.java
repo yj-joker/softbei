@@ -415,7 +415,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     public Long saveFocusStep(Long taskId, Long userId, Long stepId, String mode) {
         getTaskOrThrow(taskId);
         List<TaskStepRecord> steps = loadSteps(taskId);
-        Long resolvedStepId = validStepId(steps, stepId) ? stepId : defaultFocusStepId(steps);
+        Long resolvedStepId = isActionableStepId(steps, stepId) ? stepId : defaultFocusStepId(steps);
         if (resolvedStepId == null || userId == null) {
             return resolvedStepId;
         }
@@ -448,7 +448,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     public Long resolveFocusStep(Long taskId, Long userId, Long preferredStepId, String mode) {
         getTaskOrThrow(taskId);
         List<TaskStepRecord> steps = loadSteps(taskId);
-        if (validStepId(steps, preferredStepId)) {
+        if (isActionableStepId(steps, preferredStepId)) {
             return saveFocusStep(taskId, userId, preferredStepId, mode);
         }
         if (userId != null) {
@@ -456,8 +456,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
                     .eq(MaintenanceTaskFocus::getTaskId, taskId)
                     .eq(MaintenanceTaskFocus::getUserId, userId)
                     .last("LIMIT 1"));
-            if (focus != null && validStepId(steps, focus.getCurrentStepId())
-                    && !isFocusStepDone(steps, focus.getCurrentStepId())) {
+            if (focus != null && isActionableStepId(steps, focus.getCurrentStepId())) {
                 return focus.getCurrentStepId();
             }
         }
@@ -1301,7 +1300,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
                 .orElse(0);
         return steps.stream()
                 .filter(step -> step.getSortOrder() != null && step.getSortOrder() > currentOrder)
-                .filter(step -> !isStepDone(step.getStatus()))
+                .filter(step -> isStepActionable(step.getStatus()))
                 .findFirst()
                 .map(TaskStepRecord::getId)
                 .orElse(defaultFocusStepId(steps));
@@ -1312,31 +1311,20 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             return null;
         }
         return steps.stream()
-                .filter(step -> !isStepDone(step.getStatus()))
+                .filter(step -> isStepActionable(step.getStatus()))
                 .findFirst()
                 .map(TaskStepRecord::getId)
-                .orElse(steps.get(steps.size() - 1).getId());
+                .orElse(null);
     }
 
-    private boolean validStepId(List<TaskStepRecord> steps, Long stepId) {
-        return stepId != null && steps != null && steps.stream().anyMatch(step -> Objects.equals(step.getId(), stepId));
+    private boolean isActionableStepId(List<TaskStepRecord> steps, Long stepId) {
+        return stepId != null && steps != null && steps.stream()
+                .anyMatch(step -> Objects.equals(step.getId(), stepId)
+                        && isStepActionable(step.getStatus()));
     }
 
-    // 保存的焦点步骤是否已完成：已完成或验证中则不应继续作为「当前步骤」，需自动推进到下一个待执行步骤
-    private boolean isFocusStepDone(List<TaskStepRecord> steps, Long stepId) {
-        if (stepId == null || steps == null) {
-            return false;
-        }
-        return steps.stream()
-                .filter(step -> Objects.equals(step.getId(), stepId))
-                .findFirst()
-                .map(step -> {
-                    String status = step.getStatus();
-                    // 已完成（COMPLETED/AI_PASSED/SKIPPED）或验证中（SUBMITTED）都应让出焦点
-                    return "COMPLETED".equals(status) || "AI_PASSED".equals(status)
-                            || "SKIPPED".equals(status) || "SUBMITTED".equals(status);
-                })
-                .orElse(false);
+    private boolean isStepActionable(String status) {
+        return "PENDING".equals(status) || "AI_REJECTED".equals(status);
     }
 
     private String generateTaskNumber() {

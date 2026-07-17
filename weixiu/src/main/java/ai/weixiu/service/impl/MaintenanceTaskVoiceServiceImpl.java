@@ -159,13 +159,15 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
     private Long resolveInitialStep(List<TaskStepRecord> steps, Long preferredStepId) {
         if (preferredStepId != null) {
             Optional<TaskStepRecord> found = findStepById(steps, preferredStepId);
-            if (found.isPresent()) return found.get().getId();
+            if (found.isPresent() && isStepActionable(found.get().getStatus())) {
+                return found.get().getId();
+            }
         }
         return steps.stream()
-                .filter(step -> !isStepDone(step.getStatus()))
+                .filter(step -> isStepActionable(step.getStatus()))
                 .findFirst()
                 .map(TaskStepRecord::getId)
-                .orElse(steps.isEmpty() ? null : steps.get(0).getId());
+                .orElse(null);
     }
 
     private ExecutionOutcome executeAction(MaintenanceTask task,
@@ -400,7 +402,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         request.put("task_id", task.getId());
         request.put("user_id", userId);
         request.put("transcript", dto.getTranscript());
-        request.put("focused_step_id", dto.getFocusedStepId() != null ? dto.getFocusedStepId() : currentStepId);
+        request.put("focused_step_id", currentStepId);
         request.put("confirmed", Boolean.TRUE.equals(dto.getConfirmed()));
         request.put("override", Boolean.TRUE.equals(dto.getOverride()));
 
@@ -670,6 +672,10 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
                 && !Boolean.TRUE.equals(dto.getCheckpointConfirmed())
                 && !Boolean.TRUE.equals(step.getCheckpointConfirmed());
         return missingPhoto || missingNote || missingCheckpoint;
+    }
+
+    private boolean isStepActionable(String status) {
+        return "PENDING".equals(status) || "AI_REJECTED".equals(status);
     }
 
     private boolean isStepDone(String status) {

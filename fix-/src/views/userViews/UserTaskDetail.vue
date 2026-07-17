@@ -50,9 +50,9 @@ const steps = computed(() => (task.value?.steps || []).slice().sort((a, b) => (a
 const activeStepId = computed(() => {
   const focused = Number(task.value?.currentStepId || 0)
   const focusedStep = focused ? steps.value.find((x) => Number(x.id) === focused) : null
-  if (focusedStep) return focusedStep.id
-  const s = steps.value.find((x) => stepActionable(x.status))
-  return s ? s.id : null
+  if (focusedStep && stepActionable(focusedStep.status)) return focusedStep.id
+  const actionableStep = steps.value.find((x) => stepActionable(x.status))
+  return actionableStep ? actionableStep.id : null
 })
 const activeStep = computed(() => steps.value.find((x) => x.id === activeStepId.value) || null)
 const completedSteps = computed(() => steps.value.filter((s) => DONE_SET.includes(s.status)))
