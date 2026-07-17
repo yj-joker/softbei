@@ -338,6 +338,14 @@ async function handleImageUpload(e) {
 async function submitForm() {
   const [reqKey, reqLabel] = FIELDS[dlg.type][0]
   if (!form[reqKey]) { ElMessage.warning('请填写' + reqLabel); return }
+  let parent = null
+  if (dlg.mode === 'create' && dlg.type !== 'device') {
+    parent = dlg.parentKey && nodeMap.get(dlg.parentKey)
+    if (!parent || CHILD[parent.data.type]?.child !== dlg.type) {
+      ElMessage.error('未找到有效父节点，无法新增关联子节点')
+      return
+    }
+  }
   dlg.saving = true
   try {
     const api = API[dlg.type]
@@ -359,13 +367,13 @@ async function submitForm() {
     } else {
       const res = await api.save(dto)
       const newId = res?.data?.id || res?.data
+      if (!newId) throw new Error('保存接口未返回实体 ID')
       const pk = dlg.parentKey
-      if (pk && newId) {
-        const parent = nodeMap.get(pk)
+      if (parent) {
         await createRelation(parent.data.rawId, newId, CHILD[parent.data.type].relType)
         const total = (pagers[pk]?.total ?? (childrenOf.get(pk)?.size || 0)) + 1
         await expand(pk, Math.max(0, Math.ceil(total / PAGE_SIZE) - 1)) // 跳到能看见新节点的末页
-      } else if (!pk && dlg.type === 'device' && newId) {
+      } else if (dlg.type === 'device') {
         addNode('device', newId, dto.name, { ...dto, id: newId }); syncGraph()
       }
       ElMessage.success('新增成功')
@@ -535,7 +543,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
             <button class="act del" @click="removeSelected">删除</button>
           </div>
           <button v-if="CHILD[ui.selected.type]" class="act add"
-                  @click="openCreate(CHILD[ui.selected.type].child, ui.selected.id)">
+                  @click="openCreate(CHILD[ui.selected.type].child, key(ui.selected.type, ui.selected.rawId))">
             新增{{ childLabel(ui.selected.type) }}
           </button>
         </aside>
@@ -691,9 +699,9 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .slide-enter-from,.slide-leave-to{transform:translateX(40px);opacity:0}
 
 .dlg-btn{padding:8px 18px;border-radius:8px;font-weight:600;font-size:13px;cursor:pointer;border:1px solid;transition:.15s}
-.dlg-btn.cancel{background:#fff;color:var(--mut);border-color:var(--line);margin-right:8px}
-.dlg-btn.cancel:hover{color:var(--slate)}
-.dlg-btn.ok{background:var(--primary);color:#fff;border-color:var(--primary)}
+.dlg-btn.cancel{background:#fff;color:var(--plaza-text);border-color:var(--plaza-border);margin-right:8px}
+.dlg-btn.cancel:hover{color:var(--plaza-heading)}
+.dlg-btn.ok{background:var(--plaza-accent);color:#fff;border-color:var(--plaza-accent)}
 .dlg-btn.ok:hover{background:var(--plaza-accent-hover)}
 .dlg-btn.ok:disabled{opacity:.6;cursor:not-allowed}
 
@@ -701,10 +709,10 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .img-upload-area{display:flex;flex-direction:column;gap:8px;width:100%}
 .img-preview-list{display:flex;flex-wrap:wrap;gap:8px}
 .img-preview-item{position:relative;width:80px;height:80px;flex-shrink:0}
-.img-preview-item img{width:100%;height:100%;object-fit:cover;border-radius:8px;border:1px solid var(--line);display:block}
-.img-remove{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--primary);color:#fff;border:none;cursor:pointer;font-size:13px;line-height:18px;text-align:center;padding:0;display:grid;place-items:center}
+.img-preview-item img{width:100%;height:100%;object-fit:cover;border-radius:8px;border:1px solid var(--plaza-border);display:block}
+.img-remove{position:absolute;top:-6px;right:-6px;width:18px;height:18px;border-radius:50%;background:var(--plaza-accent);color:#fff;border:none;cursor:pointer;font-size:13px;line-height:18px;text-align:center;padding:0;display:grid;place-items:center}
 .img-remove:hover{background:var(--plaza-accent-hover)}
-.img-upload-btn{display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 14px;border-radius:8px;border:1px dashed var(--primary);color:var(--primary);font-size:13px;cursor:pointer;transition:.15s;background:var(--plaza-accent-soft);user-select:none;width:fit-content}
+.img-upload-btn{display:inline-flex;align-items:center;justify-content:center;height:34px;padding:0 14px;border-radius:8px;border:1px dashed var(--plaza-accent);color:var(--plaza-accent);font-size:13px;cursor:pointer;transition:.15s;background:var(--plaza-accent-soft);user-select:none;width:fit-content}
 .img-upload-btn:hover{background:var(--plaza-accent-soft-strong)}
 .img-upload-btn.loading{opacity:.65;cursor:not-allowed}
 </style>
