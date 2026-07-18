@@ -20,6 +20,7 @@ from services.retrieval.policy import (
     diversify_candidates,
     summarize_confidence,
 )
+from services.retrieval.qualification import qualify_candidates
 from services.retrieval.image_selector import PageEvidence, gated_select_pages_for_image_query
 from services.retrieval.query_understanding import has_negative_image_request, understand_query
 from services.retrieval.section_index import SectionTitleIndex
@@ -1611,6 +1612,17 @@ class KnowledgeRetrievalTool(BaseTool):
             vector_service,
             document_id=document_id,
         )
+        qualification = qualify_candidates(
+            query,
+            expanded_selected,
+            document_id=document_id,
+            device_type=device_type,
+            document_version=document_version,
+            manual_type=manual_type,
+            requires_strict_evidence=plan.requires_strict_evidence,
+        )
+        qualified_docs = qualification["qualified_evidence"]
+        reference_docs = qualification["reference_evidence"]
         expanded_count = max(0, len(expanded_selected) - len(selected))
         await _emit_retrieval_event(
             _event_sink,
@@ -1624,7 +1636,8 @@ class KnowledgeRetrievalTool(BaseTool):
         )
 
         results: List[VectorSearchResult] = []
-        for doc in expanded_selected:
+        visible_docs = qualified_docs + reference_docs
+        for doc in visible_docs:
             metadata = dict(doc.get("metadata") or {})
             if metadata.get("chunk_type") == "image_summary":
                 metadata["source_chunk_type"] = "image_summary"
@@ -1670,7 +1683,16 @@ class KnowledgeRetrievalTool(BaseTool):
                 "first_pass_quality": first_quality.grade,
                 "final_quality": final_quality.grade,
             }
-            if confidence["confidence"] == "low" or final_quality.grade == "low":
+            metadata["evidence_bundle"] = {
+                key: value
+                for key, value in qualification.items()
+                if key not in {"qualified_evidence", "reference_evidence"}
+            }
+            metadata["evidence_overall_status"] = qualification["overall_status"]
+            metadata["evidence_capabilities"] = qualification["capabilities"]
+            if metadata.get("qualification") != "qualified":
+                metadata["answer_policy"] = "reference_only"
+            elif confidence["confidence"] == "low" or final_quality.grade == "low":
                 metadata["answer_policy"] = "insufficient_evidence"
             results.append(
                 VectorSearchResult(

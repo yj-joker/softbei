@@ -253,7 +253,21 @@ class FixAgent(BaseAgent):
             if policy.get("safety_level") == "operation":
                 prompt += "\n\n本轮涉及操作，安全注意必须写具体（断电、泄压、冷却、防护等）。"
             if policy.get("evidence_level") == "required":
-                prompt += "\n本轮需严格依据，精确数值无依据时只给方向并提示以手册为准。"
+                prompt += (
+                    "\n本轮优先检索以核验设备专属结论；未找到合格资料时，"
+                    "仍可给明确标注的通用建议，但不得编造精确参数或专属操作。"
+                )
+        prompt += (
+            "\n\n【证据使用决策】\n"
+            "RAG 和图谱用于提供参考与溯源，不要求逐字复述。工具结果会标注 evidence_status：\n"
+            "- qualified：可作为当前设备资料依据，用自己的话总结、解释和推理。\n"
+            "- reference_only：仅是同类或身份未确认的参考；只能用于原理、检查方向和通用风险提示，"
+            "不得称为本设备手册，亦不得给专属参数、位置、拆装/紧固顺序、适配或安全放行结论。\n"
+            "- no_evidence/empty：明确未找到当前设备资料；可给通用原理、常见原因和初步排查，"
+            "并说明不是本设备规程，不得编造精确参数或设备专属操作。\n"
+            "高风险操作在没有 qualified 证据时，只说明风险、前提和需核对的制造商资料，"
+            "不要输出可直接执行的专属操作指令。"
+        )
         return prompt
 
     def get_tools(self) -> List[Any]:
@@ -390,9 +404,10 @@ class FixAgent(BaseAgent):
         input_data: AgentInput,
         used_tools: List[str],
     ) -> Optional[AgentOutput]:
-        """A 硬兜底入口（流式与非流式共用）：evidence-required 意图却没调
-        knowledge_retrieval 时，强制检索一次并仅依据证据重答。
-        不适用（意图不需检索 / 已经检索过）或检索为空 → 返回 None，保留原答案。
+        """补齐高证据需求的检索，但不因缺资料压制受控通用建议。
+
+        已调用知识检索时由主 ReAct 根据工具的 EvidenceBundle 决定可用范围。
+        仅在路由要求检索且本轮完全未检索时补一次，以便判断资料覆盖情况。
         """
         run_context = self.build_run_context(input_data)
         required = self._required_tools_for_policy(run_context)
@@ -435,73 +450,46 @@ class FixAgent(BaseAgent):
             len(retrieval.data) if retrieval.data else 0, scope,
         )
         if not retrieval.success or not retrieval.data:
-            # 检索成功但零命中（如向量库为空/无相关内容）：evidence-required 意图必须
-            # 拦截，明确告知"未找到依据"，而不是放行模型凭自身知识编造的参数/步骤。
-            logger.info("[fix_agent][forced_retrieval] evidence-required 意图检索为空，降级为无依据说明")
-            return self._insufficient_evidence_output(query, run_context, reason="empty_retrieval")
-
-        # 分数阈值检查：top1 分数 <0.7 时标记为低置信度，但不拦截
-        # 让 LLM 基于常识回答 + 在结果中追加风险声明（review 或 API 层处理）
-        CONFIDENCE_THRESHOLD = 0.7
-        top_score = retrieval.data[0].score if retrieval.data else 0.0
-        low_confidence = top_score < CONFIDENCE_THRESHOLD
-        if low_confidence:
-            logger.info(
-                "[fix_agent][forced_retrieval] top1分数 %.3f < %.2f，标记为低置信度检索，将追加常识回答声明",
-                top_score, CONFIDENCE_THRESHOLD,
-            )
+            logger.info("[fix_agent][forced_retrieval] no evidence; generating bounded generic guidance")
+            return await self._generic_guidance_output(query, run_context, reason="empty_retrieval")
 
         evidence_items = retrieval.data
+        qualified_items = [
+            item for item in evidence_items
+            if (item.metadata or {}).get("qualification") == "qualified"
+        ]
+        if not qualified_items:
+            logger.info("[fix_agent][forced_retrieval] no qualified evidence; generating bounded generic guidance")
+            return await self._generic_guidance_output(query, run_context, reason="reference_only")
+
+        # Qualified evidence may be summarized by the model; it is not an
+        # instruction to reproduce manual wording.
+        evidence_items = qualified_items
+        low_confidence = False
         evidence_text = "\n\n".join(
             self._forced_evidence_to_text(item, idx)
             for idx, item in enumerate(evidence_items, start=1)
         )
-        # 两级设备护栏：
-        # ① low_confidence（top1<0.7，多为跨设备误召回）→ 完整"方法可借鉴、参数必独立"约束；
-        # ② 分数不低但用户没报具体设备型号（只说泛称如"冷水机组""空压机"）→ 设备确认提醒。
-        # 依据：设备身份靠"用户报没报型号"判断，比只看分数可靠（记忆 rag-no-evidence-tiered-degradation）。
         mentions_device = self._mentions_specific_device(query, scope)
-        if low_confidence:
-            cross_device_guard = (
-                "\n\n【重要-证据相关度低】本次检索片段与问题相关度较低，很可能来自其他设备的手册"
-                "（跨设备误召回）。请先判断片段讲的是不是用户所问的那种设备：\n"
-                "- 若片段明显来自别的设备（如问中央空调/挖掘机/空压机，片段却是制冷机组/电机联轴器的内容），"
-                "不要把它当作用户设备的直接依据，更不能把别设备的参数、型号、专属步骤安到用户设备上。"
-                "此时应明确告诉用户：知识库中没有该设备的对应资料，以下仅为通用维修思路参考。\n"
-                "- 可以借鉴片段里通用的维修方法、排查思路、操作原理，但要声明这是其他设备的做法、供参考；\n"
-                "- 精确参数（扭矩、间隙、型号、专属拆装顺序）一律不得跨设备套用，说明以用户自己设备的手册或铭牌为准。\n"
-                "- 不要出现\"根据手册第X页\"这种把跨设备内容包装成权威依据的表述。"
-            )
-        elif not mentions_device:
-            cross_device_guard = (
-                "\n\n【重要-设备型号未确认】用户只说了设备类别（如冷水机组、空压机、泵），没有给出具体型号。"
-                "检索到的手册片段可能来自某个具体型号的设备，未必就是用户手上那台。请：\n"
-                "- 通用的维修方法、检查步骤、原理可以正常讲解；\n"
-                "- 但涉及精确参数（扭矩、间隙、型号规格、专属拆装顺序）时，说明这些参数对应的是手册里的具体机型，"
-                "并提醒用户\"请确认你的设备型号，参数以你自己设备的手册或铭牌为准\"，不要让用户误以为这些数值一定适用于他的设备；\n"
-                "- 在回答末尾用一句话反问用户的具体设备型号，便于后续给出更精准的答案。"
-            )
-        else:
-            cross_device_guard = ""
+        device_notice = ""
+        if not mentions_device:
+            device_notice = "请说明片段对应的具体型号尚未确认，设备专属参数仍须以用户设备手册或铭牌为准。"
 
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "你是设备检修知识库问答助手。必须严格依据给定的知识库证据回答，"
-                    "参数、型号、步骤必须逐字忠实于证据，证据中没有的绝不编造；"
-                    "证据不足时明确说明不足。禁止使用 emoji。"
-                    "普通解释用自然段；编号、清单、步骤每一项单独换行，用\"1. 内容\"格式。"
-                    "始终用中文，不要出现 image_url、doc_id、chunk_id、top_k 等内部标识；"
-                    "引用出处时请用\"手册第X页\"或章节名，不要出现\"证据1\"\"片段2\"这类内部编号。"
-                    + cross_device_guard
+                    "你是设备检修助手。以下材料已通过当前设备和主题的最低资格校验。"
+                    "请用自己的语言总结、解释并回答用户，不要逐字复述手册。"
+                    "精确参数和专属步骤只能在材料明确覆盖时使用；未覆盖处可给通用说明并标明边界。"
+                    "始终用中文，不要出现内部标识或 emoji。" + device_notice
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"用户问题：{query}\n\n检索到的手册片段：\n{evidence_text}\n\n"
-                    "请仅依据上述片段用中文回答；未覆盖处明确说明，不要编造参数、型号或操作步骤。"
+                    f"用户问题：{query}\n\n可用资料：\n{evidence_text}\n\n"
+                    "请基于这些资料作答，并补充必要的通用解释。"
                 ),
             },
         ]
@@ -538,10 +526,65 @@ class FixAgent(BaseAgent):
                 "react_iterations": 1,
                 "intent_decision": run_context.intent_decision,
                 "low_confidence_retrieval": low_confidence,
-                "retrieval_top_score": top_score,
+                "retrieval_top_score": evidence_items[0].score if evidence_items else 0.0,
             },
             latency_ms=int((time.time() - start) * 1000),
             raw_response=response if isinstance(response, dict) else None,
+        )
+
+    async def _generic_guidance_output(
+        self,
+        query: str,
+        run_context: AgentRunContext,
+        reason: str,
+    ) -> AgentOutput:
+        """Generate useful, explicitly non-manual guidance when no evidence qualifies."""
+        from services.llm.service import get_llm_service
+
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你是设备检修助手。当前未找到可作为该设备手册依据的资料。"
+                    "请基于通用专业知识回答用户，但开头必须说明这是通用建议、不是本设备维修规程。"
+                    "可以说明原理、常见原因、低风险初步检查和需补充的信息；"
+                    "不得给出精确参数、设备专属位置、拆装或紧固顺序、零件适配、"
+                    "或可直接执行的高风险操作指令。高风险事项应建议查制造商资料或由合格人员确认。"
+                    "始终用中文，禁止出现内部标识和 emoji。"
+                ),
+            },
+            {"role": "user", "content": query},
+        ]
+        try:
+            response = await get_llm_service().chat(messages=messages, temperature=0.2)
+            message = response.get("content", "") if isinstance(response, dict) else str(response or "")
+        except Exception as exc:
+            logger.warning("[fix_agent][generic_guidance] generation failed: %s", exc)
+            message = (
+                "当前未找到可用于该设备的手册资料。以下只能提供通用排查思路，"
+                "不能替代该设备规程；涉及参数或高风险操作，请以制造商资料或现场合格人员判断为准。"
+            )
+        return AgentOutput(
+            agent_name=self.name,
+            message=message,
+            tools_used=["knowledge_retrieval"],
+            metadata={
+                "execution_mode": "generic_guidance",
+                "evidence_status": "no_evidence",
+                "insufficient_evidence_reason": reason,
+                "intent_decision": run_context.intent_decision,
+                "react_iterations": 1,
+                "react_trace": [{
+                    "iteration": 1,
+                    "action": "tool_call",
+                    "tool_calls": [{
+                        "name": "knowledge_retrieval",
+                        "arguments": {"query": query, "top_k": 5},
+                        "result_summary": reason,
+                        "result_data": [],
+                    }],
+                }],
+            },
         )
 
     def _insufficient_evidence_output(

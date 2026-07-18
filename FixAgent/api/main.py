@@ -648,6 +648,8 @@ def _iter_trace_result_items(metadata: dict):
             result_data = _plain_dict(result_data) if hasattr(result_data, "model_dump") else result_data
             if isinstance(result_data, dict) and isinstance(result_data.get("data"), list):
                 result_data = result_data["data"]
+            elif isinstance(result_data, dict) and isinstance(result_data.get("results"), list):
+                result_data = result_data["results"]
             if isinstance(result_data, list):
                 for item in result_data:
                     item_data = _plain_dict(item)
@@ -2436,6 +2438,24 @@ def _format_manual_detail_refusal_answer(message: str, records: list[dict]) -> s
     )
 
 
+def _has_qualified_manual_evidence(metadata: dict) -> bool:
+    """Allow deterministic output only for qualified evidence on new traces.
+
+    Legacy traces predate the qualification contract and remain readable during
+    migration; every result produced by the new retrieval path carries the
+    `qualification` field and therefore must satisfy it.
+    """
+    saw_qualification = False
+    for item in _iter_trace_result_items(metadata):
+        item_meta = item.get("metadata") or {}
+        qualification = item_meta.get("qualification")
+        if qualification is not None:
+            saw_qualification = True
+            if qualification == "qualified":
+                return True
+    return not saw_qualification
+
+
 def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -> str | None:
     """Build a concise answer directly from retrieved manual evidence.
 
@@ -2443,6 +2463,8 @@ def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -
     when the retrieved evidence already contains ordered manual text, prefer a
     faithful evidence summary over a free-form rewrite.
     """
+    if not _has_qualified_manual_evidence(metadata):
+        return None
     kind = _manual_query_kind(message)
     if not kind:
         return None

@@ -12,6 +12,11 @@ def build_evidence_items(source_tool: str, result_payload: Any) -> List[Dict[str
 
 
 def _knowledge_retrieval_evidence(result_payload: Any) -> List[Dict[str, Any]]:
+    if isinstance(result_payload, dict):
+        # Only qualified evidence is admissible for grounding. Tool envelopes may
+        # contain reference summaries and excluded diagnostics, neither of which
+        # can support a manual claim.
+        result_payload = result_payload.get("results") or result_payload.get("qualified_evidence") or []
     if not isinstance(result_payload, list):
         return []
 

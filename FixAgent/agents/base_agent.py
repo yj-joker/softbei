@@ -113,20 +113,22 @@ def summarize_tool_result(tool_name: str, data, item_limit: int = 8, max_chars: 
     return {"tool": tool_name, "text": text[:max_chars * 3], "items": items}
 
 
+def _evidence_notice(status: str, capabilities: Dict[str, Any]) -> str:
+    if status == "qualified":
+        return "已找到与当前设备和问题匹配的资料，可作为手册依据总结，但应使用自己的语言解释。"
+    if status == "reference_only":
+        return (
+            "检索到的资料未能确认属于当前设备，只能作为通用参考。"
+            "不得把它写成当前设备手册依据，也不得从中输出设备专属参数、位置或拆装顺序。"
+        )
+    return (
+        "未找到可用于当前设备的手册依据。可以给通用原理、常见原因和初步排查建议，"
+        "但必须说明不是本设备规程，且不得编造精确参数或设备专属操作。"
+    )
+
+
 def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
-    """给"检索/图谱类"工具结果注入显式的证据质量信号，让 LLM 直接感知证据是否可靠。
-
-    分层降级核心（见记忆 rag-no-evidence-tiered-degradation）：没有好证据时必须让 LLM
-    明确知道"这次没有可靠依据"，而不是把空的/低分的原始结果塞给它，诱导它当权威依据编造。
-
-    处理两类返回：
-      1. 检索工具（knowledge_retrieval）：返回 VectorSearchResult 列表，读 metadata 里的
-         retrieval_confidence / final_quality / answer_policy，判定 empty/low/ok。
-      2. 图谱工具：字典已自带 evidence_status（在工具内部标注），此处不重复处理。
-
-    注入方式：把原结果包进 {"evidence_status", "evidence_notice", "results"} 结构，
-    notice 是给 LLM 的自然语言提示，排在最前，确保 json.dumps 后 LLM 第一时间读到。
-    """
+    """给检索和图谱工具结果注入显式的证据质量信号。"""
     # 图谱类工具已在自身返回里带 evidence_status，直接透传
     if isinstance(data, dict) and "evidence_status" in data:
         return data
@@ -134,7 +136,46 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
     if tool_name != "knowledge_retrieval":
         return data
 
-    # 空结果：检索什么都没召回
+    # New retrievals expose a bundle-level decision. Keep rejected content out
+    # of the LLM context while preserving the reasons for traceability.
+    if isinstance(data, list):
+        items = [_jsonable(item) for item in data]
+        bundle = next(
+            (
+                (item.get("metadata") or {}).get("evidence_bundle")
+                for item in items
+                if isinstance(item, dict) and (item.get("metadata") or {}).get("evidence_bundle")
+            ),
+            None,
+        )
+        if isinstance(bundle, dict):
+            status = str(bundle.get("overall_status") or "no_evidence")
+            capabilities = bundle.get("capabilities") or {}
+            references = [item for item in items if (item.get("metadata") or {}).get("qualification") == "reference_only"]
+            qualified = [item for item in items if (item.get("metadata") or {}).get("qualification") == "qualified"]
+            visible_references = [
+                {
+                    "metadata": {
+                        "qualification": "reference_only",
+                        "qualification_reasons": (item.get("metadata") or {}).get("qualification_reasons") or [],
+                        "section_title": (item.get("metadata") or {}).get("section_title"),
+                        "device_type": (item.get("metadata") or {}).get("device_type"),
+                    },
+                    "summary": "检索到同类或未确认设备的参考资料；不可作为当前设备手册依据。",
+                }
+                for item in references
+            ]
+            return {
+                "evidence_status": status,
+                "evidence_notice": _evidence_notice(status, capabilities),
+                "capabilities": capabilities,
+                "results": qualified,
+                "reference_evidence": visible_references,
+                "excluded_evidence": bundle.get("excluded_evidence") or [],
+                "conflicts": bundle.get("conflicts") or [],
+            }
+
+    # Empty result: no manual fragments were recalled.
     if not data or (isinstance(data, list) and len(data) == 0):
         return {
             "evidence_status": "empty",
