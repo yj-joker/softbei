@@ -36,7 +36,7 @@ public class SessionInterceptor implements HandlerInterceptor {
     public SessionInterceptor(
             RedisTemplate redisTemplate,
             ObjectMapper objectMapper,
-            @org.springframework.beans.factory.annotation.Value("${ai.internal-token:fix-agent-internal-2026}") String internalToken
+            @org.springframework.beans.factory.annotation.Value("${ai.internal-token}") String internalToken
     ) {
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;

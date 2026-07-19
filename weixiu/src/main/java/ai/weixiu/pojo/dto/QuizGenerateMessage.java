@@ -12,7 +12,7 @@ public class QuizGenerateMessage {
     private Integer targetCount;                    // 目标题数(默认5)
     private List<Map<String, Object>> portrait;     // 画像 [{type,content,confidence}]
     private List<Map<String, Object>> mastery;      // 掌握度 [{topic,correctRate,totalCount}]
-    private List<Map<String, Object>> taskHistory;  // 履历(approved CaseRecord)
+    private List<Map<String, Object>> taskHistory;  // 履历(已关闭检修任务 + approved CaseRecord)
     private List<String> deviceScope;               // 工人常修设备名(从画像/履历提)
     private List<String> existingTopics;            // 该工人已有 topic，供 LLM 复用去重
 }

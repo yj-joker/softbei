@@ -51,7 +51,7 @@ public class MultimodalEmbeddingUtils {
 
     public MultimodalEmbeddingUtils(
             @Value("${ai.python-service-url:http://localhost:8000}") String pythonServiceUrl,
-            @Value("${ai.internal-token:fix-agent-internal-2026}") String apiToken,
+            @Value("${ai.internal-token}") String apiToken,
             ObjectMapper objectMapper,
             MinioClient minioClient,
             MinioProperties minioProperties
@@ -165,15 +165,20 @@ public class MultimodalEmbeddingUtils {
                 byte[] bytes;
                 String objectName;
 
-                if (isLocalMinio(uri)) {
+                if (isLocalMinio(uri) || isPublicFileProxyPath(path)) {
                     // 本地 MinIO：通过 MinioClient SDK 下载
-                    int firstSlash = path.indexOf('/', 1);
-                    if (firstSlash < 0 || firstSlash + 1 >= path.length()) {
+                    // 浏览器使用 /files/bucket/object，Java 端需要去掉 /files
+                    // 后直接读取 MinIO，不能把相对地址交给 HTTP 客户端。
+                    String minioPath = isPublicFileProxyPath(path)
+                            ? path.substring("/files".length())
+                            : path;
+                    int firstSlash = minioPath.indexOf('/', 1);
+                    if (firstSlash < 0 || firstSlash + 1 >= minioPath.length()) {
                         log.warn("图片 URL 格式不正确（缺少 bucket/objectName），跳过: {}", url);
                         continue;
                     }
-                    String bucket = path.substring(1, firstSlash);
-                    objectName = path.substring(firstSlash + 1);
+                    String bucket = minioPath.substring(1, firstSlash);
+                    objectName = minioPath.substring(firstSlash + 1);
 
                     try (InputStream is = minioClient.getObject(
                             GetObjectArgs.builder()
@@ -216,7 +221,14 @@ public class MultimodalEmbeddingUtils {
         int imgPort = imageUri.getPort();
         String minioHost = minioEndpointUri.getHost();
         int minioPort = minioEndpointUri.getPort();
-        return minioHost.equalsIgnoreCase(imgHost) && minioPort == imgPort;
+        return imgHost != null
+                && minioHost != null
+                && minioHost.equalsIgnoreCase(imgHost)
+                && minioPort == imgPort;
+    }
+
+    private boolean isPublicFileProxyPath(String path) {
+        return path != null && path.startsWith("/files/");
     }
     private static boolean isImageDataUri(String value) {
         return value != null && value.startsWith("data:image/") && value.contains(";base64,");

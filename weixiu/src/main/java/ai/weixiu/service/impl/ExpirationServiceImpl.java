@@ -40,7 +40,7 @@ public class ExpirationServiceImpl implements ExpirationService {
 
     public ExpirationServiceImpl(
             @Value("${ai.python-service-url:http://localhost:8000}") String pythonServiceUrl,
-            @Value("${ai.internal-token:fix-agent-internal-2026}") String internalToken,
+            @Value("${ai.internal-token}") String internalToken,
             Neo4jClient neo4jClient,
             ObjectMapper objectMapper,
             ExpirationReviewMapper reviewMapper

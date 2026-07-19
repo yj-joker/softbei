@@ -167,7 +167,11 @@ public class MioIOUpLoadServiceImpl implements MioIOUpLoadService {
      * <p>该地址依赖 Bucket 可公开访问，不适用于维修手册私有桶文件。</p>
      */
     public String getFileUrl(String objectName, String bucketName) {
-        return minioProperties.getEndpoint() + "/"
+        String publicBaseUrl = minioProperties.getPublicBaseUrl();
+        if (publicBaseUrl == null || publicBaseUrl.isBlank()) {
+            publicBaseUrl = minioProperties.getEndpoint();
+        }
+        return publicBaseUrl.replaceAll("/+$", "") + "/"
                 + bucketName + "/" + objectName;
     }
     /**

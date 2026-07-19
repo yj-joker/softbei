@@ -33,6 +33,7 @@ public class QuizServiceImpl implements QuizService {
     private final UserQuestionBankMapper bankMapper;
     private final KnowledgeMasteryMapper masteryMapper;
     private final MemoryReflectionService reflectionService;
+    private final MaintenanceTaskMapper maintenanceTaskMapper;
     private final CaseRecordRepository caseRecordRepository;
     private final RabbitTemplate rabbitTemplate;
 
@@ -44,8 +45,13 @@ public class QuizServiceImpl implements QuizService {
     @Transactional
     public Long generate(Long userId) {
         List<MemoryReflection> reflections = reflectionService.getActiveReflections(userId);
-        if (reflections == null || reflections.isEmpty()) {
-            throw new TaskStateException("暂无足够画像，请先完成几次检修任务再来出题");
+        if (reflections == null) {
+            reflections = Collections.emptyList();
+        }
+        List<Map<String, Object>> mastery = loadMasteryForMsg(userId);
+        List<Map<String, Object>> taskHistory = loadTaskHistoryForMsg(userId);
+        if (reflections.isEmpty() && mastery.isEmpty() && taskHistory.isEmpty()) {
+            throw new TaskStateException("暂无可用的画像、答题记录或已完成检修任务，请先完成至少一个检修任务再来出题");
         }
 
         QuizSession session = new QuizSession()
@@ -64,13 +70,14 @@ public class QuizServiceImpl implements QuizService {
             m.put("confidence", r.getConfidence());
             return m;
         }).collect(Collectors.toList()));
-        msg.setMastery(loadMasteryForMsg(userId));
-        msg.setTaskHistory(loadTaskHistoryForMsg(userId));
+        msg.setMastery(mastery);
+        msg.setTaskHistory(taskHistory);
         msg.setExistingTopics(loadExistingTopics(userId));
 
         rabbitTemplate.convertAndSend(
                 RabbitMQConfig.TASK_EXCHANGE, RabbitMQConfig.QUIZ_GENERATE_KEY, msg);
-        log.info("[出题] 发送生成消息 userId={} sessionId={}", userId, session.getId());
+        log.info("[出题] 发送生成消息 userId={} sessionId={} portrait={} mastery={} taskHistory={}",
+                userId, session.getId(), reflections.size(), mastery.size(), taskHistory.size());
         return session.getId();
     }
 
@@ -91,22 +98,54 @@ public class QuizServiceImpl implements QuizService {
     }
 
     private List<Map<String, Object>> loadTaskHistoryForMsg(Long userId) {
+        List<Map<String, Object>> out = new ArrayList<>();
+
+        // 检修任务是用户完成作业的直接证据。即使尚未生成定时画像，
+        // 也应允许 QuizAgent 根据已关闭任务规划题目主题。
+        try {
+            List<MaintenanceTask> tasks = maintenanceTaskMapper.selectList(
+                    new LambdaQueryWrapper<MaintenanceTask>()
+                            .eq(MaintenanceTask::getReporterId, userId)
+                            .eq(MaintenanceTask::getStatus, "CLOSED")
+                            .orderByDesc(MaintenanceTask::getUpdatedAt)
+                            .last("LIMIT 10")
+            );
+            for (MaintenanceTask task : tasks) {
+                Map<String, Object> m = new HashMap<>();
+                String device = task.getDeviceName() == null || task.getDeviceName().isBlank()
+                        ? task.getDeviceId() : task.getDeviceName();
+                m.put("taskId", task.getId());
+                m.put("sourceType", "maintenance_task");
+                m.put("deviceId", device);
+                m.put("deviceName", task.getDeviceName());
+                m.put("faultName", task.getFaultDescription());
+                m.put("result", "已完成");
+                m.put("experienceSummary",
+                        task.getVoiceSummary() == null || task.getVoiceSummary().isBlank()
+                                ? "已完成该设备的检修任务"
+                                : task.getVoiceSummary());
+                out.add(m);
+            }
+        } catch (Exception e) {
+            log.warn("[出题] 读已完成任务失败(降级继续) userId={}: {}", userId, e.getMessage());
+        }
+
+        // 已审核案例是更高质量的履历证据，与已完成任务合并使用。
         try {
             List<CaseRecord> cases = caseRecordRepository.findApprovedBySubmittedBy(userId, 10);
-            List<Map<String, Object>> out = new ArrayList<>();
             for (CaseRecord c : cases) {
                 Map<String, Object> m = new HashMap<>();
+                m.put("sourceType", "approved_case");
                 m.put("deviceId", c.getDeviceId());
                 m.put("faultName", c.getFaultName());
                 m.put("result", c.getResult());
                 m.put("experienceSummary", c.getExperienceSummary());
                 out.add(m);
             }
-            return out;
         } catch (Exception e) {
-            log.warn("[出题] 读履历失败(降级为空) userId={}: {}", userId, e.getMessage());
-            return Collections.emptyList();
+            log.warn("[出题] 读已审核案例失败(降级继续) userId={}: {}", userId, e.getMessage());
         }
+        return out.stream().limit(10).collect(Collectors.toList());
     }
 
     private List<String> loadExistingTopics(Long userId) {

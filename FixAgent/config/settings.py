@@ -29,7 +29,7 @@ class Settings:
     rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
 
     # 内部服务鉴权令牌（与 Java 端 ai.internal-token 保持一致）
-    internal_token = os.getenv("INTERNAL_TOKEN", "fix-agent-internal-2026")
+    internal_token = os.getenv("INTERNAL_TOKEN", "")
 
     # Python 端全站 API token（Java 调 Python 时携带，防止未授权访问）
     # 必须配置，未配置时 Python 服务将拒绝所有请求

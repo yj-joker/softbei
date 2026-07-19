@@ -469,12 +469,6 @@ CREATE TABLE IF NOT EXISTS `memory_dedup_state` (
     PRIMARY KEY (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='记忆语义去重进度';
 
-CREATE TABLE IF NOT EXISTS `memory_dedup_state` (
-                                                    `user_id`       BIGINT   NOT NULL COMMENT '用户ID',
-                                                    `last_dedup_at` DATETIME NULL     COMMENT '上次语义去重时间',
-                                                    PRIMARY KEY (`user_id`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='记忆语义去重进度';
-
 -- =============================================
 -- 知识过期判定待审表
 -- =============================================
@@ -570,3 +564,25 @@ CREATE TABLE IF NOT EXISTS `domain_rule` (
                                              KEY `idx_domain_rule_device_type` (`device_type`),
                                              KEY `idx_domain_rule_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='domain diagnostic rule';
+
+-- =============================================
+-- 演示初始化账号
+-- 密码均为123456，数据库保存BCrypt(4)哈希，不保存明文密码。
+-- type: 1=管理员，0=普通用户；status: 1=已激活
+-- 可重复执行：若用户名已存在，则更新为本演示账号配置。
+-- =============================================
+INSERT INTO `user`
+    (`username`, `name`, `number`, `password`, `gender`, `type`, `phone`, `email`, `hire_date`, `status`)
+VALUES
+    ('3', '管理员3', 'ADMIN0003', '$2a$04$oFyOSL53vtwxJFddR99GeOw2ze/mOZ6ftQwqFm8yBfUGqH/Rm0VXu', 0, 1, '13800000003', NULL, CURRENT_DATE, 1),
+    ('4', '普通用户4', 'USER0004', '$2a$04$oFyOSL53vtwxJFddR99GeOw2ze/mOZ6ftQwqFm8yBfUGqH/Rm0VXu', 0, 0, '13800000004', NULL, CURRENT_DATE, 1)
+ON DUPLICATE KEY UPDATE
+    `name` = VALUES(`name`),
+    `password` = VALUES(`password`),
+    `gender` = VALUES(`gender`),
+    `type` = VALUES(`type`),
+    `phone` = VALUES(`phone`),
+    `email` = VALUES(`email`),
+    `hire_date` = VALUES(`hire_date`),
+    `status` = VALUES(`status`),
+    `update_time` = CURRENT_TIMESTAMP;

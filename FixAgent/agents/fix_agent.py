@@ -693,13 +693,13 @@ class FixAgent(BaseAgent):
         if intent == "knowledge_inventory":
             required.append("knowledge_inventory")
         if (
-            intent in {"knowledge_query", "parameter_query", "fault_diagnosis", "maintenance_guidance", "procedure_planning", "document_understanding", "visual_identification"}
+            intent in {"knowledge_query", "parameter_query", "fault_diagnosis", "maintenance_guidance", "procedure_planning", "document_understanding"}
             or policy.get("requires_knowledge_retrieval")
             or decision.get("requires_knowledge_retrieval")
         ):
             required.append("knowledge_retrieval")
         if (
-            intent in {"fault_diagnosis", "maintenance_guidance", "procedure_planning", "visual_identification"}
+            intent in {"fault_diagnosis", "maintenance_guidance", "procedure_planning"}
             or policy.get("requires_graph_search")
             or decision.get("requires_graph_search")
         ):
