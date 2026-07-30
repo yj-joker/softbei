@@ -561,6 +561,40 @@ def test_run_cases_multi_turn_api_passes_accumulated_history(monkeypatch):
     assert history_in_turn2[1] == {"role": "assistant", "content": "answer-1"}
 
 
+def test_run_cases_api_sends_configured_token_header(monkeypatch) -> None:
+    captured_headers: list[dict[str, str]] = []
+
+    class _FakeResponse:
+        def read(self):
+            return json.dumps({"message": "answer"}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured_headers.append(dict(request.header_items()))
+        return _FakeResponse()
+
+    import evaluation.maintenance_eval_cli as cli_module
+
+    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+    case = MaintenanceEvalCase(case_id="auth_case", query="question")
+
+    run_cases(
+        [case],
+        mode="api",
+        endpoint="http://test/ai/chat",
+        timeout=5,
+        api_token="eval-secret",
+    )
+
+    assert len(captured_headers) == 1
+    assert captured_headers[0]["X-api-token"] == "eval-secret"
+
+
 def test_runner_aggregates_case_and_turn_denominators() -> None:
     cases = [
         MaintenanceEvalCase(
@@ -659,6 +693,54 @@ def test_runner_uses_shared_session_per_case_and_unique_session_per_run(monkeypa
     assert captured_payloads[0]["session_id"] != captured_payloads[2]["session_id"]
     assert captured_payloads[0]["device_type"] == "motorcycle-engine"
     assert captured_payloads[0]["document_id"] == "manual-doc"
+
+
+def test_main_reads_api_token_from_env_without_persisting_it(monkeypatch, tmp_path: Path) -> None:
+    dataset = tmp_path / "auth.jsonl"
+    dataset.write_text(
+        json.dumps({"case_id": "auth_main", "query": "question"}) + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "results"
+    captured_headers: list[dict[str, str]] = []
+
+    class _FakeResponse:
+        def read(self):
+            return json.dumps({"message": "answer"}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured_headers.append(dict(request.header_items()))
+        return _FakeResponse()
+
+    import evaluation.maintenance_eval_cli as cli_module
+
+    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("MAINTENANCE_EVAL_API_TOKEN", "env-secret")
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(dataset),
+            "--mode",
+            "api",
+            "--endpoint",
+            "http://test/ai/chat",
+            "--out-dir",
+            str(out_dir),
+            "--result-name",
+            "auth",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured_headers[0]["X-api-token"] == "env-secret"
+    assert "env-secret" not in (out_dir / "auth_run.json").read_text(encoding="utf-8")
 
 
 def test_main_writes_five_auditable_artifacts(tmp_path: Path) -> None:

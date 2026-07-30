@@ -565,6 +565,13 @@ def summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return summary
 
 
+def _api_request_headers(api_token: str) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if api_token:
+        headers["X-Api-Token"] = api_token
+    return headers
+
+
 def _chat_api_request(
     endpoint: str,
     case: MaintenanceEvalCase,
@@ -573,6 +580,7 @@ def _chat_api_request(
     session_id: str,
     default_device_type: str = "",
     default_document_id: str = "",
+    api_token: str = "",
 ) -> CaseRunResult:
     payload: dict[str, Any] = {
         "session_id": session_id,
@@ -589,7 +597,7 @@ def _chat_api_request(
     request = urllib.request.Request(
         endpoint,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_api_request_headers(api_token),
         method="POST",
     )
     started = time.perf_counter()
@@ -657,6 +665,7 @@ def _chat_api_request_turn(
     session_id: str,
     default_device_type: str = "",
     default_document_id: str = "",
+    api_token: str = "",
 ) -> CaseRunResult:
     payload: dict[str, Any] = {
         "session_id": session_id,
@@ -674,7 +683,7 @@ def _chat_api_request_turn(
     request = urllib.request.Request(
         endpoint,
         data=body,
-        headers={"Content-Type": "application/json"},
+        headers=_api_request_headers(api_token),
         method="POST",
     )
     started = time.perf_counter()
@@ -751,6 +760,7 @@ def _run_multi_turn_case(
     run_id: str,
     default_device_type: str,
     default_document_id: str,
+    api_token: str,
     trace_rows: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -767,6 +777,7 @@ def _run_multi_turn_case(
                 session_id=session_id,
                 default_device_type=default_device_type,
                 default_document_id=default_document_id,
+                api_token=api_token,
             )
         else:
             result = CaseRunResult(
@@ -811,6 +822,7 @@ def run_cases(
     run_id: str | None = None,
     default_device_type: str = "",
     default_document_id: str = "",
+    api_token: str = "",
     trace_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -827,6 +839,7 @@ def run_cases(
                     run_id=active_run_id,
                     default_device_type=default_device_type,
                     default_document_id=default_document_id,
+                    api_token=api_token,
                     trace_rows=trace_rows,
                 )
             )
@@ -839,6 +852,7 @@ def run_cases(
                 session_id=_session_id(active_run_id, case.case_id),
                 default_device_type=default_device_type,
                 default_document_id=default_document_id,
+                api_token=api_token,
             )
         else:
             result = CaseRunResult(
@@ -1311,6 +1325,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         cases = cases[: args.limit]
     run_id = uuid.uuid4().hex
     started_at = datetime.now(timezone.utc).isoformat()
+    api_token = os.environ.get("MAINTENANCE_EVAL_API_TOKEN") or os.environ.get("API_TOKEN", "")
     trace_rows: list[dict[str, Any]] = []
     turn_rows = run_cases(
         cases,
@@ -1320,6 +1335,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         run_id=run_id,
         default_device_type=args.default_device_type,
         default_document_id=args.default_document_id,
+        api_token=api_token,
         trace_rows=trace_rows,
     )
     case_rows = aggregate_case_rows(cases, turn_rows)
