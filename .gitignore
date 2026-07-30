@@ -25,6 +25,9 @@ rag_diagnostics/
 # ===== CodeGraph 索引（本地生成，不入库） =====
 .codegraph/
 
+# ===== Codex 隔离工作区 =====
+.worktrees/
+
 # ===== Java 端 (weixiu) =====
 target/
 *.iml
