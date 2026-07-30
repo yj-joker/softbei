@@ -1,0 +1,14 @@
+{
+  "fixture_name": "rag-quality-v2-conflict",
+  "purpose": "Deterministic offline conflict evidence for evaluator verification only.",
+  "required_env": {
+    "RAG_EVAL_ISOLATED_STORE": "1"
+  },
+  "redis": {
+    "allow_production": false,
+    "host": "127.0.0.1",
+    "port": 6380,
+    "database": 15,
+    "required_key_prefix": "rag-eval-v2:"
+  }
+}
