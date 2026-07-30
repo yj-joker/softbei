@@ -438,6 +438,34 @@ def test_evaluate_case_output_attaches_evidence_score_when_case_has_claim_constr
     assert row["evidence_answer_alignment_pass"] is True
 
 
+def test_evaluate_case_output_requires_explicit_evidence_constraints_to_pass():
+    case = MaintenanceEvalCase(
+        case_id="manual_e2e_missing_trace",
+        query="水泵锁紧扭矩是多少？",
+        claim_constraints=[
+            ClaimConstraint(
+                claim_id="pump_torque",
+                answer_patterns=["20 Nm"],
+                evidence_patterns=["20 Nm"],
+                allowed_sources=[
+                    AllowedSource(source_type="manual", document_id="manual-a")
+                ],
+            )
+        ],
+    )
+
+    row = evaluate_case_output(
+        case,
+        "Set it to 20 Nm.",
+        metadata={"react_trace": []},
+    )
+
+    assert row["grounding_pass"] is True
+    assert row["evidence_score_available"] is True
+    assert row["evidence_final_pass"] is False
+    assert row["final_pass"] is False
+
+
 def test_run_cases_multi_turn_fixture_produces_turn_rows():
     case = MaintenanceEvalCase(
         case_id="mt_001",

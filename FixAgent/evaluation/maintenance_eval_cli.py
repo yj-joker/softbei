@@ -380,7 +380,7 @@ def _evaluate_evidence(
     answer: str,
     metadata: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
-    if not _case_has_evidence_constraints(case) or metadata is None:
+    if not _case_has_evidence_constraints(case):
         return {
             "evidence_score_available": False,
             "evidence_coverage_status": "",
@@ -451,6 +451,10 @@ def evaluate_case_output(
         and refusal_pass
         and procedure_order_pass
         and image_metrics["image_pass"]
+        and (
+            not evidence_metrics["evidence_score_available"]
+            or evidence_metrics["evidence_final_pass"]
+        )
         and not error
     )
 
