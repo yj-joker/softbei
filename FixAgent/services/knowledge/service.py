@@ -129,6 +129,7 @@ class KnowledgeService:
             )
         except Exception as exc:
             if document_id:
+                self._cleanup_failed_import(document_id)
                 current = self.vector_svc.get_document_manifest(document_id) or {}
                 if current.get("status") != "failed":
                     self.vector_svc.put_document_manifest(document_id, {
@@ -142,18 +143,14 @@ class KnowledgeService:
     def delete_document(self, document_id: str) -> dict:
         """级联删除一个文档的全部痕迹：向量 chunk + MinIO 图片 + 状态 manifest。
 
-        顺序关键：先查图片 URL（趁向量还在）→ 删向量 → 删 MinIO → 删 manifest。
-        MinIO 删除失败仅记警告，不影响向量已清除的结果。
+        顺序关键：先查图片 URL（趁向量还在）→ 删 MinIO → 删向量 → 删 manifest。
+        任一中间件操作失败都会抛出异常，让 MQ 消费者重新投递删除任务。
         """
         if not document_id:
             return {"vectors_deleted": 0, "images_deleted": 0, "manifest_deleted": False}
         image_urls = self.vector_svc.get_document_image_urls(document_id)
+        images_deleted = self.file_storage.delete_images(image_urls)
         vectors_deleted = self.vector_svc.delete_by_document(document_id)
-        images_deleted = 0
-        try:
-            images_deleted = self.file_storage.delete_images(image_urls)
-        except Exception as exc:
-            logger.warning("[删除] MinIO 图片清理失败, documentId=%s, error=%s", document_id, exc)
         manifest_deleted = self.vector_svc.delete_document_manifest(document_id)
         logger.info(
             "[删除] documentId=%s 完成: 向量=%d, 图片=%d, manifest=%s",
@@ -534,6 +531,10 @@ class KnowledgeService:
             local_path = img.get("local_path", "")
             try:
                 image_url = await asyncio.to_thread(self.file_storage.ensure_public_url, img)
+                if not image_url:
+                    raise RuntimeError(
+                        f"image storage returned an empty public URL: {img_name}"
+                    )
                 img_text = build_image_retrieval_text(
                     image_job.get("policy_text", ""),
                     caption,
@@ -876,6 +877,11 @@ class KnowledgeService:
         stage_timings_ms["image_summary_write_ms"] = int((time.time() - image_summary_write_started) * 1000)
         await emit_progress("图片摘要", 96)
 
+        self._ensure_complete_image_persistence(
+            failed_count=image_failed_count,
+            expected_count=len(image_jobs),
+        )
+
         t1 = time.time()
         stage_timings_ms["total_ms"] = int((t1 - t0) * 1000)
         logger.info(
@@ -885,7 +891,7 @@ class KnowledgeService:
             image_success_count, image_failed_count, image_embedding_failed_count,
             image_summary_count, image_summary_failed_count, stage_timings_ms,
         )
-        self.vector_svc.put_document_manifest(document_id, {
+        manifest_written = self.vector_svc.put_document_manifest(document_id, {
             **common_metadata,
             "status": "ready",
             "category": category,
@@ -908,6 +914,10 @@ class KnowledgeService:
             "kg_status": "pending",
             "manual_id": manual_id,
         })
+        if not manifest_written:
+            raise RuntimeError(
+                f"failed to persist ready manifest for document {document_id}"
+            )
 
         return {
             "file_name": file_name,
@@ -942,6 +952,46 @@ class KnowledgeService:
             "extraction_summary": extraction_summary,
             "process_time_ms": int((t1 - t0) * 1000)
         }
+
+    def _cleanup_failed_import(self, document_id: str) -> None:
+        """Best-effort rollback for partially written vectors and uploaded images."""
+        image_urls = []
+        try:
+            image_urls = self.vector_svc.get_document_image_urls(document_id)
+        except Exception as cleanup_exc:
+            logger.error(
+                "[知识导入] 读取失败导入的图片 URL 失败, documentId=%s, error=%s",
+                document_id,
+                cleanup_exc,
+            )
+        if image_urls:
+            try:
+                self.file_storage.delete_images(image_urls)
+            except Exception as cleanup_exc:
+                logger.error(
+                    "[知识导入] 回滚 MinIO 图片失败, documentId=%s, error=%s",
+                    document_id,
+                    cleanup_exc,
+                )
+        try:
+            self.vector_svc.delete_by_document(document_id)
+        except Exception as cleanup_exc:
+            logger.error(
+                "[知识导入] 回滚 Redis 向量失败, documentId=%s, error=%s",
+                document_id,
+                cleanup_exc,
+            )
+
+    @staticmethod
+    def _ensure_complete_image_persistence(
+        failed_count: int,
+        expected_count: int,
+    ) -> None:
+        if failed_count:
+            raise RuntimeError(
+                "image persistence incomplete: "
+                f"{failed_count} of {expected_count} image(s) failed"
+            )
 
     @staticmethod
     def _embed_text_for_chunk(chunk: dict) -> str:

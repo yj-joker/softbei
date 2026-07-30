@@ -156,9 +156,10 @@ async def handle_consolidate(message: aio_pika.abc.AbstractIncomingMessage, chan
 
 async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage, channel: aio_pika.abc.AbstractChannel):
     """消费知识导入任务（含导入和删除两种动作）"""
-    async with message.process(requeue=False):
-        body = json.loads(message.body)
-        action = body.get("action", "import")
+    body = json.loads(message.body)
+    action = body.get("action", "import")
+    # 删除是幂等操作。中间件暂时不可用时必须重新入队，不能把失败消息正常 ACK 掉。
+    async with message.process(requeue=(action == "delete")):
 
         # ===== 删除动作：只清理向量，不解析文档 =====
         if action == "delete":
@@ -173,6 +174,7 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
                 )
             except Exception as e:
                 logger.error("[MQ消费] 文档删除失败, documentId=%s, 错误:%s", document_id, e, exc_info=True)
+                raise
             return
 
         # ===== 导入动作：解析文档 → 向量化 → 存入 Redis 向量库 =====

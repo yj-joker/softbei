@@ -859,7 +859,9 @@ class VectorService:
             return deleted
         except Exception as e:
             logger.error(f"delete_by_document failed: {e}", exc_info=True)
-            return 0
+            raise RuntimeError(
+                f"failed to delete Redis vectors for document {document_id}: {e}"
+            ) from e
 
     def list_document_chunks(
         self,
@@ -972,7 +974,9 @@ class VectorService:
             return bool(self.redis.delete(f"{self.DOCUMENT_KEY_PREFIX}{document_id}"))
         except Exception as e:
             logger.error(f"delete_document_manifest failed: {e}")
-            return False
+            raise RuntimeError(
+                f"failed to delete Redis manifest for document {document_id}: {e}"
+            ) from e
 
     def get_document_image_urls(self, document_id: str) -> List[str]:
         """查出某文档所有图片记录的 image_url（删除时用于清理 MinIO）。
@@ -1013,7 +1017,9 @@ class VectorService:
             return urls
         except Exception as e:
             logger.error(f"get_document_image_urls failed: {e}")
-            return []
+            raise RuntimeError(
+                f"failed to read image URLs for document {document_id}: {e}"
+            ) from e
 
     def list_documents_by_kg_status(self, status: str) -> List[str]:
         """扫描 document:* manifest，返回 kg_status 命中的 document_id 列表。"""
