@@ -4,9 +4,12 @@ from pathlib import Path
 from evaluation.maintenance_eval_cli import (
     MaintenanceEvalCase,
     MaintenanceEvalTurn,
+    aggregate_case_rows,
     evaluate_case_output,
+    main,
     read_jsonl_dataset,
     run_cases,
+    summarize_results,
     summarize_rows,
 )
 from evaluation.maintenance_eval_schema import AllowedSource, ClaimConstraint
@@ -556,3 +559,151 @@ def test_run_cases_multi_turn_api_passes_accumulated_history(monkeypatch):
     assert len(history_in_turn2) == 2
     assert history_in_turn2[0] == {"role": "user", "content": "第一问"}
     assert history_in_turn2[1] == {"role": "assistant", "content": "answer-1"}
+
+
+def test_runner_aggregates_case_and_turn_denominators() -> None:
+    cases = [
+        MaintenanceEvalCase(
+            case_id="single_001",
+            query="单轮问题",
+            required_nuggets=["正确"],
+            candidate_answer="正确",
+            dataset_source="legacy.jsonl",
+        ),
+        MaintenanceEvalCase(
+            case_id="multi_001",
+            dataset_source="special.jsonl",
+            turns=[
+                MaintenanceEvalTurn(
+                    query="第一轮",
+                    required_nuggets=["第一轮正确"],
+                    candidate_answer="第一轮正确",
+                ),
+                MaintenanceEvalTurn(
+                    query="第二轮",
+                    required_nuggets=["第二轮正确"],
+                    candidate_answer="缺少答案",
+                ),
+            ],
+        ),
+    ]
+
+    turn_rows = run_cases(cases, mode="fixture", endpoint="", timeout=5, run_id="run-a")
+    case_rows = aggregate_case_rows(cases, turn_rows)
+    summary = summarize_results(case_rows, turn_rows)
+
+    assert len(turn_rows) == 3
+    assert [row["id"] for row in case_rows] == ["single_001", "multi_001"]
+    assert case_rows[0]["query"] == "单轮问题"
+    assert case_rows[0]["generated_answer"] == "正确"
+    assert case_rows[1]["turn_count"] == 2
+    assert case_rows[1]["final_pass"] is False
+    assert {row["dataset_source"] for row in turn_rows} == {"legacy.jsonl", "special.jsonl"}
+    assert summary["case_count"] == 2
+    assert summary["turn_count"] == 3
+    assert summary["request_count"] == 3
+    assert summary["metric_counts"]["final_pass_rate"] == {
+        "numerator": 1,
+        "denominator": 2,
+        "rate": 0.5,
+    }
+
+
+def test_runner_uses_shared_session_per_case_and_unique_session_per_run(monkeypatch) -> None:
+    captured_payloads: list[dict] = []
+
+    class _FakeResponse:
+        def read(self):
+            return json.dumps({"message": "answer"}).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout):
+        captured_payloads.append(json.loads(request.data.decode("utf-8")))
+        return _FakeResponse()
+
+    import evaluation.maintenance_eval_cli as cli_module
+
+    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+    case = MaintenanceEvalCase(
+        case_id="session_case",
+        turns=[MaintenanceEvalTurn(query="一"), MaintenanceEvalTurn(query="二")],
+    )
+
+    run_cases(
+        [case],
+        mode="api",
+        endpoint="http://test/ai/chat",
+        timeout=5,
+        run_id="run-one",
+        default_device_type="motorcycle-engine",
+        default_document_id="manual-doc",
+    )
+    run_cases(
+        [case],
+        mode="api",
+        endpoint="http://test/ai/chat",
+        timeout=5,
+        run_id="run-two",
+        default_device_type="motorcycle-engine",
+        default_document_id="manual-doc",
+    )
+
+    assert len(captured_payloads) == 4
+    assert captured_payloads[0]["session_id"] == captured_payloads[1]["session_id"]
+    assert captured_payloads[2]["session_id"] == captured_payloads[3]["session_id"]
+    assert captured_payloads[0]["session_id"] != captured_payloads[2]["session_id"]
+    assert captured_payloads[0]["device_type"] == "motorcycle-engine"
+    assert captured_payloads[0]["document_id"] == "manual-doc"
+
+
+def test_main_writes_five_auditable_artifacts(tmp_path: Path) -> None:
+    dataset = tmp_path / "special.jsonl"
+    dataset.write_text(
+        json.dumps(
+            {
+                "case_id": "artifact_case",
+                "query": "问题",
+                "candidate_answer": "回答",
+                "candidate_metadata": {"react_trace": []},
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out_dir = tmp_path / "results"
+
+    exit_code = main(
+        [
+            "--dataset",
+            str(dataset),
+            "--mode",
+            "fixture",
+            "--out-dir",
+            str(out_dir),
+            "--result-name",
+            "baseline",
+            "--default-device-type",
+            "motorcycle-engine",
+            "--default-document-id",
+            "manual-doc",
+        ]
+    )
+
+    assert exit_code == 0
+    assert (out_dir / "baseline.csv").is_file()
+    assert (out_dir / "baseline_turns.csv").is_file()
+    assert (out_dir / "baseline_trace.jsonl").is_file()
+    assert (out_dir / "baseline_summary.json").is_file()
+    assert (out_dir / "baseline_run.json").is_file()
+    summary = json.loads((out_dir / "baseline_summary.json").read_text(encoding="utf-8"))
+    run_manifest = json.loads((out_dir / "baseline_run.json").read_text(encoding="utf-8"))
+    assert summary["case_count"] == 1
+    assert summary["turn_count"] == 1
+    assert run_manifest["dataset_files"][0]["sha256"]
+    assert run_manifest["default_document_id"] == "manual-doc"

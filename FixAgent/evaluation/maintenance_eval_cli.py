@@ -18,14 +18,20 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
+import os
 import re
+import subprocess
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from urllib.parse import urlsplit, urlunsplit
 
 from evaluation.maintenance_eval_evidence import score_turn_output
 from evaluation.maintenance_eval_schema import (
@@ -380,6 +386,7 @@ def _evaluate_evidence(
     answer: str,
     metadata: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
+    score = score_turn_output(_case_to_evidence_turn(case), answer, metadata)
     if not _case_has_evidence_constraints(case):
         return {
             "evidence_score_available": False,
@@ -393,9 +400,12 @@ def _evaluate_evidence(
             "evidence_partial_answer_correct": "",
             "evidence_conflict_handling_pass": "",
             "evidence_source_style_mode_pass": "",
+            "evidence_refusal_integrity_pass": "",
+            "evidence_fixed_template_detected": score.fixed_template_detected,
+            "evidence_style_proxy_pass": score.style_proxy_pass,
+            "evidence_source_mode_pass": score.source_mode_pass,
             "evidence_diagnostics": "",
         }
-    score = score_turn_output(_case_to_evidence_turn(case), answer, metadata)
     return {
         "evidence_score_available": True,
         "evidence_coverage_status": score.coverage_status,
@@ -408,6 +418,10 @@ def _evaluate_evidence(
         "evidence_partial_answer_correct": score.partial_answer_correct,
         "evidence_conflict_handling_pass": score.conflict_handling_pass,
         "evidence_source_style_mode_pass": score.source_style_mode_pass,
+        "evidence_refusal_integrity_pass": score.refusal_integrity_pass,
+        "evidence_fixed_template_detected": score.fixed_template_detected,
+        "evidence_style_proxy_pass": score.style_proxy_pass,
+        "evidence_source_mode_pass": score.source_mode_pass,
         "evidence_diagnostics": "；".join(score.diagnostics),
     }
 
@@ -460,6 +474,12 @@ def evaluate_case_output(
 
     return {
         "id": case.case_id,
+        "case_id": case.case_id,
+        "turn_index": 1,
+        "turn_count": 1,
+        "request_count": 1,
+        "dataset_source": case.dataset_source,
+        "group": case.group,
         "query": case.query,
         "task_type": case.task_type,
         "intent_action": case.intent_action,
@@ -468,6 +488,14 @@ def evaluate_case_output(
         "difficulty": case.difficulty,
         "trap_type": ";".join(case.trap_type),
         "answerable": case.answerable,
+        "expected_scope": case.expected_scope,
+        "expected_coverage_status": case.expected_coverage_status,
+        "source_request_mode": case.source_request_mode,
+        "claim_constraint_count": len(case.claim_constraints),
+        "has_forbidden_without_evidence": any(
+            constraint.forbidden_without_evidence_patterns
+            for constraint in case.claim_constraints
+        ),
         "generated_answer": answer,
         "required_nuggets": "；".join(case.required_nuggets),
         "matched_required_nuggets": "；".join(matched_required),
@@ -537,16 +565,26 @@ def summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def _chat_api_request(endpoint: str, case: MaintenanceEvalCase, timeout: int) -> CaseRunResult:
+def _chat_api_request(
+    endpoint: str,
+    case: MaintenanceEvalCase,
+    timeout: int,
+    *,
+    session_id: str,
+    default_device_type: str = "",
+    default_document_id: str = "",
+) -> CaseRunResult:
     payload: dict[str, Any] = {
-        "session_id": f"maintenance-eval-{case.case_id}",
+        "session_id": session_id,
         "message": case.query,
         "stream": False,
     }
-    if case.device_type:
-        payload["device_type"] = case.device_type
-    if case.document_id:
-        payload["document_id"] = case.document_id
+    device_type = case.device_type or default_device_type
+    document_id = case.document_id or default_document_id
+    if device_type:
+        payload["device_type"] = device_type
+    if document_id:
+        payload["document_id"] = document_id
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
@@ -580,8 +618,12 @@ def _turn_to_eval_case(
         query=turn.query,
         device_type=case.device_type,
         document_id=case.document_id,
+        document_version=case.document_version,
+        manual_type=case.manual_type,
         difficulty=case.difficulty,
         trap_type=case.trap_type,
+        group=case.group,
+        dataset_source=case.dataset_source,
         task_type=turn.task_type or case.task_type,
         intent_action=turn.intent_action or case.intent_action,
         target_section=turn.target_section,
@@ -611,17 +653,23 @@ def _chat_api_request_turn(
     turn_query: str,
     conversation_history: list[dict[str, str]],
     timeout: int,
+    *,
+    session_id: str,
+    default_device_type: str = "",
+    default_document_id: str = "",
 ) -> CaseRunResult:
     payload: dict[str, Any] = {
-        "session_id": f"maintenance-eval-{case.case_id}",
+        "session_id": session_id,
         "message": turn_query,
         "stream": False,
         "conversation_history": conversation_history,
     }
-    if case.device_type:
-        payload["device_type"] = case.device_type
-    if case.document_id:
-        payload["document_id"] = case.document_id
+    device_type = case.device_type or default_device_type
+    document_id = case.document_id or default_document_id
+    if device_type:
+        payload["device_type"] = device_type
+    if document_id:
+        payload["document_id"] = document_id
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
@@ -645,18 +693,81 @@ def _chat_api_request_turn(
         return CaseRunResult(latency_ms=int((time.perf_counter() - started) * 1000), error=str(exc))
 
 
+def _session_id(run_id: str, case_id: str) -> str:
+    safe_run_id = re.sub(r"[^A-Za-z0-9_-]+", "-", run_id).strip("-") or "run"
+    safe_case_id = re.sub(r"[^A-Za-z0-9_-]+", "-", case_id).strip("-") or "case"
+    return f"maintenance-eval-{safe_run_id}-{safe_case_id}"
+
+
+def _decorate_turn_row(
+    row: dict[str, Any],
+    case: MaintenanceEvalCase,
+    turn_index: int,
+) -> dict[str, Any]:
+    row.update(
+        {
+            "case_id": case.case_id,
+            "turn_index": turn_index,
+            "turn_count": len(case.turns) if case.turns else 1,
+            "request_count": 1,
+            "dataset_source": case.dataset_source,
+            "group": case.group,
+        }
+    )
+    return row
+
+
+def _append_trace_row(
+    trace_rows: list[dict[str, Any]] | None,
+    *,
+    case: MaintenanceEvalCase,
+    turn_index: int,
+    row: Mapping[str, Any],
+    result: CaseRunResult,
+) -> None:
+    if trace_rows is None:
+        return
+    trace_rows.append(
+        {
+            "id": row["id"],
+            "case_id": case.case_id,
+            "turn_index": turn_index,
+            "dataset_source": case.dataset_source,
+            "query": row["query"],
+            "answer": result.answer,
+            "metadata": result.metadata,
+            "evidence_diagnostics": row.get("evidence_diagnostics", ""),
+            "error": result.error,
+        }
+    )
+
+
 def _run_multi_turn_case(
     case: MaintenanceEvalCase,
     *,
     mode: str,
     endpoint: str,
     timeout: int,
+    run_id: str,
+    default_device_type: str,
+    default_document_id: str,
+    trace_rows: list[dict[str, Any]] | None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     conversation_history: list[dict[str, str]] = []
+    session_id = _session_id(run_id, case.case_id)
     for turn_index, turn in enumerate(case.turns, start=1):
         if mode == "api":
-            result = _chat_api_request_turn(endpoint, case, turn.query, conversation_history, timeout)
+            result = _chat_api_request_turn(
+                endpoint,
+                case,
+                turn.query,
+                conversation_history,
+                timeout,
+                session_id=session_id,
+                default_device_type=default_device_type,
+                default_document_id=default_document_id,
+            )
         else:
             result = CaseRunResult(
                 answer=turn.candidate_answer,
@@ -671,6 +782,14 @@ def _run_multi_turn_case(
             latency_ms=result.latency_ms,
             error=result.error,
             metadata=result.metadata,
+        )
+        _decorate_turn_row(row, case, turn_index)
+        _append_trace_row(
+            trace_rows,
+            case=case,
+            turn_index=turn_index,
+            row=row,
+            result=result,
         )
         rows.append(row)
         print(
@@ -689,15 +808,38 @@ def run_cases(
     mode: str,
     endpoint: str,
     timeout: int,
+    run_id: str | None = None,
+    default_device_type: str = "",
+    default_document_id: str = "",
+    trace_rows: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    active_run_id = run_id or uuid.uuid4().hex
     for index, case in enumerate(cases, start=1):
         if case.turns:
             print(f"{index}/{len(cases)} {case.case_id} [multi-turn x{len(case.turns)}]", flush=True)
-            rows.extend(_run_multi_turn_case(case, mode=mode, endpoint=endpoint, timeout=timeout))
+            rows.extend(
+                _run_multi_turn_case(
+                    case,
+                    mode=mode,
+                    endpoint=endpoint,
+                    timeout=timeout,
+                    run_id=active_run_id,
+                    default_device_type=default_device_type,
+                    default_document_id=default_document_id,
+                    trace_rows=trace_rows,
+                )
+            )
             continue
         if mode == "api":
-            result = _chat_api_request(endpoint, case, timeout)
+            result = _chat_api_request(
+                endpoint,
+                case,
+                timeout,
+                session_id=_session_id(active_run_id, case.case_id),
+                default_device_type=default_device_type,
+                default_document_id=default_document_id,
+            )
         else:
             result = CaseRunResult(
                 answer=case.candidate_answer,
@@ -712,6 +854,14 @@ def run_cases(
             error=result.error,
             metadata=result.metadata,
         )
+        _decorate_turn_row(row, case, 1)
+        _append_trace_row(
+            trace_rows,
+            case=case,
+            turn_index=1,
+            row=row,
+            result=result,
+        )
         rows.append(row)
         print(
             f"{index}/{len(cases)} {case.case_id} final={row['final_pass']} "
@@ -722,10 +872,256 @@ def run_cases(
     return rows
 
 
+_CASE_BOOLEAN_FIELDS = (
+    "forbidden_claim_pass",
+    "refusal_pass",
+    "procedure_order_pass",
+    "grounding_pass",
+    "forbidden_image_pass",
+    "image_order_pass",
+    "step_image_binding_pass",
+    "image_pass",
+    "evidence_final_pass",
+    "evidence_scope_isolation_pass",
+    "evidence_source_pass",
+    "evidence_answer_alignment_pass",
+    "evidence_unsupported_completion_free",
+    "evidence_partial_answer_correct",
+    "evidence_conflict_handling_pass",
+    "evidence_source_style_mode_pass",
+    "evidence_refusal_integrity_pass",
+    "evidence_style_proxy_pass",
+    "evidence_source_mode_pass",
+)
+
+
+def _applicable_values(rows: Sequence[Mapping[str, Any]], key: str) -> list[Any]:
+    return [row.get(key) for row in rows if row.get(key) not in (None, "")]
+
+
+def aggregate_case_rows(
+    cases: Sequence[MaintenanceEvalCase],
+    turn_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    """Aggregate turn-level results into one stable row per dataset case."""
+
+    by_case: dict[str, list[Mapping[str, Any]]] = {}
+    for row in turn_rows:
+        by_case.setdefault(str(row.get("case_id") or row.get("id") or ""), []).append(row)
+
+    case_rows: list[dict[str, Any]] = []
+    for case in cases:
+        members = by_case.get(case.case_id, [])
+        if not members:
+            continue
+        row = dict(members[0])
+        row.update(
+            {
+                "id": case.case_id,
+                "case_id": case.case_id,
+                "turn_index": "",
+                "turn_count": len(members),
+                "request_count": len(members),
+                "dataset_source": case.dataset_source,
+                "group": case.group,
+                "query": str(members[0].get("query") or "")
+                if len(members) == 1
+                else "\n".join(
+                    f"T{index}: {member.get('query', '')}"
+                    for index, member in enumerate(members, start=1)
+                ),
+                "generated_answer": str(members[0].get("generated_answer") or "")
+                if len(members) == 1
+                else "\n".join(
+                    f"T{index}: {member.get('generated_answer', '')}"
+                    for index, member in enumerate(members, start=1)
+                ),
+                "latency_ms": sum(int(member.get("latency_ms") or 0) for member in members),
+                "error": "；".join(
+                    str(member.get("error") or "")
+                    for member in members
+                    if str(member.get("error") or "")
+                ),
+                "final_pass": all(bool(member.get("final_pass")) for member in members),
+                "evidence_score_available": any(
+                    bool(member.get("evidence_score_available")) for member in members
+                ),
+            }
+        )
+        for key in _CASE_BOOLEAN_FIELDS:
+            values = _applicable_values(members, key)
+            row[key] = all(bool(value) for value in values) if values else ""
+        for key in (
+            "required_nugget_recall",
+            "image_recall",
+            "image_precision",
+            "evidence_nugget_coverage_rate",
+        ):
+            values = [float(value) for value in _applicable_values(members, key)]
+            row[key] = round(sum(values) / len(values), 6) if values else ""
+        case_rows.append(row)
+    return case_rows
+
+
+def _metric_count(
+    rows: Sequence[Mapping[str, Any]],
+    key: str,
+    *,
+    predicate: Any | None = None,
+    invert: bool = False,
+) -> dict[str, Any]:
+    applicable = [
+        row
+        for row in rows
+        if (predicate is None or predicate(row)) and row.get(key) not in (None, "")
+    ]
+    numerator = sum(bool(row.get(key)) != invert for row in applicable)
+    denominator = len(applicable)
+    return {
+        "numerator": numerator,
+        "denominator": denominator,
+        "rate": round(numerator / denominator, 6) if denominator else None,
+    }
+
+
+def _nugget_coverage_count(turn_rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    applicable = [row for row in turn_rows if int(row.get("claim_constraint_count") or 0) > 0]
+    denominator = sum(int(row.get("claim_constraint_count") or 0) for row in applicable)
+    numerator = sum(
+        round(
+            float(row.get("evidence_nugget_coverage_rate") or 0.0)
+            * int(row.get("claim_constraint_count") or 0)
+        )
+        for row in applicable
+    )
+    return {
+        "numerator": numerator,
+        "denominator": denominator,
+        "rate": round(numerator / denominator, 6) if denominator else None,
+    }
+
+
+def summarize_results(
+    case_rows: Sequence[Mapping[str, Any]],
+    turn_rows: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    summary = summarize_rows(case_rows)
+    metric_counts = {
+        "final_pass_rate": _metric_count(case_rows, "final_pass"),
+        "forbidden_claim_pass_rate": _metric_count(case_rows, "forbidden_claim_pass"),
+        "refusal_pass_rate": _metric_count(case_rows, "refusal_pass"),
+        "procedure_order_pass_rate": _metric_count(
+            case_rows,
+            "procedure_order_pass",
+            predicate=lambda row: bool(str(row.get("expected_step_order") or "").strip()),
+        ),
+        "image_pass_rate": _metric_count(
+            case_rows,
+            "image_pass",
+            predicate=lambda row: bool(row.get("image_eval_required")),
+        ),
+        "forbidden_image_pass_rate": _metric_count(
+            case_rows,
+            "forbidden_image_pass",
+            predicate=lambda row: bool(row.get("image_eval_required")),
+        ),
+        "evidence_nugget_coverage_rate": _nugget_coverage_count(turn_rows),
+        "evidence_source_pass_rate": _metric_count(
+            turn_rows,
+            "evidence_source_pass",
+            predicate=lambda row: int(row.get("claim_constraint_count") or 0) > 0,
+        ),
+        "answer_evidence_alignment_pass_rate": _metric_count(
+            turn_rows,
+            "evidence_answer_alignment_pass",
+            predicate=lambda row: int(row.get("claim_constraint_count") or 0) > 0,
+        ),
+        "scope_isolation_pass_rate": _metric_count(
+            turn_rows,
+            "evidence_scope_isolation_pass",
+            predicate=lambda row: row.get("expected_scope") == "out_of_scope",
+        ),
+        "unsupported_completion_free_rate": _metric_count(
+            turn_rows,
+            "evidence_unsupported_completion_free",
+            predicate=lambda row: bool(row.get("has_forbidden_without_evidence")),
+        ),
+        "partial_answer_correct_rate": _metric_count(
+            turn_rows,
+            "evidence_partial_answer_correct",
+            predicate=lambda row: row.get("expected_coverage_status") == "partial",
+        ),
+        "conflict_handling_pass_rate": _metric_count(
+            turn_rows,
+            "evidence_conflict_handling_pass",
+            predicate=lambda row: row.get("expected_coverage_status") == "conflict",
+        ),
+        "refusal_integrity_pass_rate": _metric_count(
+            turn_rows,
+            "evidence_refusal_integrity_pass",
+            predicate=lambda row: not bool(row.get("answerable"))
+            or row.get("expected_coverage_status") == "unsupported",
+        ),
+        "fixed_template_rate": _metric_count(
+            turn_rows,
+            "evidence_fixed_template_detected",
+            predicate=lambda row: row.get("source_request_mode") == "normal",
+        ),
+        "style_proxy_pass_rate": _metric_count(
+            turn_rows,
+            "evidence_style_proxy_pass",
+            predicate=lambda row: row.get("source_request_mode") == "normal",
+        ),
+        "source_mode_pass_rate": _metric_count(turn_rows, "evidence_source_mode_pass"),
+        "multi_turn_pass_rate": _metric_count(
+            case_rows,
+            "final_pass",
+            predicate=lambda row: int(row.get("turn_count") or 0) > 1,
+        ),
+    }
+    summary.update(
+        {
+            "case_count": len(case_rows),
+            "turn_count": len(turn_rows),
+            "request_count": sum(int(row.get("request_count") or 1) for row in turn_rows),
+            "latency_total_ms": sum(int(row.get("latency_ms") or 0) for row in turn_rows),
+            "avg_latency_ms": round(
+                sum(int(row.get("latency_ms") or 0) for row in turn_rows) / len(turn_rows),
+                6,
+            )
+            if turn_rows
+            else 0.0,
+            "metric_counts": metric_counts,
+            "dataset_case_counts": {
+                source: sum(row.get("dataset_source") == source for row in case_rows)
+                for source in sorted({str(row.get("dataset_source") or "") for row in case_rows})
+            },
+        }
+    )
+    for metric_name, metric in metric_counts.items():
+        summary[metric_name] = metric["rate"]
+    summary["case_metrics"] = {
+        key: metric_counts[key]
+        for key in ("final_pass_rate", "multi_turn_pass_rate")
+    }
+    summary["turn_metrics"] = {
+        key: value
+        for key, value in metric_counts.items()
+        if key not in summary["case_metrics"]
+    }
+    return summary
+
+
 def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = [
         "id",
+        "case_id",
+        "turn_index",
+        "turn_count",
+        "request_count",
+        "dataset_source",
+        "group",
         "query",
         "task_type",
         "intent_action",
@@ -734,6 +1130,11 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "difficulty",
         "trap_type",
         "answerable",
+        "expected_scope",
+        "expected_coverage_status",
+        "source_request_mode",
+        "claim_constraint_count",
+        "has_forbidden_without_evidence",
         "generated_answer",
         "required_nuggets",
         "matched_required_nuggets",
@@ -772,6 +1173,10 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "evidence_partial_answer_correct",
         "evidence_conflict_handling_pass",
         "evidence_source_style_mode_pass",
+        "evidence_refusal_integrity_pass",
+        "evidence_fixed_template_detected",
+        "evidence_style_proxy_pass",
+        "evidence_source_mode_pass",
         "evidence_diagnostics",
         "final_pass",
         "latency_ms",
@@ -788,6 +1193,102 @@ def write_summary(path: Path, summary: Mapping[str, Any]) -> None:
     path.write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def write_trace_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _git_head() -> str:
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parents[2],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return completed.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _sanitized_endpoint(endpoint: str) -> str:
+    if not endpoint:
+        return ""
+    parsed = urlsplit(endpoint)
+    if not parsed.hostname:
+        return endpoint.split("?", 1)[0]
+    host = parsed.hostname
+    if parsed.port:
+        host = f"{host}:{parsed.port}"
+    return urlunsplit((parsed.scheme, host, parsed.path, "", ""))
+
+
+def build_run_manifest(
+    *,
+    run_id: str,
+    started_at: str,
+    dataset_paths: Sequence[Path],
+    cases: Sequence[MaintenanceEvalCase],
+    turn_rows: Sequence[Mapping[str, Any]],
+    mode: str,
+    endpoint: str,
+    timeout: int,
+    default_device_type: str,
+    default_document_id: str,
+) -> dict[str, Any]:
+    dataset_files = []
+    for path in dataset_paths:
+        resolved = path.resolve()
+        dataset_files.append(
+            {
+                "name": path.name,
+                "path": str(resolved),
+                "sha256": _sha256_file(path),
+                "size_bytes": path.stat().st_size,
+                "case_count": sum(case.dataset_source == path.name for case in cases),
+            }
+        )
+    model_config = {
+        key: os.environ[key]
+        for key in (
+            "LLM_PROVIDER",
+            "LLM_MODEL",
+            "DASHSCOPE_MODEL",
+            "LLM_TEMPERATURE",
+            "LLM_TOP_P",
+            "LLM_SEED",
+        )
+        if os.environ.get(key)
+    }
+    return {
+        "run_id": run_id,
+        "started_at": started_at,
+        "git_commit": _git_head(),
+        "mode": mode,
+        "endpoint": _sanitized_endpoint(endpoint),
+        "timeout_seconds": timeout,
+        "default_device_type": default_device_type,
+        "default_document_id": default_document_id,
+        "case_count": len(cases),
+        "turn_count": len(turn_rows),
+        "request_count": len(turn_rows),
+        "dataset_files": dataset_files,
+        "model_config": model_config,
+    }
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate maintenance manual end-to-end answer quality.")
     parser.add_argument("--dataset", action="append", required=True, help="JSONL dataset path; repeat for multiple files.")
@@ -795,6 +1296,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000/ai/chat", help="Chat API endpoint for --mode api.")
     parser.add_argument("--timeout", type=int, default=120, help="Per-case HTTP timeout in seconds.")
     parser.add_argument("--limit", type=int, default=0, help="Optional case limit.")
+    parser.add_argument("--default-device-type", default="", help="Device scope used when a case omits device_type.")
+    parser.add_argument("--default-document-id", default="", help="Document scope used when a case omits document_id.")
     parser.add_argument("--out-dir", default="evaluation/results", help="Output directory.")
     parser.add_argument("--result-name", default="maintenance_eval_result", help="Output file basename.")
     return parser
@@ -802,14 +1305,43 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cases = read_jsonl_datasets([Path(path) for path in args.dataset])
+    dataset_paths = [Path(path) for path in args.dataset]
+    cases = read_jsonl_datasets(dataset_paths)
     if args.limit and args.limit > 0:
         cases = cases[: args.limit]
-    rows = run_cases(cases, mode=args.mode, endpoint=args.endpoint, timeout=args.timeout)
-    summary = summarize_rows(rows)
+    run_id = uuid.uuid4().hex
+    started_at = datetime.now(timezone.utc).isoformat()
+    trace_rows: list[dict[str, Any]] = []
+    turn_rows = run_cases(
+        cases,
+        mode=args.mode,
+        endpoint=args.endpoint,
+        timeout=args.timeout,
+        run_id=run_id,
+        default_device_type=args.default_device_type,
+        default_document_id=args.default_document_id,
+        trace_rows=trace_rows,
+    )
+    case_rows = aggregate_case_rows(cases, turn_rows)
+    summary = summarize_results(case_rows, turn_rows)
+    run_manifest = build_run_manifest(
+        run_id=run_id,
+        started_at=started_at,
+        dataset_paths=dataset_paths,
+        cases=cases,
+        turn_rows=turn_rows,
+        mode=args.mode,
+        endpoint=args.endpoint,
+        timeout=args.timeout,
+        default_device_type=args.default_device_type,
+        default_document_id=args.default_document_id,
+    )
     out_dir = Path(args.out_dir)
-    write_rows(out_dir / f"{args.result_name}.csv", rows)
+    write_rows(out_dir / f"{args.result_name}.csv", case_rows)
+    write_rows(out_dir / f"{args.result_name}_turns.csv", turn_rows)
+    write_trace_rows(out_dir / f"{args.result_name}_trace.jsonl", trace_rows)
     write_summary(out_dir / f"{args.result_name}_summary.json", summary)
+    write_summary(out_dir / f"{args.result_name}_run.json", run_manifest)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 
