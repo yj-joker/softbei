@@ -27,8 +27,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from evaluation.maintenance_eval_evidence import score_turn_output
 from evaluation.maintenance_eval_schema import (
     MaintenanceEvalCase,
+    MaintenanceEvalTurn,
     read_jsonl_dataset,
     read_jsonl_datasets,
 )
@@ -99,6 +101,7 @@ METRIC_DESCRIPTIONS_CN = {
 class CaseRunResult:
     answer: str = ""
     evidence_images: list[dict[str, Any]] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     latency_ms: int = 0
     error: str = ""
 
@@ -342,6 +345,73 @@ def _evaluate_images(case: MaintenanceEvalCase, evidence_images: Sequence[Mappin
     }
 
 
+def _case_has_evidence_constraints(case: MaintenanceEvalCase) -> bool:
+    return bool(
+        case.expected_scope
+        or case.expected_coverage_status
+        or case.claim_constraints
+        or case.conflict_constraints
+        or case.forbidden_source_terms
+        or case.source_request_mode != "normal"
+        or case.style_expectation is not None
+    )
+
+
+def _case_to_evidence_turn(case: MaintenanceEvalCase) -> MaintenanceEvalTurn:
+    return MaintenanceEvalTurn(
+        query=case.query,
+        task_type=case.task_type,
+        intent_action=case.intent_action,
+        target_section=case.target_section,
+        target_pages=case.target_pages,
+        answerable=case.answerable,
+        expected_scope=case.expected_scope,
+        expected_coverage_status=case.expected_coverage_status,
+        claim_constraints=case.claim_constraints,
+        conflict_constraints=case.conflict_constraints,
+        forbidden_source_terms=case.forbidden_source_terms,
+        source_request_mode=case.source_request_mode,
+        style_expectation=case.style_expectation,
+    )
+
+
+def _evaluate_evidence(
+    case: MaintenanceEvalCase,
+    answer: str,
+    metadata: Mapping[str, Any] | None,
+) -> dict[str, Any]:
+    if not _case_has_evidence_constraints(case) or metadata is None:
+        return {
+            "evidence_score_available": False,
+            "evidence_coverage_status": "",
+            "evidence_final_pass": "",
+            "evidence_scope_isolation_pass": "",
+            "evidence_source_pass": "",
+            "evidence_answer_alignment_pass": "",
+            "evidence_nugget_coverage_rate": "",
+            "evidence_unsupported_completion_free": "",
+            "evidence_partial_answer_correct": "",
+            "evidence_conflict_handling_pass": "",
+            "evidence_source_style_mode_pass": "",
+            "evidence_diagnostics": "",
+        }
+    score = score_turn_output(_case_to_evidence_turn(case), answer, metadata)
+    return {
+        "evidence_score_available": True,
+        "evidence_coverage_status": score.coverage_status,
+        "evidence_final_pass": score.final_pass,
+        "evidence_scope_isolation_pass": score.scope_isolation_pass,
+        "evidence_source_pass": score.evidence_source_pass,
+        "evidence_answer_alignment_pass": score.answer_evidence_alignment_pass,
+        "evidence_nugget_coverage_rate": score.evidence_nugget_coverage_rate,
+        "evidence_unsupported_completion_free": score.unsupported_completion_free,
+        "evidence_partial_answer_correct": score.partial_answer_correct,
+        "evidence_conflict_handling_pass": score.conflict_handling_pass,
+        "evidence_source_style_mode_pass": score.source_style_mode_pass,
+        "evidence_diagnostics": "；".join(score.diagnostics),
+    }
+
+
 def evaluate_case_output(
     case: MaintenanceEvalCase,
     generated_answer: str,
@@ -349,6 +419,7 @@ def evaluate_case_output(
     *,
     latency_ms: int = 0,
     error: str = "",
+    metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     answer = generated_answer or ""
     evidence_images = evidence_images or []
@@ -374,6 +445,7 @@ def evaluate_case_output(
         procedure_order_pass, step_positions = True, []
 
     image_metrics = _evaluate_images(case, evidence_images, answer)
+    evidence_metrics = _evaluate_evidence(case, answer, metadata)
     final_pass = bool(
         grounding_pass
         and refusal_pass
@@ -413,6 +485,7 @@ def evaluate_case_output(
         "latency_ms": latency_ms,
         "error": error,
         **image_metrics,
+        **evidence_metrics,
     }
 
 
@@ -482,6 +555,7 @@ def _chat_api_request(endpoint: str, case: MaintenanceEvalCase, timeout: int) ->
         return CaseRunResult(
             answer=str(data.get("message") or ""),
             evidence_images=list(data.get("evidenceImages") or data.get("evidence_images") or []),
+            metadata=dict(data.get("metadata") or {}),
             latency_ms=latency_ms,
         )
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
@@ -500,13 +574,18 @@ def run_cases(
         if mode == "api":
             result = _chat_api_request(endpoint, case, timeout)
         else:
-            result = CaseRunResult(answer=case.candidate_answer, evidence_images=case.candidate_images)
+            result = CaseRunResult(
+                answer=case.candidate_answer,
+                evidence_images=case.candidate_images,
+                metadata=case.candidate_metadata,
+            )
         row = evaluate_case_output(
             case,
             result.answer,
             result.evidence_images,
             latency_ms=result.latency_ms,
             error=result.error,
+            metadata=result.metadata,
         )
         rows.append(row)
         print(
@@ -557,6 +636,18 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "step_image_binding_failures",
         "image_pass",
         "image_eval_required",
+        "evidence_score_available",
+        "evidence_coverage_status",
+        "evidence_final_pass",
+        "evidence_scope_isolation_pass",
+        "evidence_source_pass",
+        "evidence_answer_alignment_pass",
+        "evidence_nugget_coverage_rate",
+        "evidence_unsupported_completion_free",
+        "evidence_partial_answer_correct",
+        "evidence_conflict_handling_pass",
+        "evidence_source_style_mode_pass",
+        "evidence_diagnostics",
         "final_pass",
         "latency_ms",
         "error",

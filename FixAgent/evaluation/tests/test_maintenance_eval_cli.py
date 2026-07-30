@@ -7,6 +7,7 @@ from evaluation.maintenance_eval_cli import (
     read_jsonl_dataset,
     summarize_rows,
 )
+from evaluation.maintenance_eval_schema import AllowedSource, ClaimConstraint
 
 
 def test_read_jsonl_dataset_loads_structured_maintenance_case(tmp_path: Path):
@@ -374,3 +375,62 @@ def test_order_matching_accepts_marker_pairs_with_original_text_between_markers(
     row = evaluate_case_output(case, answer)
 
     assert row["procedure_order_pass"] is True
+
+
+def test_evaluate_case_output_skips_evidence_score_without_constraints_or_metadata():
+    case = MaintenanceEvalCase(
+        case_id="manual_e2e_no_constraints",
+        query="如何拆卸气门？",
+        required_nuggets=["取下滑动挺柱"],
+    )
+
+    row = evaluate_case_output(case, "取下滑动挺柱。", metadata={"react_trace": []})
+
+    assert row["evidence_score_available"] is False
+    assert row["evidence_final_pass"] == ""
+    assert row["final_pass"] is True
+
+
+def test_evaluate_case_output_attaches_evidence_score_when_case_has_claim_constraints():
+    case = MaintenanceEvalCase(
+        case_id="manual_e2e_torque_claim",
+        query="水泵锁紧扭矩是多少？",
+        claim_constraints=[
+            ClaimConstraint(
+                claim_id="pump_torque",
+                answer_patterns=["20 Nm"],
+                evidence_patterns=["20 Nm"],
+                allowed_sources=[
+                    AllowedSource(source_type="manual", document_id="manual-a", chunk_ids=["pump-torque"])
+                ],
+            )
+        ],
+    )
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": [
+                            {
+                                "content": "Pump bolt torque is 20 Nm.",
+                                "metadata": {
+                                    "qualification": "qualified",
+                                    "document_id": "manual-a",
+                                    "chunk_id": "pump-torque",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+
+    row = evaluate_case_output(case, "Set it to 20 Nm.", metadata=metadata)
+
+    assert row["evidence_score_available"] is True
+    assert row["evidence_coverage_status"] == "complete"
+    assert row["evidence_final_pass"] is True
+    assert row["evidence_answer_alignment_pass"] is True

@@ -85,6 +85,7 @@ class MaintenanceEvalTurn:
     style_expectation: StyleExpectation | None = None
     candidate_answer: str = ""
     candidate_images: list[dict[str, Any]] = field(default_factory=list)
+    candidate_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -109,6 +110,7 @@ class MaintenanceEvalCase:
     trap_type: list[str] = field(default_factory=list)
     candidate_answer: str = ""
     candidate_images: list[dict[str, Any]] = field(default_factory=list)
+    candidate_metadata: dict[str, Any] = field(default_factory=dict)
     group: str = ""
     turns: list[MaintenanceEvalTurn] = field(default_factory=list)
     dataset_source: str = ""
@@ -286,6 +288,7 @@ def _turn_from_dict(data: Mapping[str, Any]) -> MaintenanceEvalTurn:
         style_expectation=_style_expectation(data.get("style_expectation")),
         candidate_answer=str(data.get("candidate_answer") or ""),
         candidate_images=_as_dict_list(data.get("candidate_images")),
+        candidate_metadata=dict(data.get("candidate_metadata") or {}),
     )
 
 
@@ -311,6 +314,7 @@ def _case_from_dict(data: Mapping[str, Any]) -> MaintenanceEvalCase:
         trap_type=_as_str_list(data.get("trap_type")),
         candidate_answer=str(data.get("candidate_answer") or ""),
         candidate_images=_as_dict_list(data.get("candidate_images")),
+        candidate_metadata=dict(data.get("candidate_metadata") or {}),
         group=str(data.get("group") or "").strip(),
         turns=[_turn_from_dict(item) for item in _as_dict_list(data.get("turns"))],
         device_type=str(data.get("device_type") or "").strip(),
