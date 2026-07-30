@@ -534,11 +534,15 @@ def summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
 
 def _chat_api_request(endpoint: str, case: MaintenanceEvalCase, timeout: int) -> CaseRunResult:
-    payload = {
+    payload: dict[str, Any] = {
         "session_id": f"maintenance-eval-{case.case_id}",
         "message": case.query,
         "stream": False,
     }
+    if case.device_type:
+        payload["device_type"] = case.device_type
+    if case.document_id:
+        payload["document_id"] = case.document_id
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = urllib.request.Request(
         endpoint,
@@ -562,6 +566,119 @@ def _chat_api_request(endpoint: str, case: MaintenanceEvalCase, timeout: int) ->
         return CaseRunResult(latency_ms=int((time.perf_counter() - started) * 1000), error=str(exc))
 
 
+def _turn_to_eval_case(
+    case: MaintenanceEvalCase,
+    turn: MaintenanceEvalTurn,
+    turn_index: int,
+) -> MaintenanceEvalCase:
+    return MaintenanceEvalCase(
+        case_id=f"{case.case_id}:t{turn_index}",
+        query=turn.query,
+        device_type=case.device_type,
+        document_id=case.document_id,
+        difficulty=case.difficulty,
+        trap_type=case.trap_type,
+        task_type=turn.task_type or case.task_type,
+        intent_action=turn.intent_action or case.intent_action,
+        target_section=turn.target_section,
+        target_pages=turn.target_pages,
+        answerable=turn.answerable if turn.answerable is not None else True,
+        required_nuggets=turn.required_nuggets,
+        optional_nuggets=turn.optional_nuggets,
+        forbidden_claims=turn.forbidden_claims,
+        expected_step_order=turn.expected_step_order,
+        expected_images=turn.expected_images,
+        expected_image_order=turn.expected_image_order,
+        step_image_mapping=turn.step_image_mapping,
+        forbidden_images=turn.forbidden_images,
+        expected_scope=turn.expected_scope,
+        expected_coverage_status=turn.expected_coverage_status,
+        claim_constraints=turn.claim_constraints,
+        conflict_constraints=turn.conflict_constraints,
+        forbidden_source_terms=turn.forbidden_source_terms,
+        source_request_mode=turn.source_request_mode,
+        style_expectation=turn.style_expectation,
+    )
+
+
+def _chat_api_request_turn(
+    endpoint: str,
+    case: MaintenanceEvalCase,
+    turn_query: str,
+    conversation_history: list[dict[str, str]],
+    timeout: int,
+) -> CaseRunResult:
+    payload: dict[str, Any] = {
+        "session_id": f"maintenance-eval-{case.case_id}",
+        "message": turn_query,
+        "stream": False,
+        "conversation_history": conversation_history,
+    }
+    if case.device_type:
+        payload["device_type"] = case.device_type
+    if case.document_id:
+        payload["document_id"] = case.document_id
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    request = urllib.request.Request(
+        endpoint,
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    started = time.perf_counter()
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            response_body = response.read().decode("utf-8", errors="replace")
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        data = json.loads(response_body)
+        return CaseRunResult(
+            answer=str(data.get("message") or ""),
+            evidence_images=list(data.get("evidenceImages") or data.get("evidence_images") or []),
+            metadata=dict(data.get("metadata") or {}),
+            latency_ms=latency_ms,
+        )
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return CaseRunResult(latency_ms=int((time.perf_counter() - started) * 1000), error=str(exc))
+
+
+def _run_multi_turn_case(
+    case: MaintenanceEvalCase,
+    *,
+    mode: str,
+    endpoint: str,
+    timeout: int,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    conversation_history: list[dict[str, str]] = []
+    for turn_index, turn in enumerate(case.turns, start=1):
+        if mode == "api":
+            result = _chat_api_request_turn(endpoint, case, turn.query, conversation_history, timeout)
+        else:
+            result = CaseRunResult(
+                answer=turn.candidate_answer,
+                evidence_images=turn.candidate_images,
+                metadata=turn.candidate_metadata,
+            )
+        turn_case = _turn_to_eval_case(case, turn, turn_index)
+        row = evaluate_case_output(
+            turn_case,
+            result.answer,
+            result.evidence_images,
+            latency_ms=result.latency_ms,
+            error=result.error,
+            metadata=result.metadata,
+        )
+        rows.append(row)
+        print(
+            f"  turn {turn_index}/{len(case.turns)} {turn_case.case_id} final={row['final_pass']} "
+            f"nugget={row['required_nugget_recall']} latency_ms={row['latency_ms']}",
+            flush=True,
+        )
+        conversation_history.append({"role": "user", "content": turn.query})
+        conversation_history.append({"role": "assistant", "content": result.answer})
+    return rows
+
+
 def run_cases(
     cases: Sequence[MaintenanceEvalCase],
     *,
@@ -571,6 +688,10 @@ def run_cases(
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for index, case in enumerate(cases, start=1):
+        if case.turns:
+            print(f"{index}/{len(cases)} {case.case_id} [multi-turn x{len(case.turns)}]", flush=True)
+            rows.extend(_run_multi_turn_case(case, mode=mode, endpoint=endpoint, timeout=timeout))
+            continue
         if mode == "api":
             result = _chat_api_request(endpoint, case, timeout)
         else:

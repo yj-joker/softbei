@@ -3,8 +3,10 @@ from pathlib import Path
 
 from evaluation.maintenance_eval_cli import (
     MaintenanceEvalCase,
+    MaintenanceEvalTurn,
     evaluate_case_output,
     read_jsonl_dataset,
+    run_cases,
     summarize_rows,
 )
 from evaluation.maintenance_eval_schema import AllowedSource, ClaimConstraint
@@ -434,3 +436,95 @@ def test_evaluate_case_output_attaches_evidence_score_when_case_has_claim_constr
     assert row["evidence_coverage_status"] == "complete"
     assert row["evidence_final_pass"] is True
     assert row["evidence_answer_alignment_pass"] is True
+
+
+def test_run_cases_multi_turn_fixture_produces_turn_rows():
+    case = MaintenanceEvalCase(
+        case_id="mt_001",
+        device_type="motorcycle-engine-v1",
+        document_id="manual-v1",
+        turns=[
+            MaintenanceEvalTurn(
+                query="凸轮轴拆卸时先取哪根？",
+                required_nuggets=["进气凸轮轴"],
+                candidate_answer="先取下进气凸轮轴。",
+            ),
+            MaintenanceEvalTurn(
+                query="那安装时呢？",
+                required_nuggets=["排气凸轮轴"],
+                forbidden_claims=["先安装进气凸轮轴"],
+                candidate_answer="安装顺序相反：先安装排气凸轮轴。",
+            ),
+        ],
+    )
+
+    rows = run_cases([case], mode="fixture", endpoint="", timeout=10)
+
+    assert len(rows) == 2
+    assert rows[0]["id"] == "mt_001:t1"
+    assert rows[1]["id"] == "mt_001:t2"
+    assert rows[0]["final_pass"] is True
+    assert rows[1]["final_pass"] is True
+
+
+def test_run_cases_single_turn_case_id_unchanged():
+    case = MaintenanceEvalCase(
+        case_id="st_001",
+        query="火花塞间隙是多少？",
+        required_nuggets=["0.7～0.9 mm"],
+        candidate_answer="火花塞间隙为0.7～0.9 mm。",
+    )
+
+    rows = run_cases([case], mode="fixture", endpoint="", timeout=10)
+
+    assert len(rows) == 1
+    assert rows[0]["id"] == "st_001"
+
+
+def test_run_cases_multi_turn_api_passes_accumulated_history(monkeypatch):
+    captured_payloads: list[dict] = []
+
+    class _FakeResponse:
+        def __init__(self, body: bytes):
+            self._body = body
+
+        def read(self):
+            return self._body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def fake_urlopen(request, timeout):
+        payload = json.loads(request.data.decode("utf-8"))
+        captured_payloads.append(payload)
+        response_body = json.dumps({"message": f"answer-{len(captured_payloads)}"}).encode("utf-8")
+        return _FakeResponse(response_body)
+
+    import evaluation.maintenance_eval_cli as cli_module
+
+    monkeypatch.setattr(cli_module.urllib.request, "urlopen", fake_urlopen)
+
+    case = MaintenanceEvalCase(
+        case_id="mt_api_001",
+        device_type="motorcycle-engine-v1",
+        document_id="manual-v1",
+        turns=[
+            MaintenanceEvalTurn(query="第一问"),
+            MaintenanceEvalTurn(query="第二问"),
+        ],
+    )
+
+    run_cases([case], mode="api", endpoint="http://test/ai/chat", timeout=5)
+
+    assert len(captured_payloads) == 2
+    assert captured_payloads[0]["conversation_history"] == []
+    assert captured_payloads[0]["device_type"] == "motorcycle-engine-v1"
+    assert captured_payloads[0]["document_id"] == "manual-v1"
+
+    history_in_turn2 = captured_payloads[1]["conversation_history"]
+    assert len(history_in_turn2) == 2
+    assert history_in_turn2[0] == {"role": "user", "content": "第一问"}
+    assert history_in_turn2[1] == {"role": "assistant", "content": "answer-1"}
