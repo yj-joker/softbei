@@ -13,6 +13,7 @@ from evaluation.maintenance_eval_schema import (
 EVALUATION_DIR = Path(__file__).resolve().parents[1]
 DATASET_PATH = EVALUATION_DIR / "datasets" / "eval_specialised_v1.jsonl"
 FIXTURE_DIR = EVALUATION_DIR / "fixtures" / "rag_quality_v2_conflict"
+ACTIVE_MANUAL_DOCUMENT_ID = "kdoc_2082825138343858177"
 
 
 def test_specialised_v1_has_thirty_cases_with_expected_groups_and_turn_budget() -> None:
@@ -28,6 +29,13 @@ def test_specialised_v1_has_thirty_cases_with_expected_groups_and_turn_budget() 
     assert sum(case.group == "scope_isolation" for case in cases) == 10
     assert sum(case.group == "evidence_quality" for case in cases) == 10
     assert sum(case.group == "natural_response" for case in cases) == 10
+
+
+def test_specialised_v1_binds_the_frozen_active_manual_instead_of_placeholder_id() -> None:
+    dataset_text = DATASET_PATH.read_text(encoding="utf-8")
+
+    assert '"document_id":"manual-doc"' not in dataset_text
+    assert f'"document_id":"{ACTIVE_MANUAL_DOCUMENT_ID}"' in dataset_text
 
 
 def test_specialised_v1_case_ids_and_scope_traps_are_explicit() -> None:
