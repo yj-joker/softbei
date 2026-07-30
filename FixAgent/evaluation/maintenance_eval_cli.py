@@ -27,6 +27,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from evaluation.maintenance_eval_schema import (
+    MaintenanceEvalCase,
+    read_jsonl_dataset,
+    read_jsonl_datasets,
+)
+
 
 REFUSAL_HINTS = (
     "未找到",
@@ -90,121 +96,11 @@ METRIC_DESCRIPTIONS_CN = {
 
 
 @dataclass
-class MaintenanceEvalCase:
-    case_id: str
-    query: str
-    task_type: str = ""
-    intent_action: str = ""
-    target_section: str = ""
-    target_pages: list[int] = field(default_factory=list)
-    answerable: bool = True
-    required_nuggets: list[str] = field(default_factory=list)
-    optional_nuggets: list[str] = field(default_factory=list)
-    forbidden_claims: list[str] = field(default_factory=list)
-    expected_step_order: list[str] = field(default_factory=list)
-    expected_images: list[dict[str, Any]] = field(default_factory=list)
-    expected_image_order: list[int] = field(default_factory=list)
-    step_image_mapping: list[dict[str, Any]] = field(default_factory=list)
-    forbidden_images: list[dict[str, Any]] = field(default_factory=list)
-    gold_evidence: list[dict[str, Any]] = field(default_factory=list)
-    difficulty: str = ""
-    trap_type: list[str] = field(default_factory=list)
-    candidate_answer: str = ""
-    candidate_images: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
 class CaseRunResult:
     answer: str = ""
     evidence_images: list[dict[str, Any]] = field(default_factory=list)
     latency_ms: int = 0
     error: str = ""
-
-
-def _as_int_list(value: Any) -> list[int]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        values = value
-    else:
-        values = [value]
-    parsed: list[int] = []
-    for item in values:
-        try:
-            if str(item).strip() != "":
-                parsed.append(int(item))
-        except (TypeError, ValueError):
-            continue
-    return parsed
-
-
-def _as_str_list(value: Any) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    text = str(value).strip()
-    if not text:
-        return []
-    return [item.strip() for item in re.split(r"[;|]", text) if item.strip()]
-
-
-def _as_dict_list(value: Any) -> list[dict[str, Any]]:
-    if not value:
-        return []
-    if isinstance(value, list):
-        return [dict(item) for item in value if isinstance(item, Mapping)]
-    return []
-
-
-def _as_bool(value: Any, default: bool = True) -> bool:
-    if value is None:
-        return default
-    if isinstance(value, bool):
-        return value
-    return str(value).strip().lower() in {"1", "true", "yes", "y", "是", "可回答"}
-
-
-def _case_from_dict(data: Mapping[str, Any]) -> MaintenanceEvalCase:
-    return MaintenanceEvalCase(
-        case_id=str(data.get("case_id") or data.get("id") or "").strip(),
-        query=str(data.get("query") or data.get("question") or "").strip(),
-        task_type=str(data.get("task_type") or "").strip(),
-        intent_action=str(data.get("intent_action") or "").strip(),
-        target_section=str(data.get("target_section") or "").strip(),
-        target_pages=_as_int_list(data.get("target_pages")),
-        answerable=_as_bool(data.get("answerable"), default=True),
-        required_nuggets=_as_str_list(data.get("required_nuggets")),
-        optional_nuggets=_as_str_list(data.get("optional_nuggets")),
-        forbidden_claims=_as_str_list(data.get("forbidden_claims")),
-        expected_step_order=_as_str_list(data.get("expected_step_order")),
-        expected_images=_as_dict_list(data.get("expected_images")),
-        expected_image_order=_as_int_list(data.get("expected_image_order")),
-        step_image_mapping=_as_dict_list(data.get("step_image_mapping")),
-        forbidden_images=_as_dict_list(data.get("forbidden_images")),
-        gold_evidence=_as_dict_list(data.get("gold_evidence")),
-        difficulty=str(data.get("difficulty") or "").strip(),
-        trap_type=_as_str_list(data.get("trap_type")),
-        candidate_answer=str(data.get("candidate_answer") or ""),
-        candidate_images=_as_dict_list(data.get("candidate_images")),
-    )
-
-
-def read_jsonl_dataset(path: Path) -> list[MaintenanceEvalCase]:
-    cases: list[MaintenanceEvalCase] = []
-    with path.open("r", encoding="utf-8") as f:
-        for line_no, line in enumerate(f, start=1):
-            text = line.strip()
-            if not text or text.startswith("#"):
-                continue
-            data = json.loads(text)
-            case = _case_from_dict(data)
-            if not case.case_id:
-                raise ValueError(f"{path}:{line_no} missing case_id")
-            if not case.query:
-                raise ValueError(f"{path}:{line_no} missing query")
-            cases.append(case)
-    return cases
 
 
 def normalize_text(value: str) -> str:
@@ -678,7 +574,7 @@ def write_summary(path: Path, summary: Mapping[str, Any]) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Evaluate maintenance manual end-to-end answer quality.")
-    parser.add_argument("--dataset", required=True, help="JSONL dataset path.")
+    parser.add_argument("--dataset", action="append", required=True, help="JSONL dataset path; repeat for multiple files.")
     parser.add_argument("--mode", choices=("fixture", "api"), default="api", help="Run against fixture answers or HTTP API.")
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000/ai/chat", help="Chat API endpoint for --mode api.")
     parser.add_argument("--timeout", type=int, default=120, help="Per-case HTTP timeout in seconds.")
@@ -690,7 +586,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    cases = read_jsonl_dataset(Path(args.dataset))
+    cases = read_jsonl_datasets([Path(path) for path in args.dataset])
     if args.limit and args.limit > 0:
         cases = cases[: args.limit]
     rows = run_cases(cases, mode=args.mode, endpoint=args.endpoint, timeout=args.timeout)
