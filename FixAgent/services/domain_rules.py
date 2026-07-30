@@ -222,10 +222,26 @@ def _metadata_to_rule(result: Mapping[str, Any]) -> DomainRule | None:
         return None
 
 
-def _compatible_device(rule_device: str, requested_device: str | None) -> bool:
+def _reference_matches_scope(ref: Mapping[str, Any], document_id: str | None, device_type: str | None) -> bool:
+    requested_document = _compact(document_id)
+    requested_device = _compact(device_type)
+    ref_document = _compact(ref.get("document_id") or ref.get("doc_id") or ref.get("manual_id"))
+    ref_device = _compact(ref.get("device_type"))
+    if requested_document and ref_document == requested_document:
+        return True
+    return bool(requested_device and ref_device == requested_device)
+
+
+def _compatible_device(
+    rule: DomainRule,
+    requested_device: str | None,
+    document_id: str | None,
+) -> bool:
     requested = _compact(requested_device)
-    rule_value = _compact(rule_device)
-    return not requested or not rule_value or requested == rule_value
+    rule_value = _compact(rule.device_type)
+    if rule_value:
+        return not requested or requested == rule_value
+    return any(_reference_matches_scope(ref, document_id, requested_device) for ref in rule.evidence_refs)
 
 
 def _relevance_score(result: Mapping[str, Any]) -> float:
@@ -314,6 +330,7 @@ async def match_domain_rule(
     query: str,
     *,
     device_type: str | None = None,
+    document_id: str | None = None,
     top_k: int = 5,
 ) -> dict[str, Any] | None:
     query_text = _clean_text(query)
@@ -338,7 +355,7 @@ async def match_domain_rule(
         rule = _metadata_to_rule(result)
         if rule is None:
             continue
-        if not _compatible_device(rule.device_type, device_type):
+        if not _compatible_device(rule, device_type, document_id):
             continue
         matched = _matched_symptoms(query_text, rule.symptom_keys)
         if not matched:
@@ -353,6 +370,7 @@ async def match_domain_rule(
         best_score = combined_score
         best = {
             "matched": True,
+            "status": ACTIVE_STATUS,
             "confidence_source": "rule",
             "confidence_label": "确定",
             "score": combined_score,
@@ -361,6 +379,10 @@ async def match_domain_rule(
             "matched_symptom_keys": matched,
             "rule": _public_rule(rule),
             "evidence_sources": _evidence_sources(rule, result, matched, relevance),
+            "scope_binding": {
+                "document_id": _clean_text(document_id),
+                "device_type": _clean_text(device_type),
+            },
             "message": build_domain_rule_message(rule, matched),
         }
 

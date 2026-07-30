@@ -70,6 +70,11 @@ from services.llm.service import get_llm_service
 from services.knowledge.image_summary_service import get_image_summary_service
 from services.intent_router import get_intent_router
 from services.preference_capture import schedule_capture
+from services.retrieval.scope import (
+    OUT_OF_SCOPE,
+    decide_scope,
+    format_scope_guard_message,
+)
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from services.temporary_plan_service import get_temporary_plan_service
 from config.settings import get_settings
@@ -264,6 +269,7 @@ def _is_deterministic_direct_output(output: AgentOutput) -> bool:
         "domain_rule_direct",
         "causal_follow_up_resolved",
         "insufficient_evidence_guard",
+        "scope_guard",
     }
 
 
@@ -295,6 +301,7 @@ def _domain_rule_trace(match: dict[str, Any]) -> list[dict[str, Any]]:
                     "result_data": {
                         "message": match.get("message", ""),
                         "rule": rule,
+                        "status": match.get("status"),
                         "matched_symptom_keys": match.get("matched_symptom_keys", []),
                         "evidence_sources": match.get("evidence_sources", []),
                         "score": match.get("score"),
@@ -328,7 +335,14 @@ async def _try_domain_rule_direct(request: ChatRequest, input_data: AgentInput) 
         return None
     started = time.time()
     try:
-        match = await match_domain_rule(input_data.user_message, device_type=request.device_type)
+        context = input_data.context or {}
+        scope = context.get("retrieval_scope") or {}
+        decision = context.get("scope_decision") or {}
+        match = await match_domain_rule(
+            input_data.user_message,
+            device_type=decision.get("device_type") or scope.get("device_type"),
+            document_id=scope.get("document_id"),
+        )
     except DomainRuleServiceError as e:
         logger.warning("[domain_rule] direct match skipped: %s", e)
         return None
@@ -343,6 +357,7 @@ async def _try_domain_rule_direct(request: ChatRequest, input_data: AgentInput) 
         "domain_rule": match.get("rule"),
         "domain_rule_match": match,
         "evidence_sources": match.get("evidence_sources", []),
+        "scope_decision": (input_data.context or {}).get("scope_decision") or {},
         "react_trace": _domain_rule_trace(match),
         "verification": {
             "grounding": {"unverified_count": 0},
@@ -376,6 +391,65 @@ async def _stream_direct_agent_output(output: AgentOutput):
 
     yield f"data: {json_dumps({'event': 'verification', 'data': {'has_issues': False, 'summary': {'grounding_unverified': 0, 'graph_unverified': 0, 'safety_missing': 0}}})}\n\n"
     yield f"data: {json_dumps({'event': 'done', 'data': {'tools_used': output.tools_used, 'latency_ms': output.latency_ms, 'domainRule': output.metadata.get('domain_rule'), 'confidenceSource': output.metadata.get('confidence_source'), 'evidenceSources': output.metadata.get('evidence_sources', []), 'metadata': output.metadata}})}\n\n"
+
+
+def _scope_gate_required(request: ChatRequest, input_data: AgentInput) -> bool:
+    intent = (input_data.context or {}).get("intent_decision") or {}
+    policy = intent.get("policy") if isinstance(intent.get("policy"), dict) else {}
+    return bool(
+        intent.get("requires_knowledge_retrieval")
+        or policy.get("requires_knowledge_retrieval")
+        or request.mode in {AgentMode.RETRIEVAL, AgentMode.DIAGNOSIS, AgentMode.GUIDANCE, AgentMode.FULL}
+        or _is_high_risk_rag_question(request.message or "")
+    )
+
+
+def _try_scope_guard(request: ChatRequest, input_data: AgentInput) -> AgentOutput | None:
+    decision = (input_data.context or {}).get("scope_decision") or {}
+    if decision.get("status") != OUT_OF_SCOPE or not _scope_gate_required(request, input_data):
+        return None
+    message = format_scope_guard_message(decision)
+    trace = [{
+        "iteration": 0,
+        "action": "scope_decision",
+        "tool_calls": [{
+            "name": "scope_gate",
+            "arguments": {
+                "document_id": decision.get("requested_document_id"),
+                "device_type": decision.get("requested_device_type"),
+            },
+            "result_data": decision,
+            "result_summary": decision.get("reason"),
+        }],
+    }]
+    return AgentOutput(
+        agent_name="fix_agent",
+        message=message,
+        intention="scope_guard",
+        tools_used=["scope_gate"],
+        metadata={
+            "execution_mode": "scope_guard",
+            "deterministic_direct": True,
+            "scope_decision": decision,
+            "coverage_status": "unsupported",
+            "blocked_for_insufficient_evidence": True,
+            "insufficient_evidence_reason": decision.get("reason"),
+            "react_trace": trace,
+        },
+        raw_response={"scope_decision": decision},
+    )
+
+
+async def _stream_scope_guard_output(output: AgentOutput):
+    import asyncio as _asyncio
+
+    yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '正在核对设备与手册范围', 'mode': 'scope_guard'}})}\n\n"
+    for index, char in enumerate(output.message):
+        yield f"data: {json_dumps({'event': 'token', 'data': {'content': char}})}\n\n"
+        if index % 15 == 0:
+            await _asyncio.sleep(0)
+    yield f"data: {json_dumps({'event': 'verification', 'data': {'has_issues': False, 'summary': {'grounding_unverified': 0, 'graph_unverified': 0, 'safety_missing': 0}}})}\n\n"
+    yield f"data: {json_dumps({'event': 'done', 'data': {'tools_used': output.tools_used, 'latency_ms': output.latency_ms, 'metadata': output.metadata}})}\n\n"
 
 
 def _causal_follow_up_trace(result: dict[str, Any]) -> list[dict[str, Any]]:
@@ -584,11 +658,8 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     # 两路带同一个值，Java saveMemory 才能在"同一句话"上按来源优先级仲裁（漏洞#1修复）。
     turn_ts = int(time.time() * 1000)
     context["turn_ts"] = turn_ts
-    # 检索范围强制隔离：把会话绑定的设备/手册透传给检索工具（注入钩子里覆盖 LLM，LLM 不可放宽）
-    context["retrieval_scope"] = {
-        "device_type": request.device_type,
-        "document_id": request.document_id,
-    }
+    session_document_id = context.get("confirmed_document_id")
+    session_device_type = context.get("confirmed_device_type")
 
     intent_decision = await get_intent_router().classify(
         raw_message,
@@ -597,6 +668,15 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     )
     context["intent_decision"] = intent_decision.model_dump()
     context["intention"] = intent_decision.intent
+    scope_decision = decide_scope(
+        raw_message,
+        request_document_id=request.document_id,
+        request_device_type=request.device_type,
+        session_document_id=session_document_id,
+        session_device_type=session_device_type,
+    )
+    context["scope_decision"] = scope_decision.to_dict()
+    context["retrieval_scope"] = scope_decision.retrieval_filter()
 
     # 用户画像确定性兜底：偏好/身份不再只靠主 Agent 自觉调 save_memory，
     # 命中门控即后台抽取并按规范 name upsert 到 memory_fact(type=user)，下一轮即生效。
@@ -3880,13 +3960,16 @@ def _filter_evidence_images_by_action_context(
     return sorted_images
 
 
-async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
+async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> AgentOutput | None:
     """执行 RAG -> 单次 LLM 生成的轻量链路；失败时返回 None 交给 ReAct 回退。"""
     total_t0 = time.time()
     retrieval_t0 = time.time()
+    scope = (input_data.context or {}).get("retrieval_scope") or {}
     retrieval = await get_knowledge_retrieval_tool().run(
         query=request.message,
         top_k=5,
+        document_id=scope.get("document_id"),
+        device_type=scope.get("device_type"),
     )
     retrieval_ms = int((time.time() - retrieval_t0) * 1000)
     if not retrieval.success or not retrieval.data:
@@ -3905,7 +3988,7 @@ async def _run_rag_fast_path(request: ChatRequest) -> AgentOutput | None:
         "duration_ms": retrieval_ms,
         "tool_calls": [{
             "name": "knowledge_retrieval",
-            "arguments": {"query": request.message, "top_k": 5},
+            "arguments": {"query": request.message, "top_k": 5, **scope},
             "result_summary": str(evidence_items)[:200],
             "result_data": [item.model_dump() if hasattr(item, "model_dump") else item for item in evidence_items],
         }],
@@ -4044,11 +4127,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
         if fix_result is not None:
             review_level = "light"
         if fix_result is None:
+            fix_result = _try_scope_guard(request, input_data)
+        if fix_result is not None:
+            review_level = "light"
+        if fix_result is None:
             fix_result = await _try_domain_rule_direct(request, input_data)
         if fix_result is not None:
             review_level = "light"
         elif _should_use_rag_fast_path(request):
-            fix_result = await _run_rag_fast_path(request)
+            fix_result = await _run_rag_fast_path(request, input_data)
             if fix_result is not None:
                 review_level = "light"
 
@@ -4058,6 +4145,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
         fix_result.metadata["original_user_message"] = request.message
         if input_data.context and input_data.context.get("intent_decision"):
             fix_result.metadata["intent_decision"] = input_data.context["intent_decision"]
+        if input_data.context and input_data.context.get("scope_decision"):
+            fix_result.metadata.setdefault("scope_decision", input_data.context["scope_decision"])
         fix_phase_ms = int((time.time() - fix_t0) * 1000)
         logger.info(
             "[chat][phase] session=%s execution_mode=%s fix_phase_ms=%s tools=%s",
@@ -4356,6 +4445,12 @@ async def chat_stream(request: ChatRequest):
             follow_up_output = await _try_causal_follow_up_resolution(request, input_data)
             if follow_up_output is not None:
                 async for event in _stream_causal_follow_up_output(follow_up_output):
+                    yield event
+                return
+
+            scope_output = _try_scope_guard(request, input_data)
+            if scope_output is not None:
+                async for event in _stream_scope_guard_output(scope_output):
                     yield event
                 return
 

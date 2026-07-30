@@ -176,3 +176,40 @@ def test_match_domain_rule_rejects_incompatible_or_keywordless_candidates(monkey
     )
 
     assert match is None
+
+
+def test_blank_device_rule_requires_evidence_binding_to_current_document(monkeypatch):
+    fake_vector = FakeVectorService()
+    payload = {
+        **_sample_payload(),
+        "device_type": "",
+        "evidence_refs": [{"document_id": "manual-motorcycle", "page": 3}],
+    }
+    fake_vector.search_results = [
+        {
+            "doc_id": "domain_rule:7",
+            "relevance_score": 0.9,
+            "metadata": {**payload, "record_type": "domain_rule", "status": "active"},
+        }
+    ]
+    monkeypatch.setattr(domain_rules, "get_vector_service", lambda: fake_vector)
+
+    unbound = asyncio.run(
+        domain_rules.match_domain_rule(
+            "发动机冒蓝烟",
+            device_type="motorcycle-engine",
+            document_id="other-manual",
+        )
+    )
+    bound = asyncio.run(
+        domain_rules.match_domain_rule(
+            "发动机冒蓝烟",
+            device_type="motorcycle-engine",
+            document_id="manual-motorcycle",
+        )
+    )
+
+    assert unbound is None
+    assert bound is not None
+    assert bound["status"] == "active"
+    assert bound["scope_binding"]["document_id"] == "manual-motorcycle"
