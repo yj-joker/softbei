@@ -6,7 +6,10 @@ candidates are usable as evidence for the current device and task.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Sequence
+
+from services.retrieval.aspects import QuestionAspect, split_question_aspects
+from services.retrieval.evidence import determine_coverage
 
 
 QUALIFIED = "qualified"
@@ -23,6 +26,8 @@ def qualify_candidates(
     document_version: Optional[str] = None,
     manual_type: Optional[str] = None,
     requires_strict_evidence: bool = False,
+    aspects: Optional[Sequence[QuestionAspect]] = None,
+    scope_status: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Return a serializable evidence bundle without exposing rejected content.
 
@@ -32,6 +37,7 @@ def qualify_candidates(
     qualified: List[Dict[str, Any]] = []
     references: List[Dict[str, Any]] = []
     excluded: List[Dict[str, Any]] = []
+    effective_aspects = list(aspects) if aspects is not None else split_question_aspects(query)
 
     for index, raw in enumerate(candidates or []):
         if not isinstance(raw, dict):
@@ -39,6 +45,7 @@ def qualify_candidates(
         item = dict(raw)
         metadata = dict(item.get("metadata") or {})
         item["metadata"] = metadata
+        metadata["evidence_id"] = _evidence_id(item, index)
         status, reasons, matches = _qualify_candidate(
             query,
             item,
@@ -66,7 +73,9 @@ def qualify_candidates(
                 "section_title": metadata.get("section_title"),
             })
 
-    conflicts = _detect_conflicts(qualified)
+    aspect_support = _map_aspect_support(effective_aspects, qualified)
+    conflicts = _detect_conflicts(qualified, aspects=effective_aspects)
+    conflict_eligible = [dict(conflict) for conflict in conflicts]
     if conflicts:
         for item in qualified:
             metadata = item["metadata"]
@@ -77,19 +86,38 @@ def qualify_candidates(
         qualified = []
 
     status = QUALIFIED if qualified else REFERENCE_ONLY if references else "no_evidence"
+    provisional = {
+        "qualified_evidence": qualified,
+        "conflicts": conflicts,
+        "conflict_eligible": conflict_eligible,
+        "aspect_support": aspect_support,
+    }
+    coverage = determine_coverage(
+        provisional,
+        aspects=effective_aspects,
+        scope_status=scope_status,
+    )
     capabilities = {
         "may_cite_manual": bool(qualified),
         "may_emit_exact_parameter": bool(qualified) and not conflicts,
         "may_emit_device_specific_procedure": bool(qualified) and not conflicts,
-        "may_offer_generic_guidance": True,
+        "may_offer_generic_guidance": coverage.status not in {"unsupported", "conflict"},
     }
-    return {
-        "evidence_bundle_version": 1,
+    result = {
+        "evidence_bundle_version": 2,
         "overall_status": status,
         "qualified_evidence": qualified,
         "reference_evidence": references,
         "excluded_evidence": excluded,
         "conflicts": conflicts,
+        "conflict_eligible": conflict_eligible,
+        "aspect_support": aspect_support,
+        "evidence_identity": {
+            "document_id": document_id or "",
+            "device_type": device_type or "",
+            "document_version": document_version or "",
+            "manual_type": manual_type or "",
+        },
         "capabilities": capabilities,
         "summary": {
             "qualified_count": len(qualified),
@@ -98,6 +126,12 @@ def qualify_candidates(
             "has_explicit_scope": bool(document_id or device_type),
         },
     }
+    result["coverage_status"] = coverage.status
+    result["coverage_reason"] = coverage.reason
+    result["supported_aspect_ids"] = list(coverage.supported_aspect_ids)
+    result["missing_aspect_ids"] = list(coverage.missing_aspect_ids)
+    result["conflict_aspect_ids"] = list(coverage.conflict_aspect_ids)
+    return result
 
 
 def _qualify_candidate(
@@ -181,8 +215,12 @@ def _topic_match(query: str, item: Dict[str, Any]) -> str:
     return "weak"
 
 
-def _detect_conflicts(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    values: Dict[tuple[str, str], set[str]] = {}
+def _detect_conflicts(
+    items: Iterable[Dict[str, Any]],
+    *,
+    aspects: Sequence[QuestionAspect] = (),
+) -> List[Dict[str, Any]]:
+    values: Dict[tuple[str, str], Dict[str, set[str]]] = {}
     for item in items:
         metadata = item.get("metadata") or {}
         names = metadata.get("parameter_names") or []
@@ -193,12 +231,67 @@ def _detect_conflicts(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
         unit = str(units[0]) if isinstance(units, list) and units else ""
         for name, number in zip(names, numbers):
             if name and number is not None:
-                values.setdefault((str(name), unit), set()).add(str(number))
+                group = values.setdefault((str(name), unit), {})
+                group.setdefault(str(number), set()).add(str(metadata.get("evidence_id") or ""))
     return [
-        {"field": name, "unit": unit, "values": sorted(numbers), "impact": "manual_claim_blocked"}
-        for (name, unit), numbers in values.items()
-        if len(numbers) > 1
+        {
+            "field": name,
+            "unit": unit,
+            "values": sorted(number_map),
+            "candidate_ids": sorted(
+                candidate_id
+                for ids in number_map.values()
+                for candidate_id in ids
+                if candidate_id
+            ),
+            "aspect_ids": [aspect.aspect_id for aspect in aspects if _aspect_matches(aspect, name)],
+            "impact": "manual_claim_blocked",
+        }
+        for (name, unit), number_map in values.items()
+        if len(number_map) > 1
     ]
+
+
+def _map_aspect_support(
+    aspects: Sequence[QuestionAspect],
+    items: Sequence[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for aspect in aspects:
+        evidence_ids = [
+            str((item.get("metadata") or {}).get("evidence_id") or "")
+            for item in items
+            if _aspect_matches(aspect, _candidate_text(item))
+        ]
+        rows.append({
+            "aspect_id": aspect.aspect_id,
+            "aspect_text": aspect.text,
+            "supported": bool(evidence_ids),
+            "evidence_ids": [value for value in evidence_ids if value],
+        })
+    return rows
+
+
+def _aspect_matches(aspect: QuestionAspect, text: str) -> bool:
+    aspect_text = _normalize_compact(aspect.text)
+    candidate_text = _normalize_compact(text)
+    return bool(
+        aspect_text
+        and candidate_text
+        and (aspect_text in candidate_text or candidate_text in aspect_text)
+    )
+
+
+def _candidate_text(item: Dict[str, Any]) -> str:
+    metadata = item.get("metadata") or {}
+    return " ".join(
+        str(value or "")
+        for value in (item.get("content"), item.get("text"), metadata.get("section_title"))
+    )
+
+
+def _normalize_compact(value: Any) -> str:
+    return "".join(character for character in str(value or "").casefold() if character.isalnum())
 
 
 def _tokenize(text: str) -> List[str]:
