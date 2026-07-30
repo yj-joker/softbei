@@ -45,7 +45,7 @@ def split_question_aspects(query: str) -> List[QuestionAspect]:
     seen: set[str] = set()
     for text in expanded:
         clean = text.strip(" ,，。;；!?！？")
-        canonical = _canonical_aspect_text(clean)
+        canonical = canonical_aspect_text(clean)
         if not canonical or canonical in seen:
             continue
         seen.add(canonical)
@@ -63,7 +63,7 @@ def _split_respectively(segment: str) -> List[str]:
     return parts if len(parts) > 1 else [segment]
 
 
-def _canonical_aspect_text(text: str) -> str:
+def canonical_aspect_text(text: str) -> str:
     normalized = unicodedata.normalize("NFKC", text).casefold().strip()
     normalized = _QUESTION_SUFFIX_RE.sub("", normalized)
     normalized = _TRAILING_PARTICLE_RE.sub("", normalized)

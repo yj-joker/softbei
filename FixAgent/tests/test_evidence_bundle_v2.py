@@ -112,6 +112,20 @@ def test_legacy_callers_automatically_receive_v2_coverage() -> None:
     assert bundle["capabilities"]["may_offer_generic_guidance"] is False
 
 
+def test_interrogative_suffix_does_not_hide_supported_single_aspect() -> None:
+    bundle = qualify_candidates(
+        "火花塞间隙标准是多少？",
+        [_candidate("gap-doc", content="火花塞间隙标准为 0.7 到 0.9 mm")],
+        document_id="manual-1",
+        device_type="motorcycle-engine",
+        document_version="v1",
+        requires_strict_evidence=True,
+    )
+
+    assert bundle["coverage_status"] == "complete"
+    assert bundle["missing_aspect_ids"] == []
+
+
 def test_conflict_retains_candidate_ids_and_values_after_demotion() -> None:
     aspects = [_aspect("gap", "火花塞间隙标准")]
     bundle = _bundle(

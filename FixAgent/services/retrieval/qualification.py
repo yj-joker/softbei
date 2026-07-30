@@ -8,7 +8,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
-from services.retrieval.aspects import QuestionAspect, split_question_aspects
+from services.retrieval.aspects import (
+    QuestionAspect,
+    canonical_aspect_text,
+    split_question_aspects,
+)
 from services.retrieval.evidence import determine_coverage
 
 
@@ -273,7 +277,7 @@ def _map_aspect_support(
 
 
 def _aspect_matches(aspect: QuestionAspect, text: str) -> bool:
-    aspect_text = _normalize_compact(aspect.text)
+    aspect_text = canonical_aspect_text(aspect.text)
     candidate_text = _normalize_compact(text)
     return bool(
         aspect_text
