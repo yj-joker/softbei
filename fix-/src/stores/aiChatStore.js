@@ -45,6 +45,7 @@ function createWelcomeMessage(content) {
     status: 'done',
     agentSteps: [],
     agentProgress: { text: '', running: false },
+    feedbackEligible: false,
   }
 }
 
@@ -326,6 +327,10 @@ export const aiChatStore = {
         agentSteps: [],
         agentProgress: createInitialAgentProgress(),
         latencyMs: 0,
+        responseMetadata: null,
+        persistedMessageId: null,
+        feedbackEligible: true,
+        feedback: null,
       })
       session.messages.push(assistant)
       touchSession(state, session)
@@ -395,6 +400,9 @@ export const aiChatStore = {
           assistant.diagnosisItems = Array.isArray(data.diagnosisItems) ? data.diagnosisItems : []
           assistant.diagnosticFollowUp = data.diagnosticFollowUp || data.metadata?.diagnostic_follow_up || null
           assistant.latencyMs = data.latency_ms || data.latencyMs || 0
+          assistant.responseMetadata = data.metadata || null
+          assistant.persistedMessageId = data.assistantMessageId || null
+          if (data.sessionId) session.backendSessionId = data.sessionId
           assistant.agentProgress = createProgressSummary({ ...assistant, status: 'done' }, data)
           streamCompleted = true
           return
@@ -469,5 +477,23 @@ export const aiChatStore = {
   stop(storageKey, sessionId) {
     const controller = controllers[sessionId]
     if (controller) controller.abort()
+  },
+
+  backendSessionId(storageKey, mode = 'maintenance') {
+    const state = ensure(storageKey)
+    const session = ensureModeSession(state, mode)
+    return numericSessionId(session?.backendSessionId || session?.id)
+  },
+
+  markFeedbackSubmitted(storageKey, mode, messageId, feedback) {
+    const state = ensure(storageKey)
+    const session = ensureModeSession(state, mode)
+    const message = session?.messages?.find((item) => item.id === messageId)
+    if (!message) return
+    message.feedback = {
+      id: feedback?.id || '',
+      status: feedback?.status || 'pending',
+    }
+    touchSession(state, session)
   },
 }

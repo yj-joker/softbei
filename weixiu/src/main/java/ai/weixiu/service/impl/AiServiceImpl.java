@@ -17,6 +17,7 @@ import ai.weixiu.service.AiMessageService;
 import ai.weixiu.service.AiService;
 import ai.weixiu.service.AiSessionService;
 import ai.weixiu.service.MemoryRecallService;
+import ai.weixiu.service.support.AiReplyStreamCoordinator;
 import ai.weixiu.mq.MemoryMessageProducer;
 import ai.weixiu.service.ManualRecommendService;
 import ai.weixiu.utils.AiStreamEventUtils;
@@ -68,11 +69,13 @@ public class AiServiceImpl implements AiService {
         //查找当前会话记忆
         AiSession aiSession = aiSessionService.findMemory(aiChatRequest.getSessionId(), userId);
         List<MemoryMessage> memoryMessages = new ArrayList<>();
+        AiMessage questionMessage;
         if (aiSession == null) {
             //新会话,封装会话并保存
             aiSession = saveAiSession(aiChatRequest, now, userId);
+            questionMessage = saveUserMessage(aiChatRequest, aiSession, now, userId);
         } else {
-            ifOldMemory(aiChatRequest, aiSession, now, userId, memoryMessages);
+            questionMessage = ifOldMemory(aiChatRequest, aiSession, now, userId, memoryMessages);
         }
         // 将历史信息、偏好和待办事项拼接并设置到aiChatRequest
         List<String> recentFactContents = finalAiContext(aiChatRequest, aiSession.getId(), userId,
@@ -86,25 +89,16 @@ public class AiServiceImpl implements AiService {
         }
 
         log.info("最终消息: {}", aiChatRequest.getUserMessage());
-        Flux<String> flux = getStringFlux(aiChatRequest, uri);
-        StringBuilder fullResponse = new StringBuilder();
         AiSession finalAiSession = aiSession;
-        return flux
-                .doOnNext(eventJson -> {
-                    // 只累计 token 事件的纯文本 content，不保存 JSON 事件协议
-                    try {
-                        JsonNode node = objectMapper.readTree(eventJson);
-                        String content = AiStreamEventUtils.tokenContent(node);
-                        if (!content.isEmpty()) {
-                            fullResponse.append(content);
-                        }
-                    } catch (Exception ignore) {
-                        // 非 JSON 行忽略
-                    }
-                })
+        Flux<String> persistedFlux = AiReplyStreamCoordinator.coordinate(
+                getStringFlux(aiChatRequest, uri),
+                objectMapper,
+                (content, doneEvent) -> saveAiReply(
+                        finalAiSession, userId, questionMessage.getId(), content, doneEvent
+                )
+        );
+        return persistedFlux
                 .doOnComplete(() -> {
-                    saveAiReply(finalAiSession, userId, fullResponse);
-
                     // [已退役] 实时记忆更新链路停用。
                     // 事实纠正现由对话内 LLM 的 delete_memory(删错的)+save_memory(存对的)直接处理，
                     // 语义判断比旧的轻量检测 Agent 准；旧链路去向量后 superseded 恒空，只会写入纠正事实
@@ -299,32 +293,41 @@ public class AiServiceImpl implements AiService {
                                 objectMapper))));
     }
 
-    private void saveAiReply(AiSession finalAiSession, Long userId, StringBuilder fullResponse) {
+    private AiMessage saveAiReply(
+            AiSession finalAiSession,
+            Long userId,
+            Long questionMessageId,
+            String fullResponse,
+            JsonNode doneEvent
+    ) {
         AiMessage assistantMessage = new AiMessage();
         assistantMessage.setAiSessionId(finalAiSession.getId());
         assistantMessage.setUserId(userId);
         assistantMessage.setRoundNo(finalAiSession.getRoundCount());
+        assistantMessage.setQuestionMessageId(questionMessageId);
         assistantMessage.setRole("assistant");
-        assistantMessage.setContent(fullResponse.toString());
+        assistantMessage.setContent(fullResponse);
+        JsonNode responseMetadata = doneEvent == null
+                ? null
+                : doneEvent.path("data").path("metadata");
+        if (responseMetadata != null && !responseMetadata.isMissingNode() && !responseMetadata.isNull()) {
+            assistantMessage.setResponseMetadata(responseMetadata.toString());
+        }
         assistantMessage.setCreatedAt(LocalDateTime.now());
-        aiMessageService.save(assistantMessage);
+        if (!aiMessageService.save(assistantMessage) || assistantMessage.getId() == null) {
+            throw new AiMemoryException("AI reply could not be persisted");
+        }
+        return assistantMessage;
     }
 
-    private void ifOldMemory(AiChatRequest aiChatRequest, AiSession aiSession, LocalDateTime now, Long userId, List<MemoryMessage> memoryMessages) {
+    private AiMessage ifOldMemory(AiChatRequest aiChatRequest, AiSession aiSession, LocalDateTime now, Long userId, List<MemoryMessage> memoryMessages) {
         List<AiMessage> aiMessage;
         if (aiSession.getId() == null) {
             throw new AiMemoryException("会话不存在");
         }
         aiSession.setUpdatedAt(now);
         aiSession.setRoundCount(aiSession.getRoundCount() + 1);
-        AiMessage userMessage = new AiMessage();
-        userMessage.setAiSessionId(aiSession.getId());
-        userMessage.setUserId(userId);
-        userMessage.setRoundNo(aiSession.getRoundCount());
-        userMessage.setRole("user");
-        userMessage.setContent(aiChatRequest.getUserMessage());
-        userMessage.setCreatedAt(now);
-        aiMessageService.save(userMessage);
+        AiMessage userMessage = saveUserMessage(aiChatRequest, aiSession, now, userId);
 
         aiMessage = aiMessageService.findMemory(aiSession.getId(), userId, maxMemory, aiSession.getRoundCount());
         log.info("历史消息: {}", JSONUtil.toJsonStr(aiMessage));
@@ -335,6 +338,7 @@ public class AiServiceImpl implements AiService {
             memoryMessages.add(memoryMessage);
         }
         aiSessionService.updateById(aiSession);
+        return userMessage;
     }
 
     private AiSession saveAiSession(AiChatRequest aiChatRequest, LocalDateTime now, Long userId) {
@@ -355,15 +359,26 @@ public class AiServiceImpl implements AiService {
         aiSession.setUpdatedAt(now);
         aiSession.setCreatedAt(now);
         aiSessionService.save(aiSession);
-        AiMessage aiMessage = new AiMessage();
-        aiMessage.setAiSessionId(aiSession.getId());
-        aiMessage.setUserId(userId);
-        aiMessage.setRoundNo(1);
-        aiMessage.setRole("user");
-        aiMessage.setContent(aiChatRequest.getUserMessage());
-        aiMessage.setCreatedAt(now);
-        aiMessageService.save(aiMessage);
         return aiSession;
+    }
+
+    private AiMessage saveUserMessage(
+            AiChatRequest aiChatRequest,
+            AiSession aiSession,
+            LocalDateTime now,
+            Long userId
+    ) {
+        AiMessage userMessage = new AiMessage();
+        userMessage.setAiSessionId(aiSession.getId());
+        userMessage.setUserId(userId);
+        userMessage.setRoundNo(aiSession.getRoundCount());
+        userMessage.setRole("user");
+        userMessage.setContent(aiChatRequest.getUserMessage());
+        userMessage.setCreatedAt(now);
+        if (!aiMessageService.save(userMessage) || userMessage.getId() == null) {
+            throw new AiMemoryException("User message could not be persisted for AI reply pairing");
+        }
+        return userMessage;
     }
 
 }

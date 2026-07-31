@@ -88,6 +88,14 @@
 - [ ] Keep only when every gate passes; otherwise revert production Tasks 11 through 7 newest-first, preserve evaluator/data/results, never reset.
 - [ ] Verify rollback/retained state and use `verification-before-completion` plus final code review.
 
+### Task 13: Answer Feedback To Published Domain Rule
+
+- [ ] Add an auditable answer-feedback record linked to the authenticated user, persisted assistant message, session, original question/answer, device/document scope, processing state, correction, and resulting domain-rule ID.
+- [ ] Add the user report endpoint with ownership validation and idempotency; add admin page/detail, convert-to-rule-draft, and dismiss endpoints with deterministic state transitions.
+- [ ] Add a compact report action to completed assistant messages and an admin feedback queue that requires a human correction before creating a domain-rule draft.
+- [ ] Preserve feedback provenance in `evidence_refs`; reuse the existing draft -> pending -> active review path, Python Embedding upsert, Redis vector index, active-only matching, disable/delete, and retry/compensation behavior.
+- [ ] Verify the feedback state machine, API/service behavior, frontend contract, Python sync/match/delete path, Java tests, frontend build, and production/evaluation suites before the final 130/134 rerun.
+
 ## Self-review
 
 - Exact dataset accounting, deterministic scoring, three sources, four states, scope, completeness, natural output, every path, latency, comparison and auditable rollback are covered.

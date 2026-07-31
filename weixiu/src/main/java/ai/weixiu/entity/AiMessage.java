@@ -41,6 +41,9 @@ public class AiMessage implements Serializable {
     @TableField("round_no")
     private Integer roundNo;
 
+    @TableField("question_message_id")
+    private Long questionMessageId;
+
     /**
      * 角色: System, user, assistant, tool
      */
@@ -52,6 +55,9 @@ public class AiMessage implements Serializable {
      */
     @TableField("content")
     private String content;
+
+    @TableField("response_metadata")
+    private String responseMetadata;
 
     @TableField("created_at")
     private LocalDateTime createdAt;

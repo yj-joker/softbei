@@ -12,6 +12,7 @@ import {
 } from '@element-plus/icons-vue'
 import AIBottomInput from '@/components/AIBottomInput.vue'
 import AgentActivityPanel from '@/components/ai/AgentActivityPanel.vue'
+import AnswerFeedbackDialog from '@/components/ai/AnswerFeedbackDialog.vue'
 import ChatMessage from '@/components/ai/ChatMessage.vue'
 import SessionSidebar from '@/components/ai/SessionSidebar.vue'
 import { aiChatStore } from '@/stores/aiChatStore'
@@ -51,6 +52,8 @@ const selectedAgentMessage = ref(null)
 const autoAgentMessageId = ref('')
 const dismissedAgentMessageId = ref('')
 const agentFocus = ref({ toolId: '', nonce: 0 })
+const feedbackOpen = ref(false)
+const feedbackMessage = ref(null)
 
 const userInitial = computed(() => {
   const fallback = route.path.startsWith('/admin') ? 'A' : 'U'
@@ -69,6 +72,9 @@ const modeSessions = computed(() =>
   state.sessions.filter((session) => (session.mode || 'maintenance') === currentMode.value),
 )
 const messages = computed(() => currentSession.value?.messages || [])
+const feedbackSessionId = computed(() =>
+  aiChatStore.backendSessionId(props.storageKey, currentMode.value),
+)
 
 const isStreaming = computed(() => currentSession.value?.streaming || false)
 const latestAssistantMessage = computed(() =>
@@ -216,6 +222,22 @@ function handleFollowUpSend(payload) {
 
 function handleStop() {
   aiChatStore.stop(props.storageKey, currentSession.value?.id)
+}
+
+function openFeedback(message) {
+  if (!message || message.status !== 'done') return
+  feedbackMessage.value = message
+  feedbackOpen.value = true
+}
+
+function handleFeedbackSubmitted(feedback) {
+  if (!feedbackMessage.value) return
+  aiChatStore.markFeedbackSubmitted(
+    props.storageKey,
+    currentMode.value,
+    feedbackMessage.value.id,
+    feedback,
+  )
 }
 
 function sendQuickPrompt(prompt) {
@@ -393,6 +415,7 @@ onActivated(() => {
             :agent-enabled="currentMode === 'maintenance'"
             @open-agent="openAgentPanel"
             @send-follow-up="handleFollowUpSend"
+            @report-answer="openFeedback"
           />
         </div>
       </main>
@@ -420,6 +443,12 @@ onActivated(() => {
         />
       </Transition>
     </div>
+    <AnswerFeedbackDialog
+      v-model="feedbackOpen"
+      :message="feedbackMessage"
+      :session-id="feedbackSessionId"
+      @submitted="handleFeedbackSubmitted"
+    />
   </section>
 </template>
 
