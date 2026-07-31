@@ -140,6 +140,10 @@ def test_conflict_retains_candidate_ids_and_values_after_demotion() -> None:
     assert bundle["qualified_evidence"] == []
     assert bundle["conflict_eligible"][0]["candidate_ids"] == ["gap-a", "gap-b"]
     assert bundle["conflict_eligible"][0]["values"] == ["0.7", "0.9"]
+    assert bundle["conflict_eligible"][0]["alternatives"] == [
+        {"value": "0.7", "candidate_ids": ["gap-a"]},
+        {"value": "0.9", "candidate_ids": ["gap-b"]},
+    ]
 
 
 def test_coverage_priority_is_scope_then_conflict_then_zero_then_aspects() -> None:

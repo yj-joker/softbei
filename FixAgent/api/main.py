@@ -4367,6 +4367,39 @@ def _clean_fallback_text(text: str) -> str:
 
 async def _maintenance_fallback_answer(input_data: AgentInput, maint_ctx: dict):
     """检修场景兜底：抛开 ReAct/工具门槛，用「上下文+历史」做一次纯对话作答。"""
+    decision = (input_data.context or {}).get("intent_decision") or {}
+    policy = decision.get("policy") or {}
+    knowledge_intents = {
+        "knowledge_query",
+        "parameter_query",
+        "fault_diagnosis",
+        "maintenance_guidance",
+        "procedure_planning",
+        "document_understanding",
+    }
+    if (
+        decision.get("intent") in knowledge_intents
+        or policy.get("evidence_level") == "required"
+        or policy.get("requires_knowledge_retrieval")
+        or decision.get("requires_knowledge_retrieval")
+    ):
+        from services.retrieval.evidence import EvidenceLedger
+        from services.retrieval.response_plan import build_response_plan
+
+        plan = build_response_plan(
+            input_data.user_message,
+            {
+                "coverage_status": "unsupported",
+                "coverage_reason": "maintenance_fallback_without_evidence",
+                "aspect_support": [],
+                "missing_aspect_ids": [],
+                "conflict_eligible": [],
+                "capabilities": {"may_offer_generic_guidance": False},
+            },
+            EvidenceLedger(),
+        )
+        return plan.deterministic_fallback()
+
     system = (
         "你是经验丰富的现场检修助手。请根据下面的【任务背景】和对话历史，"
         "用简明、安全第一、可操作的中文，直接给工人下一步可执行的建议。"

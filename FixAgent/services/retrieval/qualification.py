@@ -242,6 +242,10 @@ def _detect_conflicts(
             "field": name,
             "unit": unit,
             "values": sorted(number_map),
+            "alternatives": [
+                {"value": value, "candidate_ids": sorted(candidate_id for candidate_id in ids if candidate_id)}
+                for value, ids in sorted(number_map.items())
+            ],
             "candidate_ids": sorted(
                 candidate_id
                 for ids in number_map.values()

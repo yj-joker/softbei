@@ -30,6 +30,8 @@ from typing import List, Any, Optional, Dict, Callable
 
 from agents.base_agent import BaseAgent, AgentInput, AgentOutput, AgentRunContext
 from services.llm.output_style import USER_VISIBLE_PLAIN_TEXT_RULES
+from services.retrieval.evidence import EvidenceLedger
+from services.retrieval.response_plan import build_response_plan, finalize_response
 from services.visual_query_context import build_visual_query_context
 
 logger = logging.getLogger(__name__)
@@ -39,28 +41,21 @@ FIX_AGENT_SYSTEM_PROMPT = """你是一名设备检修 AI 助手，负责知识�
 
 【最高原则】
 1. 有据可依：技术结论尽量基于工具检索到的手册或图谱证据。
-2. 不编数值：精确参数（扭矩、间隙、压力、型号等）若没有手册或图谱依据，只给方向、范围或排查思路，并提示"具体数值以设备手册或铭牌为准"，绝不编造确切值；定性的原理、常见原因、排查思路可基于专业常识回答，但要提醒用户结合现场甄别。
-3. 信息不足别空等、先检索：缺设备型号、故障现象等关键信息时，先用已知的通用关键词调用知识检索查手册，基于查到的内容给出通用步骤或方向，同时追问型号等细节以便细化参数；不要因为缺信息就只追问、不检索，也不要凭空硬编。
+2. 不编事实：数值、型号、对象、单位、原因和操作步骤都必须受合格证据约束；无合格证据时，不得用通用知识补全常见原因、参数或操作步骤。
+3. 信息不足先检索：缺设备型号或故障现象时，先用已知关键词检索；仍无合格证据则明确缺失项并追问，不凭空硬编。
 4. 图谱中标注"未验证(手册推断)"的方案，引用时说明"依据手册推断，建议现场确认"，不要当成已验证结论。
 5. 始终用中文回答；任何形态的输出都不要出现 image_url、source、doc_id、chunk_id、top_k 等内部标识或工具参数。
 
-【诚实原则 —— 场景区分】
-根据当前对话场景差异，证据不足时的回应策略不同：
-- 知识查询场景（用户在查手册内容、问"XX是什么/手册里有没有/给我看看XX"）：
-  检索证据不足时，先明确告知"手册中未找到该内容"；
-  之后仍须继续回答：基于通用专业知识给出定性说明、常见原因或排查方向，
-  并标注"以下为通用知识参考，非本设备手册依据，请结合实际情况判断"；
-  只有精确参数（扭矩、间隙、型号规格等）才拒绝编造，改给范围或"以手册/铭牌为准"。
-  不得因为手册未收录就完全拒绝回答普通的原理、概念或排查类问题。
-- 现场检修场景（工人在修车、问"怎么办/怎么修/为什么坏了"）：
-  检索证据不足时，可以基于通用检修经验给出排查方向或常见原因，
-  但涉及精确参数（扭矩、间隙、型号规格）只给范围，并加"以设备手册/铭牌为准"。
-  给出的实操建议要标注"本段未在手册中找到对应依据，请结合现场情况判断"。
+【证据覆盖四态】
+- complete：所有问题要点都有合格证据，只使用这些证据完整回答。
+- partial：只回答有合格证据的要点，并明确逐项说明当前资料缺少什么。
+- unsupported：说明当前知识库范围或证据不足；不得输出通用原因、参数、品牌、型号或操作猜测。
+- conflict：并列披露冲突值和各自来源，要求确认设备或文档版本，不自行选边。
 
 【可用工具】（你自行决定调哪些、调几次、什么顺序）
 知识检索 knowledge_retrieval：从维修手册知识库检索内容，查资料、找参数、找方法时用；用户要从知识库或手册里找图片、示意图、结构图时也用它，不需要用户上传图片。即使用户没给型号，也先用通用关键词（如"摩托车 起动电机 安装"）检索一遍，别等信息齐了再查。
 图谱诊断 java_graph_diagnosis_path：查图谱路径，支持两种类型——(1)诊断路径（设备→部件→故障→解决方案）：用户描述故障现象时用 fault_description 传入；(2)维修规程路径（设备→部件→维修规程）：用户询问拆装、更换、调整步骤时用 component_description 传入部件名。两种查询都走这个工具，返回结果里会标注路径类型（诊断路径/维修规程）。
-部件反查设备 component_reverse_device：当用户只描述部件（如"油泵漏油"）没明确说设备时用。通过部件描述反查所属设备，返回"设备+部件"组合列表。根据返回数量决策：(1)唯一设备→自动锁定该设备，用设备名作为 keyword 继续调用 java_graph_diagnosis_path；(2)多设备→反问用户"你说的是哪个设备的这个部件？"并列出候选；(3)0设备→图谱中无此部件，降级到通用建议。
+部件反查设备 component_reverse_device：当用户只描述部件（如"油泵漏油"）没明确说设备时用。通过部件描述反查所属设备，返回"设备+部件"组合列表。根据返回数量决策：(1)唯一设备→自动锁定该设备，用设备名作为 keyword 继续调用 java_graph_diagnosis_path；(2)多设备→反问用户"你说的是哪个设备的这个部件？"并列出候选；(3)0设备→说明图谱中无该部件记录，请用户补充设备型号或对应手册，不输出通用故障原因或操作建议。
 设备搜索 java_graph_device_search：设备名不确定时，先搜索确认。
 流程推荐 procedure_recommend：需要给出规范检修流程时用。
 历史召回 recall_conversation_detail：用户追问之前提过的细节、当前上下文不够时用。
@@ -73,7 +68,7 @@ FIX_AGENT_SYSTEM_PROMPT = """你是一名设备检修 AI 助手，负责知识�
 2. 根据返回的设备数量：
    - 唯一设备：自动锁定，用该设备名作为 keyword 调用 java_graph_diagnosis_path 继续诊断
    - 多设备（2个及以上）：向用户反问"你说的是以下哪个设备的这个部件？"并列出所有候选设备（带位置信息），等用户选择后再继续
-   - 0设备：说明"知识图谱中未找到该部件的记录，图谱覆盖范围有限"，然后基于通用检修知识给出排查方向，并提醒"以下为通用建议，非图谱依据，请结合现场判断"
+   - 0设备：说明"知识图谱中未找到该部件的记录，图谱覆盖范围有限"，并请求补充设备或手册信息，不补写故障原因或操作建议
 3. 不要因为缺少设备信息就停止诊断；要主动通过反查工具或反问获取设备信息后继续
 
 【设备不明时的统一处理 —— 候选只来自图谱】
@@ -81,22 +76,14 @@ FIX_AGENT_SYSTEM_PROMPT = """你是一名设备检修 AI 助手，负责知识�
 - 图谱查到了设备（component_reverse_device / java_graph_diagnosis_path 返回了设备）：
   把图谱里的设备名列给用户反问"请问你修的是以下哪个设备：X / Y？"，让用户确认后再精准回答。
   绝不自己猜是哪个设备，也不要凭分数替用户选。
-- 图谱查不到设备（返回空 / evidence_status=empty）：不要硬凑候选，也不要编造设备名。
-  依据知识检索到的手册片段 + 通用维修知识回答，同时用一句话反问"方便的话请告知你的设备型号，便于给出更贴合的答案"。
-  若手册片段疑似来自别的设备，按下面 low_confidence 规则处理（借方法、不套参数、声明来源）。
-- 用户被问后仍表示"不知道是什么设备"：不要再纠缠，直接给纯通用维修建议，
-  声明"以下为通用参考，请结合你的设备实际情况判断"，精确参数一律让其以设备手册/铭牌为准。
+- 图谱查不到设备（返回空 / evidence_status=empty）：不要硬凑候选或编造设备名；说明证据范围并请求设备型号或对应手册。
+- 用户被问后仍表示"不知道是什么设备"：说明当前无法形成设备专属可靠结论，不输出通用故障原因或操作步骤。
 
 【证据质量感知 —— 重要】
 工具返回结果里可能带 evidence_status 字段和 evidence_notice 提示，你必须据此调整回答：
-- evidence_status="empty"（检索/图谱无任何命中）：这次没有可靠依据。不要把"查不到"当成"设备正常/故障不存在"，
-  更不要编造图谱或手册里不存在的部件、故障、参数、步骤。明确告诉用户"知识库/图谱暂无相关依据"，
-  如需作答只能基于通用检修常识，并声明"以下为通用建议，非本设备手册/图谱依据"。
-- evidence_status="low_confidence"（召回片段相关度低，多为跨设备召回）：按"方法可借鉴、参数必独立"处理。
-  若片段明显来自别的设备，可借鉴其通用维修方法/排查思路/操作原理，但要声明"这是X设备的做法，供思路参考"；
-  绝对禁止把别的设备的精确参数（扭矩/间隙/型号/专属拆装顺序）套到用户设备上，参数一律说"以你的设备手册或铭牌为准"，绝不猜数值。
-  不要用"根据手册第X页"这种把跨设备内容包装成权威依据的表述。
-  只有片段确实是用户所问设备的内容时才可作为直接依据。
+- evidence_status="empty"：没有可靠依据；明确说明知识库/图谱暂无相关依据，不补写部件、故障、参数、原因或步骤。
+- evidence_status="low_confidence"：只能说明召回身份或主题未确认，不借用跨设备方法、参数或专属操作。
+- 只有片段确实是用户所问设备的内容时才可作为直接依据。
 - evidence_status="found"/无此字段：证据可用，正常依据回答。
 核心原则：宁可如实说"没有可靠依据"，也不要用空的或低质量的检索结果去支撑一个看似确定的技术结论。
 
@@ -124,11 +111,8 @@ FIX_AGENT_RESPONSE_CONTRACTS = {
         "结论：……\n"
         "依据：……（用工具结果里提供的章节、页码或图谱路径来说明；若结果没给这些，"
         "就说\"依据知识库检索结果\"，不要自己编章节名）\n"
-        "证据不足时：先明说\"知识库未找到明确依据\"，"
-        "然后继续用通用专业知识回答定性问题（原理、常见原因、排查思路），"
-        "并标注\"以下为通用知识，非本设备手册依据\"；"
-        "精确参数（扭矩/间隙/型号等）无依据时只给范围并提示以手册为准，不得编造具体值。"
-        "不要因为手册未收录就停止回答，必须给出有用的内容。"
+        "证据不足时，只回答已有合格证据覆盖的部分并说明具体缺失项；"
+        "完全无证据时克制说明无法据此判断，不输出通用原因、参数或操作猜测。"
     ),
     "diagnosis": (
         "〔诊断态〕确有可下的诊断结论时，只输出一个 JSON：\n"
@@ -255,18 +239,15 @@ class FixAgent(BaseAgent):
             if policy.get("evidence_level") == "required":
                 prompt += (
                     "\n本轮优先检索以核验设备专属结论；未找到合格资料时，"
-                    "仍可给明确标注的通用建议，但不得编造精确参数或专属操作。"
+                    "只说明证据缺失并请求必要信息，不得用通用知识补全。"
                 )
         prompt += (
-            "\n\n【证据使用决策】\n"
-            "RAG 和图谱用于提供参考与溯源，不要求逐字复述。工具结果会标注 evidence_status：\n"
-            "- qualified：可作为当前设备资料依据，用自己的话总结、解释和推理。\n"
-            "- reference_only：仅是同类或身份未确认的参考；只能用于原理、检查方向和通用风险提示，"
-            "不得称为本设备手册，亦不得给专属参数、位置、拆装/紧固顺序、适配或安全放行结论。\n"
-            "- no_evidence/empty：明确未找到当前设备资料；可给通用原理、常见原因和初步排查，"
-            "并说明不是本设备规程，不得编造精确参数或设备专属操作。\n"
-            "高风险操作在没有 qualified 证据时，只说明风险、前提和需核对的制造商资料，"
-            "不要输出可直接执行的专属操作指令。"
+            "\n\n【ResponsePlan 证据决策】\n"
+            "complete：结论优先，只使用 qualified 证据回答全部要点。\n"
+            "partial：只回答已支持部分并点名缺失要点。\n"
+            "unsupported：只说明范围或证据不足，不给通用原因、参数或操作猜测。\n"
+            "conflict：列出冲突值及来源，不自行选择。\n"
+            "普通问题不要固定以‘根据手册第X页’开头；只有用户明确索要原文或页码时采用引用式表达。"
         )
         return prompt
 
@@ -397,6 +378,7 @@ class FixAgent(BaseAgent):
         if forced is not None:
             return forced
 
+        output = self._finalize_react_knowledge_output(output, run_context)
         return output
 
     async def grounded_fallback_if_unretrieved(
@@ -404,7 +386,7 @@ class FixAgent(BaseAgent):
         input_data: AgentInput,
         used_tools: List[str],
     ) -> Optional[AgentOutput]:
-        """补齐高证据需求的检索，但不因缺资料压制受控通用建议。
+        """补齐高证据需求的检索，并在缺少合格资料时克制回答。
 
         已调用知识检索时由主 ReAct 根据工具的 EvidenceBundle 决定可用范围。
         仅在路由要求检索且本轮完全未检索时补一次，以便判断资料覆盖情况。
@@ -423,7 +405,7 @@ class FixAgent(BaseAgent):
         run_context: AgentRunContext,
     ) -> Optional[AgentOutput]:
         """强制检索手册证据并据此生成回答（CRAG 式纠正动作）。
-        检索失败 / 为空 → 返回 None，交由调用方保留原答案。
+        检索失败、为空或生成异常时，返回同一 ResponsePlan 的确定性降级答案。
         """
         from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
         from services.llm.service import get_llm_service
@@ -450,22 +432,59 @@ class FixAgent(BaseAgent):
             len(retrieval.data) if retrieval.data else 0, scope,
         )
         if not retrieval.success or not retrieval.data:
-            logger.info("[fix_agent][forced_retrieval] no evidence; generating bounded generic guidance")
+            logger.info("[fix_agent][forced_retrieval] no evidence; returning deterministic unsupported answer")
             return await self._generic_guidance_output(query, run_context, reason="empty_retrieval")
 
         evidence_items = retrieval.data
+        serialized_evidence = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in evidence_items
+        ]
+        trace = [{
+            "iteration": 1,
+            "action": "tool_call",
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"query": query, "top_k": 5},
+                "result_summary": str(evidence_items)[:200],
+                "result_data": serialized_evidence,
+            }],
+        }]
+        ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
+        first_metadata = getattr(evidence_items[0], "metadata", {}) or {}
+        evidence_bundle = dict(first_metadata.get("evidence_bundle") or {})
+        response_plan = build_response_plan(query, evidence_bundle, ledger)
+        if response_plan.coverage_status == "conflict":
+            return self._response_plan_output(
+                response_plan,
+                response_plan.deterministic_fallback(),
+                trace=trace,
+                run_context=run_context,
+                start=start,
+                audit_passed=True,
+                audit_violations=(),
+                used_fallback=True,
+            )
+
         qualified_items = [
             item for item in evidence_items
             if (item.metadata or {}).get("qualification") == "qualified"
         ]
         if not qualified_items:
-            logger.info("[fix_agent][forced_retrieval] no qualified evidence; generating bounded generic guidance")
+            logger.info("[fix_agent][forced_retrieval] no qualified evidence; returning deterministic unsupported answer")
             return await self._generic_guidance_output(query, run_context, reason="reference_only")
 
         # Qualified evidence may be summarized by the model; it is not an
         # instruction to reproduce manual wording.
         evidence_items = qualified_items
         low_confidence = False
+        serialized_evidence = [
+            item.model_dump() if hasattr(item, "model_dump") else item
+            for item in evidence_items
+        ]
+        trace[0]["tool_calls"][0]["result_data"] = serialized_evidence
+        ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
+        response_plan = build_response_plan(query, evidence_bundle, ledger)
         evidence_text = "\n\n".join(
             self._forced_evidence_to_text(item, idx)
             for idx, item in enumerate(evidence_items, start=1)
@@ -481,15 +500,17 @@ class FixAgent(BaseAgent):
                 "content": (
                     "你是设备检修助手。以下材料已通过当前设备和主题的最低资格校验。"
                     "请用自己的语言总结、解释并回答用户，不要逐字复述手册。"
-                    "精确参数和专属步骤只能在材料明确覆盖时使用；未覆盖处可给通用说明并标明边界。"
-                    "始终用中文，不要出现内部标识或 emoji。" + device_notice
+                    "精确参数、原因和专属步骤只能在材料明确覆盖时使用；未覆盖处必须说明缺失，不得补写。"
+                    + response_plan.generation_instructions()
+                    + "始终用中文，不要出现内部标识或 emoji。"
+                    + device_notice
                 ),
             },
             {
                 "role": "user",
                 "content": (
                     f"用户问题：{query}\n\n可用资料：\n{evidence_text}\n\n"
-                    "请基于这些资料作答，并补充必要的通用解释。"
+                    "请严格基于这些资料作答。"
                 ),
             },
         ]
@@ -497,28 +518,54 @@ class FixAgent(BaseAgent):
             response = await get_llm_service().chat(messages=messages, temperature=0.1)
         except Exception as exc:
             logger.warning("[fix_agent][forced_retrieval] 生成异常: %s", exc)
-            return None
+            return self._response_plan_output(
+                response_plan,
+                response_plan.deterministic_fallback(),
+                trace=trace,
+                run_context=run_context,
+                start=start,
+                audit_passed=False,
+                audit_violations=("generation_error",),
+                used_fallback=True,
+            )
 
-        trace = [{
-            "iteration": 1,
-            "action": "tool_call",
-            "tool_calls": [{
-                "name": "knowledge_retrieval",
-                "arguments": {"query": query, "top_k": 5},
-                "result_summary": str(evidence_items)[:200],
-                "result_data": [
-                    item.model_dump() if hasattr(item, "model_dump") else item
-                    for item in evidence_items
-                ],
-            }],
-        }]
+        draft = response.get("content", "") if isinstance(response, dict) else str(response or "")
+        audited = finalize_response(response_plan, draft)
         logger.info(
             "[fix_agent][forced_retrieval] 已强制检索并据证据重答 evidence=%d",
             len(evidence_items),
         )
+        return self._response_plan_output(
+            response_plan,
+            audited.answer,
+            trace=trace,
+            run_context=run_context,
+            start=start,
+            audit_passed=audited.passed,
+            audit_violations=audited.violations,
+            used_fallback=audited.used_fallback,
+            raw_response=response if isinstance(response, dict) else None,
+            retrieval_top_score=evidence_items[0].score if evidence_items else 0.0,
+        )
+
+    def _response_plan_output(
+        self,
+        plan,
+        message: str,
+        *,
+        trace: list[dict[str, Any]],
+        run_context: AgentRunContext,
+        start: float,
+        audit_passed: bool,
+        audit_violations: tuple[str, ...],
+        used_fallback: bool,
+        raw_response: Optional[dict[str, Any]] = None,
+        retrieval_top_score: float = 0.0,
+        low_confidence: bool = False,
+    ) -> AgentOutput:
         return AgentOutput(
             agent_name=self.name,
-            message=response.get("content", "") if isinstance(response, dict) else str(response or ""),
+            message=message,
             tools_used=["knowledge_retrieval"],
             metadata={
                 "execution_mode": "forced_retrieval_grounded",
@@ -526,11 +573,60 @@ class FixAgent(BaseAgent):
                 "react_iterations": 1,
                 "intent_decision": run_context.intent_decision,
                 "low_confidence_retrieval": low_confidence,
-                "retrieval_top_score": evidence_items[0].score if evidence_items else 0.0,
+                "retrieval_top_score": retrieval_top_score,
+                **plan.to_metadata(),
+                "response_audit": {
+                    "passed": audit_passed,
+                    "violations": list(audit_violations),
+                    "used_fallback": used_fallback,
+                },
             },
             latency_ms=int((time.time() - start) * 1000),
-            raw_response=response if isinstance(response, dict) else None,
+            raw_response=raw_response,
         )
+
+    def _finalize_react_knowledge_output(
+        self,
+        output: AgentOutput,
+        run_context: AgentRunContext,
+    ) -> AgentOutput:
+        if "knowledge_retrieval" not in set(output.tools_used or []):
+            return output
+        trace = output.metadata.get("react_trace") or []
+        bundle = self._latest_knowledge_bundle(trace)
+        if not bundle:
+            return output
+        ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
+        plan = build_response_plan(run_context.user_message, bundle, ledger)
+        audited = finalize_response(plan, output.message)
+        output.message = audited.answer
+        output.metadata.update(plan.to_metadata())
+        output.metadata["response_audit"] = {
+            "passed": audited.passed,
+            "violations": list(audited.violations),
+            "used_fallback": audited.used_fallback,
+        }
+        return output
+
+    @staticmethod
+    def _latest_knowledge_bundle(trace: list[dict[str, Any]]) -> dict[str, Any]:
+        for step in reversed(trace or []):
+            calls = step.get("tool_calls") if isinstance(step, dict) else None
+            for call in reversed(calls or []):
+                if not isinstance(call, dict) or call.get("name") != "knowledge_retrieval":
+                    continue
+                for key in ("result_data", "data", "result"):
+                    payload = call.get(key)
+                    if isinstance(payload, dict):
+                        return dict(payload)
+                    if isinstance(payload, list):
+                        for item in payload:
+                            if not isinstance(item, dict):
+                                continue
+                            metadata = item.get("metadata") or {}
+                            if isinstance(metadata.get("evidence_bundle"), dict):
+                                return dict(metadata["evidence_bundle"])
+        return {}
 
     async def _generic_guidance_output(
         self,
@@ -538,32 +634,20 @@ class FixAgent(BaseAgent):
         run_context: AgentRunContext,
         reason: str,
     ) -> AgentOutput:
-        """Generate useful, explicitly non-manual guidance when no evidence qualifies."""
-        from services.llm.service import get_llm_service
-
-        messages = [
+        """Return a deterministic unsupported plan without another model call."""
+        plan = build_response_plan(
+            query,
             {
-                "role": "system",
-                "content": (
-                    "你是设备检修助手。当前未找到可作为该设备手册依据的资料。"
-                    "请基于通用专业知识回答用户，但开头必须说明这是通用建议、不是本设备维修规程。"
-                    "可以说明原理、常见原因、低风险初步检查和需补充的信息；"
-                    "不得给出精确参数、设备专属位置、拆装或紧固顺序、零件适配、"
-                    "或可直接执行的高风险操作指令。高风险事项应建议查制造商资料或由合格人员确认。"
-                    "始终用中文，禁止出现内部标识和 emoji。"
-                ),
+                "coverage_status": "unsupported",
+                "coverage_reason": reason,
+                "aspect_support": [],
+                "missing_aspect_ids": [],
+                "conflict_eligible": [],
+                "capabilities": {"may_offer_generic_guidance": False},
             },
-            {"role": "user", "content": query},
-        ]
-        try:
-            response = await get_llm_service().chat(messages=messages, temperature=0.2)
-            message = response.get("content", "") if isinstance(response, dict) else str(response or "")
-        except Exception as exc:
-            logger.warning("[fix_agent][generic_guidance] generation failed: %s", exc)
-            message = (
-                "当前未找到可用于该设备的手册资料。以下只能提供通用排查思路，"
-                "不能替代该设备规程；涉及参数或高风险操作，请以制造商资料或现场合格人员判断为准。"
-            )
+            EvidenceLedger(),
+        )
+        message = plan.deterministic_fallback()
         return AgentOutput(
             agent_name=self.name,
             message=message,
@@ -571,8 +655,10 @@ class FixAgent(BaseAgent):
             metadata={
                 "execution_mode": "generic_guidance",
                 "evidence_status": "no_evidence",
+                "deterministic_direct": True,
                 "insufficient_evidence_reason": reason,
                 "intent_decision": run_context.intent_decision,
+                **plan.to_metadata(),
                 "react_iterations": 1,
                 "react_trace": [{
                     "iteration": 1,
