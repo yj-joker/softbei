@@ -4408,6 +4408,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             verification = final_result.metadata.get("verification", {})
             has_issues = final_result.metadata.get("verification_has_issues", False)
         else:
+            manual_evidence_answer = None
             table_answer = _format_inventory_table_answer_from_metadata(
                 request.message,
                 final_result.metadata,
@@ -4434,7 +4435,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
                     has_issues = False
                 else:
                     response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
-            if not manual_evidence_answer and not _is_deterministic_direct_output(final_result):
+            if not table_answer and not manual_evidence_answer and not _is_deterministic_direct_output(final_result):
                 follow_up = build_follow_up(input_data.user_message, diagnosis_items, final_result.metadata)
                 if follow_up:
                     final_result.metadata["execution_mode"] = "causal_follow_up_question"

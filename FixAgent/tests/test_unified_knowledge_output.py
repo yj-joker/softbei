@@ -287,6 +287,55 @@ def test_non_stream_endpoint_audits_after_manual_override(monkeypatch) -> None:
     assert response.metadata["coverage_status"] == "complete"
 
 
+def test_non_stream_table_override_does_not_read_uninitialized_manual_answer(monkeypatch) -> None:
+    trace = _manual_trace()
+    request = ChatRequest(
+        session_id="table-override-finalized",
+        message="水泵装配零件有哪些？",
+        mode=AgentMode.RETRIEVAL,
+    )
+    input_data = AgentInput(user_message=request.message, session_id=request.session_id)
+
+    class _Agent:
+        async def run_with_react(self, _input):
+            return _output("react", trace)
+
+    class _Review:
+        async def review(self, output, level="full"):
+            return output
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _async_none)
+    monkeypatch.setattr(main, "_try_scope_guard", lambda *args: None)
+    monkeypatch.setattr(main, "_try_domain_rule_direct", _async_none)
+    monkeypatch.setattr(main, "_should_use_rag_fast_path", lambda request: False)
+    monkeypatch.setattr(main, "get_fix_agent", lambda: _Agent())
+    monkeypatch.setattr(main, "get_review_agent", lambda: _Review())
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(
+        main,
+        "_format_inventory_table_answer_from_metadata",
+        lambda *args: "水泵装配包含水泵盖和密封圈。",
+    )
+    monkeypatch.setattr(
+        main,
+        "_format_manual_evidence_answer_from_metadata",
+        lambda *args: pytest.fail("table override must skip manual evidence formatting"),
+    )
+    monkeypatch.setattr(main, "_collect_direct_section_images", _async_empty)
+    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", lambda *args: [])
+    monkeypatch.setattr(
+        main,
+        "build_follow_up",
+        lambda *args: pytest.fail("table override must skip diagnostic follow-up"),
+    )
+
+    response = asyncio.run(main.chat(request))
+
+    assert response.success is True
+    assert response.metadata["deterministic_table_answer"] is True
+
+
 async def _awaitable(value):
     return value
 
