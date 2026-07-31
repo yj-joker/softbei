@@ -74,9 +74,10 @@ class ResponsePlan:
             )
         body = "\n".join(dict.fromkeys(facts))
         source = self._source_label()
-        if self.source_mode == "quote":
+        has_manual = any(entry.get("source_type") == "manual" for entry in self.allowed_evidence)
+        if self.source_mode == "quote" and has_manual:
             answer = f"手册原文（{source.removeprefix('手册')}）：\n{body}"
-        elif self.source_mode == "page":
+        elif self.source_mode == "page" and has_manual:
             answer = f"手册{source.removeprefix('手册')}记录：{body}"
         else:
             answer = body
@@ -111,17 +112,29 @@ class ResponsePlan:
         }
 
     def _source_label(self) -> str:
+        source_types = {
+            str(entry.get("source_type") or "")
+            for entry in self.allowed_evidence
+        }
+        labels: list[str] = []
         pages = []
         for entry in self.allowed_evidence:
             source = entry.get("source") if isinstance(entry.get("source"), Mapping) else {}
             page = source.get("page")
             if page not in (None, "") and str(page) not in pages:
                 pages.append(str(page))
-        if not pages:
-            return "手册"
-        if len(pages) == 1:
-            return f"手册第{pages[0]}页"
-        return f"手册第{'、'.join(pages)}页"
+        if "manual" in source_types:
+            if not pages:
+                labels.append("手册")
+            elif len(pages) == 1:
+                labels.append(f"手册第{pages[0]}页")
+            else:
+                labels.append(f"手册第{'、'.join(pages)}页")
+        if "domain_rule" in source_types:
+            labels.append("已审核规则")
+        if "graph" in source_types:
+            labels.append("知识图谱")
+        return "、".join(labels) or "知识库"
 
     def _conflict_fallback(self) -> str:
         descriptions = []

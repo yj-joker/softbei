@@ -75,6 +75,8 @@ from services.retrieval.scope import (
     decide_scope,
     format_scope_guard_message,
 )
+from services.retrieval.evidence import EvidenceLedger
+from services.retrieval.response_plan import build_response_plan, finalize_response
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from services.temporary_plan_service import get_temporary_plan_service
 from config.settings import get_settings
@@ -273,6 +275,181 @@ def _is_deterministic_direct_output(output: AgentOutput) -> bool:
     }
 
 
+_KNOWLEDGE_EVIDENCE_TOOLS = {
+    "knowledge_retrieval",
+    DOMAIN_RULE_TOOL_NAME,
+    "java_graph_diagnosis_path",
+}
+
+
+def _trace_tool_names(metadata: dict | None) -> set[str]:
+    names: set[str] = set()
+    for step in (metadata or {}).get("react_trace") or []:
+        if not isinstance(step, dict):
+            continue
+        for call in step.get("tool_calls") or []:
+            if isinstance(call, dict) and call.get("name"):
+                names.add(str(call["name"]))
+    return names
+
+
+def _is_knowledge_output(output: AgentOutput) -> bool:
+    names = set(output.tools_used or []) | _trace_tool_names(output.metadata)
+    return bool(names & _KNOWLEDGE_EVIDENCE_TOOLS)
+
+
+def _manual_bundle_from_trace(metadata: dict | None) -> dict[str, Any]:
+    for step in reversed((metadata or {}).get("react_trace") or []):
+        if not isinstance(step, dict):
+            continue
+        for call in reversed(step.get("tool_calls") or []):
+            if not isinstance(call, dict) or call.get("name") != "knowledge_retrieval":
+                continue
+            payload = next(
+                (call.get(key) for key in ("result_data", "data", "result") if call.get(key) is not None),
+                None,
+            )
+            if isinstance(payload, dict):
+                nested = payload.get("data")
+                if isinstance(nested, (dict, list)):
+                    payload = nested
+            if isinstance(payload, dict) and any(
+                key in payload for key in ("aspect_support", "coverage_status", "conflict_eligible")
+            ):
+                return dict(payload)
+            if isinstance(payload, list):
+                for item in payload:
+                    if not isinstance(item, dict):
+                        continue
+                    bundle = (item.get("metadata") or {}).get("evidence_bundle")
+                    if isinstance(bundle, dict):
+                        return dict(bundle)
+    return {}
+
+
+def _bundle_for_knowledge_output(output: AgentOutput, ledger: EvidenceLedger) -> dict[str, Any]:
+    bundle = _manual_bundle_from_trace(output.metadata)
+    if bundle:
+        return bundle
+    qualified_ids = [
+        str(entry.get("evidence_id"))
+        for entry in ledger.entries
+        if entry.get("qualification") == "qualified"
+    ]
+    return {
+        "aspect_support": [{
+            "aspect_id": "knowledge-answer",
+            "aspect_text": "当前问题",
+            "supported": bool(qualified_ids),
+            "evidence_ids": qualified_ids,
+        }],
+        "missing_aspect_ids": [] if qualified_ids else ["knowledge-answer"],
+        "conflict_eligible": [],
+        "capabilities": {
+            "may_cite_manual": True,
+            "may_offer_generic_guidance": False,
+        },
+    }
+
+
+def _finalize_knowledge_output(
+    query: str,
+    output: AgentOutput,
+    *,
+    candidate_message: str | None = None,
+) -> AgentOutput:
+    """Run the last visible knowledge answer through one evidence-plan audit."""
+    if candidate_message is not None:
+        output.message = candidate_message
+    if not _is_knowledge_output(output):
+        return output
+
+    ledger = EvidenceLedger.from_react_trace(output.metadata)
+    plan = build_response_plan(query, _bundle_for_knowledge_output(output, ledger), ledger)
+    audited = finalize_response(plan, output.message)
+    output.message = audited.answer
+    output.metadata.update(plan.to_metadata())
+    output.metadata.setdefault("scope_decision", {"status": "unknown"})
+    output.metadata["response_audit"] = {
+        "passed": audited.passed,
+        "violations": list(audited.violations),
+        "used_fallback": audited.used_fallback,
+    }
+    return output
+
+
+def _attach_stream_done_metadata(event: dict[str, Any], metadata: dict | None) -> None:
+    diagnostics = {
+        key: (metadata or {}).get(key)
+        for key in (
+            "scope_decision",
+            "coverage_status",
+            "response_plan_id",
+            "evidence_ledger_digest",
+        )
+        if key in (metadata or {})
+    }
+    if diagnostics:
+        event.setdefault("data", {}).setdefault("metadata", {}).update(diagnostics)
+
+
+def _register_direct_manual_evidence(
+    metadata: dict,
+    records: list[Any],
+    source_name: str,
+) -> None:
+    normalized: list[dict[str, Any]] = []
+    for raw in records or []:
+        if hasattr(raw, "model_dump"):
+            record = raw.model_dump()
+        elif isinstance(raw, dict):
+            record = dict(raw)
+        else:
+            continue
+        item_metadata = dict(record.get("metadata") or {})
+        document_id = str(item_metadata.get("document_id") or record.get("document_id") or "").strip()
+        chunk_id = str(
+            item_metadata.get("chunk_id")
+            or record.get("chunk_id")
+            or record.get("id")
+            or record.get("doc_id")
+            or ""
+        ).strip()
+        if not document_id or not chunk_id:
+            continue
+        item_metadata.update({
+            "document_id": document_id,
+            "chunk_id": chunk_id,
+            "qualification": "qualified",
+        })
+        content = (
+            record.get("content")
+            or record.get("text")
+            or item_metadata.get("caption")
+            or item_metadata.get("image_summary")
+            or ""
+        )
+        normalized.append({
+            **record,
+            "id": chunk_id,
+            "content": str(content),
+            "metadata": item_metadata,
+        })
+    if not normalized:
+        return
+    trace = metadata.setdefault("react_trace", [])
+    trace.append({
+        "iteration": len(trace) + 1,
+        "action": "direct_evidence_lookup",
+        "tool_calls": [{
+            "name": "knowledge_retrieval",
+            "arguments": {"source": source_name},
+            "result_data": normalized,
+            "result_summary": f"{source_name}:{len(normalized)}",
+        }],
+    })
+
+
 def _should_try_domain_rule(request: ChatRequest, input_data: AgentInput) -> bool:
     if request.images:
         return False
@@ -365,7 +542,7 @@ async def _try_domain_rule_direct(request: ChatRequest, input_data: AgentInput) 
             "safety": {"missing_count": 0},
         },
     }
-    return AgentOutput(
+    output = AgentOutput(
         agent_name="fix_agent",
         message=match.get("message", ""),
         intention="fault_diagnosis",
@@ -374,6 +551,7 @@ async def _try_domain_rule_direct(request: ChatRequest, input_data: AgentInput) 
         latency_ms=latency_ms,
         raw_response=match,
     )
+    return _finalize_knowledge_output(input_data.user_message, output)
 
 
 async def _stream_direct_agent_output(output: AgentOutput):
@@ -2551,6 +2729,7 @@ def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -
     records = _manual_best_section_records(message, kind, metadata)
     if not records:
         return None
+    _register_direct_manual_evidence(metadata, records, "section_text_lookup")
     if _manual_answer_should_refuse_detail_query(message, records):
         return _format_manual_detail_refusal_answer(message, records)
 
@@ -2775,6 +2954,7 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
                 meta.setdefault("retrieval_plan_intent", plan_intent)
                 rec["metadata"] = meta
                 table_items.append(rec)
+        _register_direct_manual_evidence(metadata, table_items, "section_table_lookup")
         return table_items
     except Exception:
         return []
@@ -2891,6 +3071,7 @@ async def _collect_direct_section_images(metadata: dict) -> List[EvidenceImage]:
             from services.knowledge.vector_service import get_vector_service
             vector_service = get_vector_service()
         images: List[EvidenceImage] = []
+        image_records: list[dict[str, Any]] = []
         seen_urls: set = set()
         for sid in target_section_ids[:3]:
             try:
@@ -2906,6 +3087,10 @@ async def _collect_direct_section_images(metadata: dict) -> List[EvidenceImage]:
                 if not image_url or image_url in seen_urls:
                     continue
                 seen_urls.add(image_url)
+                meta.setdefault("chunk_id", str(rec.get("id") or rec.get("doc_id") or ""))
+                rec["metadata"] = meta
+                rec.setdefault("content", meta.get("caption") or meta.get("image_title") or "")
+                image_records.append(rec)
                 images.append(EvidenceImage(
                     image_url=image_url,
                     caption=meta.get("caption") or meta.get("image_title") or "",
@@ -2915,6 +3100,7 @@ async def _collect_direct_section_images(metadata: dict) -> List[EvidenceImage]:
                     source_chunk_id=str(rec.get("id") or rec.get("doc_id") or ""),
                     context_role="direct_lookup",
                 ))
+        _register_direct_manual_evidence(metadata, image_records, "section_image_lookup")
         return images
     except Exception:
         return []
@@ -3271,6 +3457,7 @@ def _collect_direct_evidence_page_images(
         return []
 
     images: List[EvidenceImage] = []
+    evidence_records: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
     for document_id in document_ids[:2]:
         for page in pages[:8]:
@@ -3296,13 +3483,18 @@ def _collect_direct_evidence_page_images(
                 if not image_url or image_url in seen_urls:
                     continue
                 seen_urls.add(image_url)
+                chunk_id = str(rec.get("id") or rec.get("doc_id") or "")
+                meta.setdefault("chunk_id", chunk_id)
+                rec["metadata"] = meta
+                rec.setdefault("content", meta.get("caption") or meta.get("image_title") or "")
+                evidence_records.append(rec)
                 images.append(EvidenceImage(
                     image_url=image_url,
                     caption=meta.get("caption") or meta.get("image_title") or rec.get("content", ""),
                     page=meta.get("page_number") or meta.get("page"),
                     section_title=meta.get("section_title", ""),
                     document_id=meta.get("document_id", ""),
-                    source_chunk_id=str(rec.get("id") or rec.get("doc_id") or ""),
+                    source_chunk_id=chunk_id,
                     context_role="page_lookup",
                 ))
             if not page_had_indexed_image or not page_had_matched_image:
@@ -3310,6 +3502,20 @@ def _collect_direct_evidence_page_images(
                 if rendered and rendered.image_url not in seen_urls:
                     seen_urls.add(rendered.image_url)
                     images.append(rendered)
+                    rendered_chunk_id = rendered.source_chunk_id or f"rendered-page-{document_id}-{page}"
+                    evidence_records.append({
+                        "id": rendered_chunk_id,
+                        "content": rendered.caption or f"手册第{page}页图像",
+                        "metadata": {
+                            "document_id": rendered.document_id or document_id,
+                            "chunk_id": rendered_chunk_id,
+                            "page": rendered.page or page,
+                            "chunk_type": "image",
+                            "image_url": rendered.image_url,
+                            "caption": rendered.caption,
+                        },
+                    })
+    _register_direct_manual_evidence(metadata, evidence_records, "page_image_lookup")
     return _sort_unique_evidence_images(images)
 
 
@@ -4034,7 +4240,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
             total_ms,
             len(evidence_items),
         )
-        return AgentOutput(
+        output = AgentOutput(
             agent_name="fix_agent",
             message=table_answer,
             tools_used=["knowledge_retrieval"],
@@ -4042,6 +4248,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
             latency_ms=total_ms,
             raw_response={"content": table_answer},
         )
+        return _finalize_knowledge_output(request.message, output)
 
     evidence_text = "\n\n".join(
         _evidence_item_to_text(item, idx)
@@ -4085,7 +4292,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
         len(evidence_items),
     )
 
-    return AgentOutput(
+    output = AgentOutput(
         agent_name="fix_agent",
         message=response.get("content", ""),
         tools_used=["knowledge_retrieval"],
@@ -4102,6 +4309,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
         latency_ms=total_ms,
         raw_response=response,
     )
+    return _finalize_knowledge_output(request.message, output)
 
 
 @app.post("/ai/chat", response_model=ChatResponse)
@@ -4251,6 +4459,18 @@ async def chat(request: ChatRequest) -> ChatResponse:
         evidence_images = _narrow_evidence_images_to_query_target_pages(evidence_images, final_result.metadata)
         evidence_images = _filter_evidence_images_by_action_context(evidence_images, final_result.metadata)
         evidence_images = _filter_evidence_images_to_target_section(evidence_images, final_result.metadata)
+
+        pre_audit_message = response_message
+        final_result = _finalize_knowledge_output(
+            request.message,
+            final_result,
+            candidate_message=response_message,
+        )
+        response_message = final_result.message
+        if response_message != pre_audit_message:
+            diagnosis_items = None
+            verification = {}
+            has_issues = False
 
         return ChatResponse(
             session_id=request.session_id,
@@ -4712,6 +4932,29 @@ async def chat_stream(request: ChatRequest):
                 diagnosis_items = None
                 markers = []
 
+            final_output = AgentOutput(
+                agent_name="fix_agent",
+                message=final_message,
+                tools_used=verified_tools,
+                metadata={
+                    **stream_metadata,
+                    "react_trace": stream_react_trace,
+                    "scope_decision": (input_data.context or {}).get("scope_decision")
+                    or stream_metadata.get("scope_decision")
+                    or {"status": "unknown"},
+                },
+                latency_ms=verified_latency,
+            )
+            pre_audit_message = final_message
+            final_output = _finalize_knowledge_output(request.message, final_output)
+            final_message = final_output.message
+            stream_metadata = final_output.metadata
+            if final_message != pre_audit_message:
+                diagnosis_items = None
+                markers = []
+                verification = {}
+                has_issues = False
+
             image_metadata = {
                 **stream_metadata,
                 "react_trace": stream_react_trace,
@@ -4772,7 +5015,7 @@ async def chat_stream(request: ChatRequest):
             }
             if diagnostic_follow_up:
                 final_done["data"]["diagnosticFollowUp"] = diagnostic_follow_up
-                final_done["data"]["metadata"] = stream_metadata
+            _attach_stream_done_metadata(final_done, stream_metadata)
             if diagnosis_items:
                 final_done["data"]["diagnosisItems"] = _serialize_diagnosis_items(diagnosis_items)
             if evidence_images:

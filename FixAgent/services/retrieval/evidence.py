@@ -175,7 +175,14 @@ def _append_rule_entry(ledger: EvidenceLedger, payload: Any) -> None:
     ledger.append({
         "evidence_id": f"domain_rule:{rule_id}",
         "source_type": "domain_rule",
-        "text": _entry_text(payload) or _entry_text(rule),
+        "text": _joined_text(
+            payload.get("message"),
+            payload.get("content"),
+            rule.get("condition_text"),
+            rule.get("conclusion"),
+            rule.get("question"),
+            *(rule.get("options") or []),
+        ),
         "qualification": "qualified",
         "source": {"rule_id": rule_id, "status": status, "evidence_sources": list(payload.get("evidence_sources") or [])},
     })
@@ -193,10 +200,42 @@ def _append_graph_entries(ledger: EvidenceLedger, payload: Any) -> None:
         if not path_ids and not node_ids:
             continue
         stable_id = path_ids[0] if path_ids else ":".join(node_ids)
+        solutions = record.get("solutions") if isinstance(record.get("solutions"), list) else []
+        solution_texts = [
+            _joined_text(
+                solution.get("title"),
+                solution.get("name"),
+                solution.get("description"),
+                solution.get("solutionDescription"),
+                *(solution.get("steps") or solution.get("solutionSteps") or []),
+            )
+            for solution in solutions
+            if isinstance(solution, Mapping)
+        ]
+        component_name = str(record.get("componentName") or "").strip()
+        solution_title = str(record.get("solutionTitle") or "").strip()
+        bound_solution_title = solution_title
+        if component_name and solution_title and component_name not in solution_title:
+            bound_solution_title = (
+                f"将{component_name}{solution_title[1:]}"
+                if solution_title.startswith("将")
+                else f"{component_name}：{solution_title}"
+            )
         ledger.append({
             "evidence_id": f"graph:{stable_id}",
             "source_type": "graph",
-            "text": _entry_text(record),
+            "text": _joined_text(
+                _entry_text(record),
+                record.get("deviceName"),
+                component_name,
+                record.get("faultName"),
+                record.get("faultDescription"),
+                solution_title,
+                bound_solution_title,
+                record.get("solutionDescription"),
+                *(record.get("solutionSteps") or []),
+                *solution_texts,
+            ),
             "qualification": "qualified",
             "source": {
                 "path_ids": path_ids,
@@ -208,6 +247,16 @@ def _append_graph_entries(ledger: EvidenceLedger, payload: Any) -> None:
 
 def _entry_text(item: Mapping[str, Any]) -> str:
     return "\n".join(str(item.get(key)).strip() for key in ("content", "text", "summary", "caption", "image_summary") if item.get(key))
+
+
+def _joined_text(*values: Any) -> str:
+    flattened: list[str] = []
+    for value in values:
+        if isinstance(value, (list, tuple, set)):
+            flattened.extend(str(item).strip() for item in value if str(item).strip())
+        elif value not in (None, "") and str(value).strip():
+            flattened.append(str(value).strip())
+    return "\n".join(dict.fromkeys(flattened))
 
 
 def _as_list(value: Any) -> list[str]:
