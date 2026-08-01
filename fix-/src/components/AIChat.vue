@@ -138,7 +138,7 @@ const modeSubtitle = computed(() =>
 )
 const emptyDescription = computed(() =>
   currentMode.value === 'chat'
-    ? 'Chat 模式用于轻量交流与通用问答，回答更直接简洁。'
+    ? '聊天模式用于轻量交流与通用问答，回答更直接简洁。'
     : '描述设备、故障现象、现场图片或已执行步骤，我会结合知识库、案例与知识图谱，把建议拆成可执行的排查路径。',
 )
 
@@ -331,7 +331,7 @@ onActivated(() => {
               @click="changeMode('chat')"
             >
               <el-icon><ChatLineRound /></el-icon>
-              <span>Chat</span>
+              <span>聊天</span>
             </button>
             <button
               type="button"
