@@ -9,7 +9,7 @@
 - 模式切换按钮：`Chat` 改为 `聊天`。
 - 空状态说明：`Chat 模式` 改为 `聊天模式`。
 - 会话侧栏标题：`Chat records` 改为 `聊天记录`。
-- 检修侧栏标题：`Maintenance records` 改为 `检修模式`。
+- 检修侧栏标题：`Maintenance records` 改为 `检修记录`。
 - 会话模式徽标：`CHAT` 改为 `聊天`。
 
 ## 不变内容
