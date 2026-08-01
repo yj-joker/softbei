@@ -34,6 +34,10 @@ class DomainRule:
     question: str
     options: list[str]
     evidence_refs: list[dict[str, Any]]
+    rule_version: str = ""
+    document_version: str = ""
+    applicable_components: list[str] | None = None
+    applicable_actions: list[str] | None = None
 
 
 def get_vector_service():
@@ -131,6 +135,10 @@ def _normalize_rule(payload: Mapping[str, Any], *, strict: bool = True) -> Domai
         question=_clean_text(payload.get("question")),
         options=_string_list(payload.get("options")),
         evidence_refs=_evidence_refs(payload.get("evidence_refs")),
+        rule_version=_clean_text(payload.get("rule_version")),
+        document_version=_clean_text(payload.get("document_version")),
+        applicable_components=_string_list(payload.get("applicable_components")),
+        applicable_actions=_string_list(payload.get("applicable_actions")),
     )
 
 
@@ -151,6 +159,10 @@ def _rule_metadata(rule: DomainRule) -> dict[str, Any]:
         "question": rule.question,
         "options": rule.options,
         "evidence_refs": rule.evidence_refs,
+        "rule_version": rule.rule_version,
+        "document_version": rule.document_version,
+        "applicable_components": rule.applicable_components or [],
+        "applicable_actions": rule.applicable_actions or [],
         "confidence_source": "rule",
     }
 
@@ -162,6 +174,10 @@ def _search_text(rule: DomainRule) -> str:
         f"症状关键词: {'、'.join(rule.symptom_keys)}",
         f"命中条件: {rule.condition_text}",
         f"诊断结论: {rule.conclusion}",
+        f"规则版本: {rule.rule_version}",
+        f"文档版本: {rule.document_version}",
+        f"适用部件: {'、'.join(rule.applicable_components or [])}",
+        f"适用动作: {'、'.join(rule.applicable_actions or [])}",
         f"追问问题: {rule.question}",
         f"追问选项: {'、'.join(rule.options)}",
     ]
@@ -277,6 +293,10 @@ def _public_rule(rule: DomainRule) -> dict[str, Any]:
         "question": rule.question,
         "options": rule.options,
         "evidence_refs": rule.evidence_refs,
+        "rule_version": rule.rule_version,
+        "document_version": rule.document_version,
+        "applicable_components": rule.applicable_components or [],
+        "applicable_actions": rule.applicable_actions or [],
     }
 
 

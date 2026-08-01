@@ -8,6 +8,10 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
 from services.retrieval.aspects import QuestionAspect
+from services.retrieval.provenance import (
+    canonical_manual_chunk_id,
+    dedupe_and_sort_manual_records,
+)
 
 
 @dataclass(frozen=True)
@@ -72,6 +76,7 @@ class EvidenceLedger:
     def __init__(self, entries: Iterable[Mapping[str, Any]] | None = None) -> None:
         self.entries: list[dict[str, Any]] = []
         self._seen: set[str] = set()
+        self._index_by_id: dict[str, int] = {}
         for entry in entries or ():
             self.append(entry)
 
@@ -82,8 +87,14 @@ class EvidenceLedger:
         if not evidence_id or source_type not in {"manual", "domain_rule", "graph"}:
             return False
         if evidence_id in self._seen:
+            if source_type == "manual":
+                index = self._index_by_id[evidence_id]
+                winner = dedupe_and_sort_manual_records([self.entries[index], normalized])[0]
+                if winner == normalized:
+                    self.entries[index] = normalized
             return False
         self._seen.add(evidence_id)
+        self._index_by_id[evidence_id] = len(self.entries)
         self.entries.append(normalized)
         return True
 
@@ -146,7 +157,7 @@ def _append_manual_entries(ledger: EvidenceLedger, payload: Any) -> None:
     for item in _manual_items(payload):
         metadata = item.get("metadata") if isinstance(item.get("metadata"), Mapping) else {}
         document_id = str(metadata.get("document_id") or item.get("document_id") or "").strip()
-        chunk_id = str(metadata.get("chunk_id") or item.get("chunk_id") or item.get("id") or item.get("doc_id") or "").strip()
+        chunk_id = canonical_manual_chunk_id(item)
         if not document_id or not chunk_id:
             continue
         qualification = str(metadata.get("qualification") or item.get("qualification") or item.get("_ledger_qualification") or "")
@@ -159,7 +170,15 @@ def _append_manual_entries(ledger: EvidenceLedger, payload: Any) -> None:
                 "document_id": document_id,
                 "document_version": str(metadata.get("document_version") or ""),
                 "chunk_id": chunk_id,
+                "source_chunk_id": chunk_id,
+                "chunk_type": str(metadata.get("chunk_type") or ""),
+                "parent_chunk_id": str(metadata.get("parent_chunk_id") or ""),
+                "parent_section_id": str(metadata.get("parent_section_id") or ""),
+                "section_index": metadata.get("section_index"),
                 "page": metadata.get("page") if metadata.get("page") is not None else metadata.get("page_number"),
+                "source_index": metadata.get("source_index"),
+                "child_index": metadata.get("child_index"),
+                "row_index": metadata.get("row_index"),
             },
         })
 

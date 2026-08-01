@@ -12,6 +12,7 @@ from embeddings.multimodal_embedding import get_multimodal_embedding
 from embeddings.text_embedding import get_text_embedding
 from schemas.models import VectorSearchResult
 from services.retrieval.planner import build_retrieval_plan, confidence_intent
+from services.retrieval.provenance import dedupe_and_sort_manual_records
 from services.retrieval.ranker import rank_candidates
 from services.retrieval.context_expander import expand_retrieval_context
 from services.retrieval.fusion import DEFAULT_RRF_CONSTANT, reciprocal_rank_fusion
@@ -318,18 +319,8 @@ class KnowledgeRetrievalTool(BaseTool):
             reverse=True,
         )[:max_sections]
 
-        have_ids: set = set()
-        have_text: set = set()
-        for it in selected:
-            meta = it.get("metadata") or {}
-            have_ids.add(str(it.get("doc_id") or it.get("id") or ""))
-            if meta.get("source_chunk_id"):
-                have_ids.add(str(meta["source_chunk_id"]))
-            rt = (meta.get("raw_text") or it.get("content") or it.get("text") or "").strip()
-            if rt:
-                have_text.add(rt)
-
-        new_steps: List[Dict] = []
+        snapshots: List[Dict] = []
+        completed_sections: set[tuple[str, str]] = set()
         for document_id, parent_section_id in target_sections:
             try:
                 records = vector_service.get_section_records(
@@ -338,27 +329,52 @@ class KnowledgeRetrievalTool(BaseTool):
             except Exception as exc:
                 logger.warning("[ensure_section_steps] 取节步骤失败: %s", exc)
                 continue
-            section_new: List[Dict] = []
+            section_records: List[Dict] = []
             for rec in records or []:
                 rec = rec.model_dump() if hasattr(rec, "model_dump") else dict(rec)
                 meta = dict(rec.get("metadata") or {})
                 rid = str(rec.get("doc_id") or rec.get("id") or "")
-                src = str(meta.get("source_chunk_id") or "")
                 text = (rec.get("text") or rec.get("content") or meta.get("raw_text") or "").strip()
                 if not text:
                     continue
-                if rid in have_ids or (src and src in have_ids) or text in have_text:
-                    continue
                 meta["context_role"] = "section_step" if plan.intent == "procedure" else "section_param"
-                section_new.append({"doc_id": rid, "id": rid, "text": text, "content": text, "metadata": meta})
-                have_text.add(text)
-                have_ids.add(rid)
-            section_new.sort(key=cls._source_order)
-            new_steps.extend(section_new)
+                section_records.append({
+                    "doc_id": rid,
+                    "id": rid,
+                    "text": text,
+                    "content": text,
+                    "metadata": meta,
+                })
+            ordered = dedupe_and_sort_manual_records(section_records)
+            if not ordered:
+                continue
+            remaining = max_steps - len(snapshots)
+            if remaining <= 0:
+                break
+            snapshots.extend(ordered[:remaining])
+            completed_sections.add((document_id, parent_section_id))
 
-        if not new_steps:
+        if not snapshots:
             return selected
-        return selected + new_steps[:max_steps]
+
+        def is_replaced_section_item(item: Dict) -> bool:
+            meta = item.get("metadata") or {}
+            key = (
+                str(meta.get("document_id") or ""),
+                str(meta.get("parent_section_id") or ""),
+            )
+            if key not in completed_sections:
+                return False
+            if plan.intent == "procedure":
+                return (
+                    meta.get("chunk_type") == "step_raw"
+                    or meta.get("chunk_label") in {"step", "step_raw"}
+                    or meta.get("answer_role") == "procedure_step"
+                )
+            return meta.get("chunk_type") == "table"
+
+        retained = [item for item in selected if not is_replaced_section_item(item)]
+        return snapshots + retained
 
     @staticmethod
     def _mark_route(doc: Dict, route: str) -> Dict:

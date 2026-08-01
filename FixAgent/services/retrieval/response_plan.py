@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from services.retrieval.aspects import QuestionAspect
 from services.retrieval.evidence import EvidenceLedger, determine_coverage
+from services.retrieval.provenance import dedupe_and_sort_manual_records
 
 
 _MANUAL_LEADS = ("根据手册", "依据手册", "按照手册", "根据资料", "依据资料")
@@ -65,7 +66,8 @@ class ResponsePlan:
         if self.coverage_status == "conflict":
             return self._conflict_fallback()
 
-        facts = [str(entry.get("text") or "").strip() for entry in self.allowed_evidence]
+        ordered_evidence = _order_manual_evidence(self.allowed_evidence)
+        facts = [str(entry.get("text") or "").strip() for entry in ordered_evidence]
         facts = [text for text in facts if text]
         if not facts:
             return (
@@ -246,7 +248,29 @@ def build_response_plan(
     )
 
 
-def finalize_response(plan: ResponsePlan, draft: str) -> ResponseAuditResult:
+def _order_manual_evidence(entries: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
+    manual = [entry for entry in entries if entry.get("source_type") == "manual"]
+    if not manual:
+        return list(entries)
+    ordered_manual = iter(dedupe_and_sort_manual_records(manual))
+    output: list[dict[str, Any]] = []
+    inserted = False
+    for entry in entries:
+        if entry.get("source_type") == "manual":
+            if not inserted:
+                output.extend(ordered_manual)
+                inserted = True
+            continue
+        output.append(entry)
+    return output
+
+
+def finalize_response(
+    plan: ResponsePlan,
+    draft: str,
+    *,
+    evidence_rendered: bool = False,
+) -> ResponseAuditResult:
     answer = str(draft or "").strip()
     violations: list[str] = []
     allowed_text = _normalized("\n".join(
@@ -256,14 +280,15 @@ def finalize_response(plan: ResponsePlan, draft: str) -> ResponseAuditResult:
 
     if not answer:
         violations.append("empty_answer")
-    for fact in _bound_fact_tokens(answer):
-        if _normalized(fact) not in allowed_text:
-            violations.append(f"unbound_fact:{fact}")
-    for measurement in _MEASUREMENT_RE.finditer(answer):
-        object_text = measurement.group("object")
-        unit = measurement.group("unit")
-        if _normalized(object_text) not in allowed_text or _normalized(unit) not in allowed_text:
-            violations.append(f"unbound_measurement:{object_text}:{measurement.group('value')}:{unit}")
+    if not evidence_rendered:
+        for fact in _bound_fact_tokens(answer):
+            if _normalized(fact) not in allowed_text:
+                violations.append(f"unbound_fact:{fact}")
+        for measurement in _MEASUREMENT_RE.finditer(answer):
+            object_text = measurement.group("object")
+            unit = measurement.group("unit")
+            if _normalized(object_text) not in allowed_text or _normalized(unit) not in allowed_text:
+                violations.append(f"unbound_measurement:{object_text}:{measurement.group('value')}:{unit}")
     if _contradicts_safety_requirement(answer, allowed_text):
         violations.append("unbound_safety_requirement")
     if plan.source_mode == "normal" and answer.startswith(_MANUAL_LEADS):
@@ -272,7 +297,11 @@ def finalize_response(plan: ResponsePlan, draft: str) -> ResponseAuditResult:
         if not all(item in answer for item in plan.missing_aspects) or not any(
             marker in answer for marker in ("没有明确说明", "未找到", "依据不足", "资料不足")
         ):
-            violations.append("partial_missing_disclosure")
+            if evidence_rendered:
+                missing = "、".join(f"“{item}”" for item in plan.missing_aspects)
+                answer += f"\n\n关于{missing}，当前资料没有明确说明。"
+            else:
+                violations.append("partial_missing_disclosure")
     if plan.coverage_status == "unsupported":
         if answer and answer != plan.deterministic_fallback():
             violations.append("unsupported_generic_completion")

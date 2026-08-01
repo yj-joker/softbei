@@ -11,6 +11,7 @@ import time
 import redis
 from typing import List, Dict, Any, Optional
 from config.settings import get_settings
+from services.retrieval.provenance import dedupe_and_sort_manual_records
 
 logger = logging.getLogger(__name__)
 
@@ -646,9 +647,7 @@ class VectorService:
             if chunk_type and metadata.get("chunk_type") != chunk_type:
                 continue
             records.append(record)
-            if len(records) >= limit:
-                break
-        return records
+        return dedupe_and_sort_manual_records(records)[:limit]
 
     def get_section_records(self, document_id: str, parent_section_id: str, limit: int = 6, chunk_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Read same-section vector records for parent/child context expansion."""
@@ -726,9 +725,7 @@ class VectorService:
             if self._metadata_page_value(metadata) != page:
                 continue
             records.append(record)
-            if len(records) >= limit:
-                break
-        return records
+        return dedupe_and_sort_manual_records(records)[:limit]
 
     def get_page_records(
         self,
@@ -909,7 +906,7 @@ class VectorService:
                 offset += page_size
                 if offset >= 100000:  # 安全上限，防止异常死循环
                     break
-            return records
+            return dedupe_and_sort_manual_records(records)
         except Exception as e:
             logger.warning(f"list_document_chunks failed: document_id={document_id} err={e}")
             return []

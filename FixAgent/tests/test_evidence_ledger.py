@@ -109,3 +109,62 @@ def test_ledger_ignores_unstable_or_inactive_sources() -> None:
     }
 
     assert EvidenceLedger.from_react_trace(metadata).entries == []
+
+
+def test_ledger_canonicalizes_parent_child_representations_and_keeps_source_position() -> None:
+    def item(step: int, record_id: str, chunk_type: str, text: str) -> dict:
+        return {
+            "id": record_id,
+            "content": text,
+            "metadata": {
+                "qualification": "qualified",
+                "document_id": "manual-1",
+                "chunk_id": record_id,
+                "source_chunk_id": f"source-{step}",
+                "chunk_type": chunk_type,
+                "parent_chunk_id": "parent-procedure",
+                "parent_section_id": "sec-tensioner",
+                "section_index": 4,
+                "page": 13,
+                "source_index": step,
+                "child_index": step - 1,
+            },
+        }
+
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [{
+                    "name": "knowledge_retrieval",
+                    "result_data": [
+                        item(2, "contextual-2", "text", "章节上下文：2. 执行第2步。"),
+                        item(1, "contextual-1", "step_raw", "1. 执行第1步。"),
+                    ],
+                }],
+            },
+            {
+                "tool_calls": [{
+                    "name": "knowledge_retrieval",
+                    "result_data": [
+                        item(2, "direct-2", "step_raw", "2. 执行第2步。"),
+                    ],
+                }],
+            },
+        ],
+    }
+
+    ledger = EvidenceLedger.from_react_trace(metadata)
+
+    assert [entry["evidence_id"] for entry in ledger.entries] == [
+        "manual:manual-1:source-2",
+        "manual:manual-1:source-1",
+    ]
+    step_2 = ledger.entries[0]
+    assert step_2["text"] == "2. 执行第2步。"
+    assert step_2["source"]["chunk_id"] == "source-2"
+    assert step_2["source"]["source_chunk_id"] == "source-2"
+    assert step_2["source"]["parent_chunk_id"] == "parent-procedure"
+    assert step_2["source"]["parent_section_id"] == "sec-tensioner"
+    assert step_2["source"]["section_index"] == 4
+    assert step_2["source"]["source_index"] == 2
+    assert step_2["source"]["child_index"] == 1

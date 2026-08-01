@@ -56,6 +56,8 @@ class ScopeDecision:
         return asdict(self)
 
     def retrieval_filter(self) -> dict[str, str]:
+        if self.status == OUT_OF_SCOPE:
+            return {"document_id": "", "device_type": ""}
         return {
             "document_id": self.document_id,
             "device_type": "" if self.document_id else self.device_type,

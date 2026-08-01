@@ -14,6 +14,7 @@ from api.main import (
     _filter_evidence_images_to_target_section,
     _narrow_evidence_images_to_query_target_pages,
     _text_evidence_pages,
+    _apply_final_image_contract,
 )
 import api.main as api_main
 from schemas.response import EvidenceImage
@@ -27,6 +28,28 @@ def _img(page: int, title: str = "目标章节") -> EvidenceImage:
         section_title=title,
         document_id="manual-doc",
     )
+
+
+def test_final_image_contract_removes_manual_images_when_policy_forbids_them() -> None:
+    message, images = _apply_final_image_contract(
+        "以下内容来自 AI，仅供参考。",
+        [_img(32, "7.4 左曲轴箱盖")],
+        {"response_policy": {"images_allowed": False}},
+    )
+
+    assert message == "以下内容来自 AI，仅供参考。"
+    assert images == []
+
+
+def test_final_image_contract_removes_dangling_figure_reference_without_image() -> None:
+    message, images = _apply_final_image_contract(
+        "如图所示，检查曲轴油封。",
+        [],
+        {"response_policy": {"images_allowed": True}},
+    )
+
+    assert message == "，检查曲轴油封。"
+    assert images == []
 
 
 def test_evidence_images_follow_text_evidence_pages_and_are_sorted() -> None:
@@ -87,6 +110,35 @@ def test_evidence_images_are_not_filtered_when_text_pages_are_absent() -> None:
     aligned = _align_evidence_images_to_text_evidence_pages(images, {"react_trace": []})
 
     assert [image.page for image in aligned] == [16, 17]
+
+
+def test_evidence_image_alignment_keeps_all_deterministic_answer_pages() -> None:
+    metadata = {
+        "original_user_message": "安装右盖时曲轴油封和离合器拉杆要注意什么？",
+        "_deterministic_answer_evidence_pages": [26, 27],
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [
+                    {
+                        "content": "安装右盖：检查曲轴油封并安装离合器拉杆。",
+                        "metadata": {"chunk_type": "step_raw", "page": 26},
+                    },
+                    {
+                        "content": "A孔周围3mm内不得有密封胶；随后章节为拆卸离合器。",
+                        "metadata": {"chunk_type": "text", "page": 27},
+                    },
+                ],
+            }],
+        }],
+    }
+
+    aligned = _align_evidence_images_to_text_evidence_pages(
+        [_img(26, "6.4 右曲轴箱盖与离合器"), _img(27, "6.4 右曲轴箱盖与离合器")],
+        metadata,
+    )
+
+    assert [image.page for image in aligned] == [26, 27]
 
 
 def test_text_evidence_pages_prefers_deterministic_answer_pages() -> None:

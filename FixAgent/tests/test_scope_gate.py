@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from services.retrieval.scope import ScopeRegistry, decide_scope
+from services.retrieval.scope import ScopeRegistry, decide_scope, get_scope_registry
 
 
 MANUAL_ID = "manual-motorcycle"
@@ -47,6 +47,17 @@ def test_aircraft_query_is_rejected_against_motorcycle_manual() -> None:
     assert decision.document_id == MANUAL_ID
     assert decision.detected_device_type == "aircraft-piston-engine"
     assert decision.reason == "device_document_conflict"
+
+
+def test_aircraft_phrase_with_separated_engine_term_is_detected_without_explicit_scope() -> None:
+    decision = decide_scope(
+        "飞机在运行时发动机出现异响是什么原因？",
+        registry=get_scope_registry(),
+    )
+
+    assert decision.status == "out_of_scope"
+    assert decision.detected_device_type == "aircraft-piston-engine"
+    assert decision.reason == "unsupported_device"
 
 
 def test_generic_engine_question_inherits_confirmed_session_manual() -> None:
@@ -108,3 +119,14 @@ def test_document_scope_filter_does_not_add_a_redundant_device_tag() -> None:
         "document_id": MANUAL_ID,
         "device_type": "",
     }
+
+
+def test_out_of_scope_decision_never_exposes_retrieval_filter() -> None:
+    decision = decide_scope(
+        "改问柴油发电机，启动困难先检查什么？",
+        session_document_id=MANUAL_ID,
+        registry=_registry(),
+    )
+
+    assert decision.status == "out_of_scope"
+    assert decision.retrieval_filter() == {"document_id": "", "device_type": ""}

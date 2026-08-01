@@ -238,6 +238,27 @@ def _tool_payload(tool_call: Mapping[str, Any]) -> tuple[bool, Any]:
     return False, None
 
 
+def _evidence_preference_key(envelope: EvidenceEnvelope) -> tuple[int, int, int, int]:
+    """Rank duplicate evidence without changing its provenance identity.
+
+    A qualified envelope must win over a stale reference-only envelope for the
+    same source identity.  When qualification is equal, prefer the envelope
+    carrying more source metadata and text so later, richer tool results are
+    not discarded by an earlier sparse result.
+    """
+
+    qualification_rank = 1 if envelope.qualification == "qualified" else 0
+    source_completeness = sum(
+        value not in (None, "", [], {}, ()) for value in envelope.source.values()
+    )
+    return (
+        qualification_rank,
+        source_completeness,
+        1 if envelope.text else 0,
+        len(envelope.text),
+    )
+
+
 def extract_evidence_envelopes(metadata: Mapping[str, Any] | None) -> EvidenceTraceResult:
     diagnostics: list[str] = []
     envelopes: list[EvidenceEnvelope] = []
@@ -268,11 +289,16 @@ def extract_evidence_envelopes(metadata: Mapping[str, Any] | None) -> EvidenceTr
             envelopes.extend(adapter(payload, diagnostics))
 
     deduped: list[EvidenceEnvelope] = []
-    seen: set[str] = set()
+    seen: dict[str, int] = {}
     for envelope in envelopes:
-        if envelope.evidence_id not in seen:
-            seen.add(envelope.evidence_id)
+        existing_index = seen.get(envelope.evidence_id)
+        if existing_index is None:
+            seen[envelope.evidence_id] = len(deduped)
             deduped.append(envelope)
+            continue
+        existing = deduped[existing_index]
+        if _evidence_preference_key(envelope) > _evidence_preference_key(existing):
+            deduped[existing_index] = envelope
     diagnostics = list(dict.fromkeys(diagnostics))
     trace_missing = not deduped
     if trace_missing and "evidence_trace_missing" not in diagnostics:

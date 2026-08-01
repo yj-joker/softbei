@@ -259,6 +259,61 @@ def test_manual_payload_keeps_qualified_and_reference_evidence_together() -> Non
     ]
 
 
+def test_manual_duplicate_prefers_later_qualified_evidence_over_reference_only() -> None:
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": {
+                            "results": [
+                                {
+                                    "content": "Stale reference copy.",
+                                    "metadata": {
+                                        "qualification": "reference_only",
+                                        "document_id": "manual-a",
+                                        "chunk_id": "pump-torque",
+                                        "page": 25,
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": {
+                            "qualified_evidence": [
+                                {
+                                    "content": "Exact qualified copy.",
+                                    "metadata": {
+                                        "qualification": "qualified",
+                                        "document_id": "manual-a",
+                                        "chunk_id": "pump-torque",
+                                        "page": 25,
+                                        "document_version": "1.0",
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            },
+        ]
+    }
+
+    result = extract_evidence_envelopes(metadata)
+
+    assert len(result.envelopes) == 1
+    assert result.envelopes[0].qualification == "qualified"
+    assert result.envelopes[0].text == "Exact qualified copy."
+    assert result.envelopes[0].source["document_version"] == "1.0"
+
+
 def test_score_requires_exact_allowed_document_even_when_evidence_text_matches() -> None:
     turn = MaintenanceEvalTurn(query="torque", claim_constraints=[_torque_claim("manual-a")])
 

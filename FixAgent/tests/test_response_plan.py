@@ -130,6 +130,36 @@ def test_bound_facts_pass_without_second_generation() -> None:
     assert audited.answer == draft
 
 
+def test_manual_fallback_deduplicates_and_restores_source_order() -> None:
+    entries = []
+    for step in (4, 2, 1, 3):
+        entries.append({
+            "evidence_id": f"manual:manual-1:source-{step}",
+            "source_type": "manual",
+            "text": f"{step}. 执行第{step}步。",
+            "qualification": "qualified",
+            "source": {
+                "document_id": "manual-1",
+                "chunk_id": f"source-{step}",
+                "source_chunk_id": f"source-{step}",
+                "chunk_type": "step_raw",
+                "parent_section_id": "sec-tensioner",
+                "section_index": 4,
+                "page": 13,
+                "source_index": step,
+                "child_index": step - 1,
+            },
+        })
+    plan = build_response_plan("如何安装涨紧器？", _bundle("complete"), EvidenceLedger(entries))
+
+    answer = plan.deterministic_fallback()
+
+    assert answer.index("1. 执行第1步") < answer.index("2. 执行第2步")
+    assert answer.index("2. 执行第2步") < answer.index("3. 执行第3步")
+    assert answer.index("3. 执行第3步") < answer.index("4. 执行第4步")
+    assert all(answer.count(f"执行第{step}步") == 1 for step in range(1, 5))
+
+
 def test_plan_derives_coverage_instead_of_trusting_claimed_status() -> None:
     bundle = _bundle(
         "conflict",

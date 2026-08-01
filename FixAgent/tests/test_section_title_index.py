@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sys
+import json
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -105,6 +106,61 @@ def test_ordered_title_match_requires_tail_character_to_avoid_entity_overgeneral
     hits = index.find("安装活塞销挡圈时开口位置有什么要求")
 
     assert hits == []
+
+
+def test_explicit_direction_entity_prioritizes_matching_sections() -> None:
+    index = _index_with_titles(
+        ("sec-right-procedure", "右曲轴箱盖与离合器", "6.4 右曲轴箱盖与离合器"),
+        ("sec-right-parts", "右曲轴箱盖装配部件清单", "6.1 右曲轴箱盖装配部件清单"),
+        ("sec-left", "左曲轴箱盖", "7.4 左曲轴箱盖"),
+    )
+
+    hits = index.find("如何安装右曲轴箱盖")
+
+    assert {hit.section_id for hit in hits} == {"sec-right-procedure", "sec-right-parts"}
+
+
+def test_build_scans_every_redis_page_before_matching_titles() -> None:
+    def row(record_id: str, section_id: str, title: str) -> list[object]:
+        metadata = json.dumps({
+            "parent_section_id": section_id,
+            "section_title": title,
+        }).encode()
+        return [
+            f"doc:{record_id}".encode(),
+            [
+                b"metadata", metadata,
+                b"document_id", b"manual-doc",
+                b"id", record_id.encode(),
+            ],
+        ]
+
+    class _Redis:
+        def __init__(self) -> None:
+            self.offsets: list[int] = []
+
+        def execute_command(self, *args):
+            offset = int(args[args.index("LIMIT") + 1])
+            self.offsets.append(offset)
+            if offset == 0:
+                return [3, *row("install", "sec-install", "8.5 安装传动装置"), *row("check", "sec-check", "8.4 检查传动装置")]
+            if offset == 2:
+                return [3, *row("remove", "sec-remove", "8.3 拆卸传动装置")]
+            return [3]
+
+    class _VectorService:
+        INDEX_NAME = "knowledge_vectors_v2"
+
+        def __init__(self) -> None:
+            self.redis = _Redis()
+
+    vector_service = _VectorService()
+    index = SectionTitleIndex()
+
+    index.build(vector_service)
+
+    assert vector_service.redis.offsets == [0, 2]
+    assert [hit.section_id for hit in index.find("传动装置拆卸按什么顺序")] == ["sec-remove"]
 
 
 if __name__ == "__main__":

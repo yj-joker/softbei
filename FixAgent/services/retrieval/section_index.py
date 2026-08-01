@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from services.retrieval.query_constraints import extract_query_constraints
+
 logger = logging.getLogger(__name__)
 
 CHINESE_RE = re.compile(r"[一-鿿]+")
@@ -63,6 +65,15 @@ def _lcs_length(left: str, right: str) -> int:
                 current.append(max(previous[index], current[-1]))
         previous = current
     return previous[-1]
+
+
+def _query_has_action_alias(compact_query: str, obj: str, aliases: tuple[str, ...]) -> bool:
+    for alias in aliases:
+        if len(alias) > 1 and alias in compact_query:
+            return True
+        if len(alias) == 1 and alias in compact_query.replace(obj, ""):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -137,7 +148,8 @@ class SectionTitleIndex:
                 if not raw or len(raw) <= 1:
                     break
 
-                page_count = raw[0] if isinstance(raw[0], int) else 0
+                total_count = raw[0] if isinstance(raw[0], int) else 0
+                returned_count = max(0, (len(raw) - 1) // 2)
                 for i in range(1, len(raw), 2):
                     fields = raw[i + 1]
                     field_dict: Dict[str, str] = {}
@@ -176,9 +188,9 @@ class SectionTitleIndex:
                     if existing is None or len(core_title) > len(existing[0]):
                         seen_sections[key] = (core_title, section_title, doc_id)
 
-                cursor += page_count
-                total_scanned += page_count
-                if cursor >= page_count:
+                cursor += returned_count
+                total_scanned += returned_count
+                if returned_count == 0 or cursor >= total_count:
                     break
 
             # 建索引
@@ -277,6 +289,25 @@ class SectionTitleIndex:
             sorted_hits = sorted(embedded_exact.values(), key=lambda x: x[1], reverse=True)
             return [ref for ref, _score in sorted_hits[:MAX_SECTIONS_PER_QUERY]]
 
+        constraints = extract_query_constraints(query)
+        if constraints.required_terms:
+            entity_matches: Dict[str, tuple[SectionRef, int]] = {}
+            required_terms = tuple(_compact_chinese(term) for term in constraints.required_terms)
+            forbidden_terms = tuple(_compact_chinese(term) for term in constraints.forbidden_terms)
+            for core_title, refs in self._exact.items():
+                compact_core = _compact_chinese(core_title)
+                if not all(term and term in compact_core for term in required_terms):
+                    continue
+                if any(term and term in compact_core for term in forbidden_terms):
+                    continue
+                score = 3000 + sum(len(term) for term in required_terms) * 10
+                for ref in refs:
+                    k = _key(ref)
+                    entity_matches[k] = (ref, score)
+            if entity_matches:
+                sorted_hits = sorted(entity_matches.values(), key=lambda x: x[1], reverse=True)
+                return [ref for ref, _score in sorted_hits[:MAX_SECTIONS_PER_QUERY]]
+
         object_first_action_matches: Dict[str, tuple[SectionRef, int]] = {}
         for core_title, refs in self._exact.items():
             compact_core = _compact_chinese(core_title)
@@ -290,7 +321,7 @@ class SectionTitleIndex:
             if len(obj) < MIN_CORE_LENGTH:
                 continue
             action_aliases = ACTION_TITLE_ALIASES.get(matched_action, (matched_action,))
-            if not any(alias in compact_query for alias in action_aliases) or obj not in compact_query:
+            if not _query_has_action_alias(compact_query, obj, action_aliases) or obj not in compact_query:
                 continue
             score = 2000 + len(obj) * 3 + len(matched_action)
             for ref in refs:

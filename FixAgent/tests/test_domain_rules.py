@@ -213,3 +213,25 @@ def test_blank_device_rule_requires_evidence_binding_to_current_document(monkeyp
     assert bound is not None
     assert bound["status"] == "active"
     assert bound["scope_binding"]["document_id"] == "manual-motorcycle"
+
+
+def test_rule_version_and_applicability_metadata_are_preserved(monkeypatch):
+    fake_vector = FakeVectorService()
+    fake_embedding = FakeEmbedding()
+    monkeypatch.setattr(domain_rules, "get_vector_service", lambda: fake_vector)
+    monkeypatch.setattr(domain_rules, "get_text_embedding", lambda: fake_embedding)
+    payload = {
+        **_sample_payload(),
+        "rule_version": "v3",
+        "document_version": "2026.08",
+        "applicable_components": ["活塞环", "气门油封"],
+        "applicable_actions": ["诊断", "检查"],
+    }
+
+    asyncio.run(domain_rules.upsert_domain_rule(payload))
+
+    metadata = fake_vector.add_calls[0]["metadata"]
+    assert metadata["rule_version"] == "v3"
+    assert metadata["document_version"] == "2026.08"
+    assert metadata["applicable_components"] == ["活塞环", "气门油封"]
+    assert metadata["applicable_actions"] == ["诊断", "检查"]

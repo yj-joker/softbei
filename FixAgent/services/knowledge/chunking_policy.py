@@ -610,7 +610,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             if chunk:
                 emitted_primary.append(chunk)
         elif _looks_like_step(text, label):
-            for part in _split_numbered_steps(text):
+            for child_index, part in enumerate(_split_numbered_steps(text)):
                 chunk = _emit_chunk(
                     chunks,
                     text=part,
@@ -625,6 +625,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                     metadata={
                         **context,
                         "answer_role": "procedure_step",
+                        "child_index": child_index,
                     },
                 )
                 if chunk:

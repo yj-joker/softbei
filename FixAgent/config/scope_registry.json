@@ -17,7 +17,7 @@
     {
       "device_type": "aircraft-piston-engine",
       "display_name": "飞机活塞发动机",
-      "aliases": ["飞机活塞发动机", "飞机发动机", "航空发动机", "aircraft-piston-engine"]
+      "aliases": ["飞机活塞发动机", "飞机发动机", "航空发动机", "飞机", "aircraft-piston-engine"]
     },
     {
       "device_type": "diesel-generator",

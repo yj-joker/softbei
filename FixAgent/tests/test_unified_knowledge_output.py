@@ -48,6 +48,82 @@ def _manual_trace() -> list[dict]:
     }]
 
 
+def _shuffled_procedure_trace(*, partial: bool = False) -> list[dict]:
+    records = []
+    for step in (4, 2, 1, 3):
+        records.append({
+            "id": f"derived-step-{step}",
+            "content": f"{step}. 执行第{step}步。",
+            "metadata": {
+                "qualification": "qualified",
+                "document_id": "manual-1",
+                "document_version": "v1",
+                "chunk_id": f"derived-step-{step}",
+                "source_chunk_id": f"source-step-{step}",
+                "chunk_type": "step_raw",
+                "section_title": "4.4 涨紧器",
+                "parent_section_id": "sec-tensioner",
+                "section_match_ids": ["sec-tensioner"],
+                "section_index": 4,
+                "page": 13,
+                "source_index": step,
+            },
+        })
+    evidence_ids = [f"source-step-{step}" for step in (1, 2, 3, 4)]
+    bundle = {
+        "coverage_status": "partial" if partial else "complete",
+        "aspect_support": [
+            {
+                "aspect_id": "procedure",
+                "aspect_text": "安装步骤",
+                "supported": True,
+                "evidence_ids": evidence_ids,
+            },
+            {
+                "aspect_id": "inspection",
+                "aspect_text": "安装后的复检要求",
+                "supported": not partial,
+                "evidence_ids": evidence_ids if not partial else [],
+            },
+        ],
+        "missing_aspect_ids": ["inspection"] if partial else [],
+        "conflict_eligible": [],
+        "capabilities": {"may_cite_manual": True},
+    }
+    for record in records:
+        record["metadata"]["evidence_bundle"] = bundle
+    return [{
+        "iteration": 1,
+        "action": "tool_call",
+        "tool_calls": [{
+            "name": "knowledge_retrieval",
+            "result_data": records,
+        }],
+    }]
+
+
+def _isolate_manual_formatter_from_vector_store(monkeypatch) -> None:
+    class _VectorService:
+        def get_section_records(self, *args, **kwargs):
+            return []
+
+        def get_page_records(self, *args, **kwargs):
+            return []
+
+    class _SectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: _SectionIndex()))
+
+
 def _rule_trace() -> list[dict]:
     return [{
         "iteration": 0,
@@ -106,6 +182,154 @@ def test_all_manual_knowledge_paths_share_final_audit(mode: str) -> None:
     assert len(finalized.metadata["evidence_ledger_digest"]) == 64
     assert finalized.metadata["scope_decision"]["status"] == "in_scope"
     assert finalized.metadata["response_audit"]["used_fallback"] is True
+
+
+def test_real_manual_formatter_survives_final_audit_in_source_order(monkeypatch) -> None:
+    _isolate_manual_formatter_from_vector_store(monkeypatch)
+    trace = _shuffled_procedure_trace()
+    output = _output("manual_section_direct", trace)
+
+    formatted = main._format_manual_evidence_answer_from_metadata(
+        "如何安装涨紧器？",
+        output.metadata,
+    )
+    finalized = main._finalize_knowledge_output(
+        "如何安装涨紧器？",
+        output,
+        candidate_message=formatted,
+    )
+
+    assert formatted is not None
+    assert not finalized.message.startswith("根据手册")
+    assert finalized.message.index("1. 执行第1步") < finalized.message.index("2. 执行第2步")
+    assert finalized.message.index("2. 执行第2步") < finalized.message.index("3. 执行第3步")
+    assert finalized.message.index("3. 执行第3步") < finalized.message.index("4. 执行第4步")
+    assert finalized.message.count("执行第1步") == 1
+    assert finalized.message.count("执行第2步") == 1
+    assert finalized.message.count("执行第3步") == 1
+    assert finalized.message.count("执行第4步") == 1
+    assert finalized.metadata["response_audit"]["used_fallback"] is False
+
+
+def test_partial_direct_manual_answer_appends_disclosure_without_replacing_steps(monkeypatch) -> None:
+    _isolate_manual_formatter_from_vector_store(monkeypatch)
+    trace = _shuffled_procedure_trace(partial=True)
+    output = _output("manual_section_direct", trace)
+
+    formatted = main._format_manual_evidence_answer_from_metadata(
+        "如何安装涨紧器并在安装后复检？",
+        output.metadata,
+    )
+    finalized = main._finalize_knowledge_output(
+        "如何安装涨紧器并在安装后复检？",
+        output,
+        candidate_message=formatted,
+    )
+
+    assert formatted is not None
+    assert all(f"{step}. 执行第{step}步" in finalized.message for step in range(1, 5))
+    assert finalized.message.index("4. 执行第4步") < finalized.message.index("安装后的复检要求")
+    assert "当前资料没有明确说明" in finalized.message
+    assert finalized.metadata["response_audit"]["used_fallback"] is False
+
+
+def test_direct_manual_answer_requalifies_stale_unsupported_bundle(monkeypatch) -> None:
+    _isolate_manual_formatter_from_vector_store(monkeypatch)
+    trace = _shuffled_procedure_trace()
+    stale_bundle = {
+        "coverage_status": "unsupported",
+        "aspect_support": [],
+        "missing_aspect_ids": [],
+        "conflict_eligible": [],
+        "capabilities": {"may_cite_manual": True},
+    }
+    for record in trace[0]["tool_calls"][0]["result_data"]:
+        record["metadata"]["evidence_bundle"] = stale_bundle
+    output = _output("manual_section_direct", trace)
+
+    formatted = main._format_manual_evidence_answer_from_metadata(
+        "如何安装涨紧器？",
+        output.metadata,
+    )
+    finalized = main._finalize_knowledge_output(
+        "如何安装涨紧器？",
+        output,
+        candidate_message=formatted,
+    )
+
+    assert formatted is not None
+    assert finalized.metadata["coverage_status"] == "complete"
+    assert finalized.metadata["response_audit"]["used_fallback"] is False
+    assert all(f"{step}. 执行第{step}步" in finalized.message for step in range(1, 5))
+
+
+def test_direct_manual_answer_discards_conflicts_outside_selected_source(monkeypatch) -> None:
+    _isolate_manual_formatter_from_vector_store(monkeypatch)
+    trace = _shuffled_procedure_trace()
+    stale_bundle = {
+        "coverage_status": "conflict",
+        "aspect_support": [{
+            "aspect_id": "procedure",
+            "aspect_text": "安装步骤",
+            "supported": True,
+            "evidence_ids": ["source-step-1"],
+        }],
+        "missing_aspect_ids": [],
+        "conflict_eligible": [{
+            "field": "相邻章节参数",
+            "values": ["11", "12"],
+            "candidate_ids": ["irrelevant-table-row-1", "irrelevant-table-row-2"],
+        }],
+        "capabilities": {"may_cite_manual": True},
+    }
+    for record in trace[0]["tool_calls"][0]["result_data"]:
+        record["metadata"]["evidence_bundle"] = stale_bundle
+    output = _output("manual_section_direct", trace)
+
+    formatted = main._format_manual_evidence_answer_from_metadata("如何安装涨紧器？", output.metadata)
+    finalized = main._finalize_knowledge_output(
+        "如何安装涨紧器？",
+        output,
+        candidate_message=formatted,
+    )
+
+    assert finalized.metadata["coverage_status"] == "complete"
+    assert finalized.metadata["response_audit"]["used_fallback"] is False
+
+
+def test_direct_manual_answer_keeps_conflict_bound_to_selected_source(monkeypatch) -> None:
+    _isolate_manual_formatter_from_vector_store(monkeypatch)
+    trace = _shuffled_procedure_trace()
+    conflict_bundle = {
+        "coverage_status": "conflict",
+        "aspect_support": [{
+            "aspect_id": "procedure",
+            "aspect_text": "安装步骤",
+            "supported": True,
+            "evidence_ids": ["source-step-1"],
+        }],
+        "missing_aspect_ids": [],
+        "conflict_eligible": [{
+            "field": "第一步参数",
+            "values": ["11", "12"],
+            "candidate_ids": ["source-step-1"],
+        }],
+        "capabilities": {"may_cite_manual": True},
+    }
+    for record in trace[0]["tool_calls"][0]["result_data"]:
+        record["metadata"]["evidence_bundle"] = conflict_bundle
+    output = _output("manual_section_direct", trace)
+
+    formatted = main._format_manual_evidence_answer_from_metadata("如何安装涨紧器？", output.metadata)
+    finalized = main._finalize_knowledge_output(
+        "如何安装涨紧器？",
+        output,
+        candidate_message=formatted,
+    )
+
+    assert finalized.metadata["coverage_status"] == "conflict"
+    assert finalized.metadata["response_audit"]["used_fallback"] is True
+    assert "存在冲突" in finalized.message
 
 
 def test_domain_rule_direct_uses_same_finalizer() -> None:
@@ -194,6 +418,128 @@ def test_domain_rule_direct_is_finalized_before_direct_stream(monkeypatch) -> No
     assert output.metadata["response_plan_id"].startswith("response-plan-")
 
 
+def test_direct_exact_section_bundle_preserves_partial_coverage() -> None:
+    metadata = {
+        "scope_decision": {"status": "in_scope"},
+        "original_user_message": "水泵装配里有水泵密封圈吗？叶轮轴向间隙是多少？",
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"source": "section_text_lookup"},
+                "result_data": [{
+                    "id": "water-pump-seal",
+                    "content": "水泵密封圈 1 个。",
+                    "metadata": {
+                        "chunk_id": "water-pump-seal",
+                        "original_title_match": True,
+                    },
+                }],
+            }],
+        }],
+    }
+    original = {
+        "coverage_status": "partial",
+        "aspect_support": [{
+            "aspect_id": "seal",
+            "aspect_text": "是否有水泵密封圈",
+            "supported": True,
+            "evidence_ids": ["water-pump-seal"],
+        }],
+        "missing_aspect_ids": ["impeller-clearance"],
+        "capabilities": {"may_cite_manual": True},
+    }
+
+    bundle = main._direct_answer_evidence_bundle(metadata, original)
+
+    assert bundle is not None
+    assert bundle["coverage_status"] == "partial"
+    assert bundle["missing_aspect_ids"] == ["impeller-clearance"]
+
+
+def test_direct_exact_section_bundle_upgrades_stale_partial_for_complete_procedure() -> None:
+    metadata = {
+        "scope_decision": {"status": "in_scope"},
+        "original_user_message": "如何安装右曲轴箱盖",
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"source": "section_text_lookup"},
+                "result_data": [{
+                    "id": "right-cover-install",
+                    "content": "装上定位销和全新的右曲轴箱盖垫片，再盖上右曲轴箱盖。",
+                    "metadata": {
+                        "chunk_id": "right-cover-install",
+                        "original_title_match": True,
+                    },
+                }],
+            }],
+        }],
+    }
+    original = {
+        "coverage_status": "partial",
+        "aspect_support": [{
+            "aspect_id": "stale-retrieval-aspect",
+            "aspect_text": "安装右曲轴箱盖",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        "missing_aspect_ids": ["stale-retrieval-aspect"],
+        "capabilities": {"may_cite_manual": True},
+    }
+
+    bundle = main._direct_answer_evidence_bundle(metadata, original)
+
+    assert bundle is not None
+    assert bundle["coverage_status"] == "complete"
+    assert bundle["missing_aspect_ids"] == []
+
+
+def test_direct_exact_section_bundle_keeps_non_parameter_missing_aspect_partial() -> None:
+    metadata = {
+        "scope_decision": {"status": "in_scope"},
+        "original_user_message": "如何安装右盖并检查曲轴油封",
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"source": "section_text_lookup"},
+                "result_data": [{
+                    "id": "right-cover-install",
+                    "content": "装上定位销和全新的右曲轴箱盖垫片，再盖上右曲轴箱盖。",
+                    "metadata": {
+                        "chunk_id": "right-cover-install",
+                        "original_title_match": True,
+                    },
+                }],
+            }],
+        }],
+    }
+    original = {
+        "coverage_status": "partial",
+        "aspect_support": [
+            {
+                "aspect_id": "cover-install",
+                "aspect_text": "安装右曲轴箱盖",
+                "supported": True,
+                "evidence_ids": ["right-cover-install"],
+            },
+            {
+                "aspect_id": "seal-check",
+                "aspect_text": "检查曲轴油封",
+                "supported": False,
+                "evidence_ids": [],
+            },
+        ],
+        "missing_aspect_ids": ["seal-check"],
+        "capabilities": {"may_cite_manual": True},
+    }
+
+    bundle = main._direct_answer_evidence_bundle(metadata, original)
+
+    assert bundle is not None
+    assert bundle["coverage_status"] == "partial"
+    assert bundle["missing_aspect_ids"] == ["seal-check"]
+
+
 def test_rag_fast_path_is_finalized_before_return(monkeypatch) -> None:
     trace_item = _manual_trace()[0]["tool_calls"][0]["result_data"][0]
     item = SimpleNamespace(
@@ -241,6 +587,61 @@ async def _async_empty(*args, **kwargs):
     return []
 
 
+def test_non_stream_policy_direct_skips_all_manual_overrides(monkeypatch) -> None:
+    request = ChatRequest(
+        session_id="fallback-finalized",
+        message="飞机在运行时发动机出现异响是什么原因？",
+    )
+    policy = {
+        "mode": "MAINTENANCE_AI_FALLBACK",
+        "manual_citation_allowed": False,
+        "images_allowed": False,
+    }
+    input_data = AgentInput(
+        user_message=request.message,
+        session_id=request.session_id,
+        context={
+            "intent_decision": {"intent": "fault_diagnosis"},
+            "scope_decision": {"status": "out_of_scope", "reason": "unsupported_device"},
+            "response_policy": policy,
+        },
+    )
+    direct_output = AgentOutput(
+        agent_name="fix_agent",
+        message="知识库没有该设备对应文档，以下内容来自 AI，仅供参考。",
+        tools_used=[],
+        metadata={
+            "execution_mode": "maintenance_ai_fallback_direct",
+            "deterministic_direct": True,
+            "response_policy": policy,
+        },
+    )
+
+    async def _direct(*args, **kwargs):
+        return direct_output
+
+    async def _unexpected_async(*args, **kwargs):
+        pytest.fail("manual lookup must not run for policy-direct output")
+
+    def _unexpected_sync(*args, **kwargs):
+        pytest.fail("manual formatter must not run for policy-direct output")
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_response_policy_direct", _direct)
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _unexpected_async)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", _unexpected_sync)
+    monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", _unexpected_sync)
+    monkeypatch.setattr(main, "_collect_direct_section_images", _unexpected_async)
+    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", _unexpected_sync)
+
+    response = asyncio.run(main.chat(request))
+
+    assert response.message == direct_output.message
+    assert not response.tools_used
+    assert response.evidence_images == []
+    assert response.metadata["response_policy"]["mode"] == "MAINTENANCE_AI_FALLBACK"
+
+
 def test_non_stream_endpoint_audits_after_manual_override(monkeypatch) -> None:
     output = _output("react", _manual_trace())
     output.message = "火花塞间隙标准为 0.7 到 0.9 mm。"
@@ -252,7 +653,14 @@ def test_non_stream_endpoint_audits_after_manual_override(monkeypatch) -> None:
     input_data = AgentInput(
         user_message=request.message,
         session_id=request.session_id,
-        context={"scope_decision": {"status": "in_scope"}},
+        context={
+            "scope_decision": {"status": "in_scope"},
+            "response_policy": {
+                "mode": "PENDING_RETRIEVAL",
+                "manual_citation_allowed": False,
+                "images_allowed": False,
+            },
+        },
     )
 
     class _Agent:
@@ -285,6 +693,7 @@ def test_non_stream_endpoint_audits_after_manual_override(monkeypatch) -> None:
 
     assert "1.2" not in response.message
     assert response.metadata["coverage_status"] == "complete"
+    assert response.metadata["deterministic_manual_evidence_answer"] is True
 
 
 def test_non_stream_table_override_does_not_read_uninitialized_manual_answer(monkeypatch) -> None:

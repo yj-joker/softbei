@@ -14,6 +14,10 @@ from services.retrieval.aspects import (
     split_question_aspects,
 )
 from services.retrieval.evidence import determine_coverage
+from services.retrieval.query_constraints import (
+    candidate_constraint_conflicts,
+    extract_query_constraints,
+)
 
 
 QUALIFIED = "qualified"
@@ -42,6 +46,7 @@ def qualify_candidates(
     references: List[Dict[str, Any]] = []
     excluded: List[Dict[str, Any]] = []
     effective_aspects = list(aspects) if aspects is not None else split_question_aspects(query)
+    query_constraints = extract_query_constraints(query)
 
     for index, raw in enumerate(candidates or []):
         if not isinstance(raw, dict):
@@ -60,6 +65,10 @@ def qualify_candidates(
             requires_strict_evidence=requires_strict_evidence,
         )
         metadata.update(matches)
+        constraint_conflicts = candidate_constraint_conflicts(query_constraints, item)
+        if constraint_conflicts:
+            status = EXCLUDED
+            reasons = list(reasons) + ["entity_constraint_conflict", *constraint_conflicts]
         metadata["qualification"] = status
         metadata["qualification_reasons"] = reasons
         metadata["direct_answer_eligible"] = status == QUALIFIED
