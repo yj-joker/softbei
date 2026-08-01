@@ -18,7 +18,7 @@ const visibleSessions = computed(() => {
   return props.sessions.filter((session) => (session.title || '').toLowerCase().includes(q))
 })
 
-const modeTitle = computed(() => (props.mode === 'chat' ? '聊天记录' : '检修模式'))
+const modeTitle = computed(() => (props.mode === 'chat' ? '聊天记录' : '检修记录'))
 const modeBadge = computed(() => (props.mode === 'chat' ? '聊天' : 'MAINTENANCE'))
 
 function formatTime(timestamp) {
