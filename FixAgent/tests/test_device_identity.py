@@ -209,6 +209,29 @@ def test_hallucinated_raw_device_span_invalidates_all_device_identity_fields() -
     assert query.has_explicit_device is False
 
 
+def test_component_and_orientation_are_not_promoted_to_device_identity() -> None:
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "右曲轴箱盖",
+            "device_name": "右曲轴箱盖",
+            "device_category": "",
+            "carrier_or_application": "",
+            "manufacturer": "",
+            "model": "",
+            "component": "曲轴箱盖",
+            "action": "安装",
+            "orientation": "右",
+        },
+        raw_query="如何安装右曲轴箱盖",
+    )
+
+    assert query.has_explicit_device is False
+    assert query.device_name == ""
+    assert query.component == "曲轴箱盖"
+    assert query.action == "安装"
+    assert query.orientation == "右"
+
+
 def test_same_device_name_is_not_rejected_for_different_category_taxonomies() -> None:
     catalog = DeviceCatalog.from_manifests(
         [

@@ -67,6 +67,30 @@ class QueryContract:
         query = _text(raw_query)
         raw_span = _text(data.get("raw_device_span"))
         span_is_grounded = bool(raw_span and raw_span.casefold() in query.casefold())
+        component = _text(data.get("component"))
+        orientation = _text(data.get("orientation"))
+        component_forms = {
+            value
+            for value in (
+                _normalized(component),
+                _normalized(orientation + component),
+                _normalized(component + orientation),
+            )
+            if value
+        }
+        category = _normalized(data.get("device_category"))
+        has_identity_qualifier = bool(
+            _text(data.get("carrier_or_application"))
+            or _text(data.get("manufacturer"))
+            or _text(data.get("model"))
+            or (category and category not in component_forms)
+        )
+        if (
+            span_is_grounded
+            and _normalized(raw_span) in component_forms
+            and not has_identity_qualifier
+        ):
+            span_is_grounded = False
         if not span_is_grounded:
             raw_span = ""
             for field in ("device_name", *_IDENTITY_FIELDS):
