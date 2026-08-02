@@ -273,6 +273,16 @@ class IntentRouter:
             decision = fallback
 
         decision = self._apply_deterministic_overrides(decision, text)
+        if (
+            text
+            and decision.target_layer in {"document_content", "operation_task"}
+            and not decision.raw_device_span
+        ):
+            try:
+                contract = await self._extract_query_contract_with_llm(text)
+                decision = self._merge_query_contract(decision, contract)
+            except Exception as exc:
+                logger.warning("[intent_router] focused query contract extraction failed: %s", exc)
         decision = self._apply_strategy(decision)
         decision = self._apply_safety_override(decision, text)
         return decision
@@ -349,6 +359,52 @@ class IntentRouter:
             orientation=query_contract.orientation,
             risk_level=query_contract.risk_level,
         )
+
+    async def _extract_query_contract_with_llm(self, text: str) -> QueryContract:
+        prompt = (
+            "你是当前问题的设备身份抽取器，只输出 JSON，并且必须输出全部指定字段。"
+            "raw_device_span 必须逐字复制当前问题中连续出现的、能区分设备身份的最长设备短语；"
+            "短语应包含用户明确说出的载体或应用与设备类别。"
+            "如果当前问题只说部件、故障或操作，没有明确设备身份，raw_device_span 必须为空字符串。"
+            "不得从常识、对话历史、候选文档或知识库补写用户本轮没有说出的身份。"
+            "返回字段 raw_device_span、device_name、device_category、carrier_or_application、"
+            "manufacturer、model、component、action、orientation、risk_level；未知字段使用空字符串。"
+        )
+        response = await self.llm_service.chat(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=240,
+            response_format={"type": "json_object"},
+            model=self.settings.intent_router_model,
+        )
+        data = json.loads(response.get("content") or "{}")
+        return QueryContract.from_mapping(data, raw_query=text)
+
+    @staticmethod
+    def _merge_query_contract(
+        decision: IntentDecision,
+        contract: QueryContract,
+    ) -> IntentDecision:
+        data = decision.model_dump()
+        for field in (
+            "raw_device_span",
+            "device_name",
+            "device_category",
+            "carrier_or_application",
+            "manufacturer",
+            "model",
+            "component",
+            "action",
+            "orientation",
+            "risk_level",
+        ):
+            value = getattr(contract, field)
+            if value:
+                data[field] = value
+        return IntentDecision(**data)
 
     def _classify_by_rules(self, text: str, images: List[str]) -> IntentDecision:
         task_action = self._infer_task_action(text, images)

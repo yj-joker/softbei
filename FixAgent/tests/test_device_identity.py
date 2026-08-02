@@ -147,6 +147,19 @@ def test_generic_document_name_never_prefix_matches_a_more_specific_device() -> 
     assert result.conflicts == ("device_name",)
 
 
+def test_grounded_raw_span_overrides_model_generic_device_name() -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    query = _contract(
+        "飞机发动机异响是什么原因",
+        raw_device_span="飞机发动机",
+        device_name="发动机",
+        device_category="发动机",
+    )
+
+    assert query.device_name == "飞机发动机"
+    assert catalog.match(query)[0].relation == "unmatched"
+
+
 def test_model_and_manufacturer_conflicts_are_hard_scope_conflicts() -> None:
     catalog = DeviceCatalog.from_manifests(
         [

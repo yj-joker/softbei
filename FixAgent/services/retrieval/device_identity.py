@@ -75,7 +75,7 @@ class QueryContract:
             raw_query=query,
             intent=_text(data.get("intent")),
             raw_device_span=raw_span,
-            device_name=_text(data.get("device_name")) or raw_span,
+            device_name=raw_span or _text(data.get("device_name")),
             device_category=_text(data.get("device_category")),
             carrier_or_application=_text(data.get("carrier_or_application")),
             manufacturer=_text(data.get("manufacturer")),

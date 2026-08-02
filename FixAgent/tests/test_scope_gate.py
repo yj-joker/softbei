@@ -267,6 +267,27 @@ def test_uncertain_device_identity_never_exposes_a_retrieval_filter() -> None:
     assert decision.retrieval_filter() == {}
 
 
+def test_selected_document_does_not_override_uncertain_explicit_identity() -> None:
+    query = "发动机异响是什么原因？"
+
+    decision = decide_scope(
+        query,
+        request_document_id=MANUAL_ID,
+        query_contract=QueryContract.from_mapping(
+            {
+                "raw_device_span": "发动机",
+                "device_category": "发动机",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
+    assert decision.status == "unknown"
+    assert decision.reason == "identity_not_distinguishing"
+    assert decision.retrieval_filter() == {}
+
+
 def test_catalog_fallback_does_not_promote_generic_document_name_to_explicit_identity() -> None:
     query = "飞机发动机异响是什么原因？"
     catalog = DeviceCatalog.from_manifests(

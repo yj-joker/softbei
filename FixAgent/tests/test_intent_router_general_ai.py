@@ -70,6 +70,37 @@ class _IdentityAwareLLM:
         }
 
 
+class _IntentThenIdentityLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            payload = {
+                "target_layer": "document_content",
+                "target_object": "发动机异响",
+                "user_goal": "查找原因",
+                "intent": "fault_diagnosis",
+                "task_action": "find_cause",
+                "confidence": 0.95,
+            }
+        else:
+            payload = {
+                "raw_device_span": "飞机发动机",
+                "device_name": "飞机发动机",
+                "device_category": "发动机",
+                "carrier_or_application": "飞机",
+                "manufacturer": "",
+                "model": "",
+                "component": "发动机",
+                "action": "fault_diagnosis",
+                "orientation": "",
+                "risk_level": "medium",
+            }
+        return {"content": json.dumps(payload, ensure_ascii=False)}
+
+
 def test_general_knowledge_overrides_llm_maintenance_bias() -> None:
     decision = asyncio.run(
         IntentRouter(_MaintenanceBiasedLLM()).classify("给我讲讲高等数学中级数的概念")
@@ -121,6 +152,20 @@ def test_same_intent_call_extracts_open_vocabulary_query_identity() -> None:
     assert decision.carrier_or_application == "卡车"
     assert decision.component == "发动机"
     assert decision.action == "fault_diagnosis"
+
+
+def test_missing_primary_identity_is_completed_by_focused_query_contract_extraction() -> None:
+    llm = _IntentThenIdentityLLM()
+
+    decision = asyncio.run(
+        IntentRouter(llm).classify("飞机发动机有异响通常是什么原因")
+    )
+
+    assert llm.calls == 2
+    assert decision.intent == "fault_diagnosis"
+    assert decision.raw_device_span == "飞机发动机"
+    assert decision.carrier_or_application == "飞机"
+    assert decision.component == "发动机"
 
 
 def test_ungrounded_device_span_from_model_is_discarded() -> None:

@@ -337,6 +337,17 @@ def _decide_dynamic_scope(
                 request_document_id=requested_document_id,
                 request_device_type=requested_device_type,
             )
+        if query.has_explicit_device and comparison.relation == UNCERTAIN:
+            return _dynamic_decision(
+                UNKNOWN_SCOPE,
+                "request_document",
+                comparison.reason or "identity_not_distinguishing",
+                query=query,
+                document=document,
+                comparison=comparison,
+                request_document_id=requested_document_id,
+                request_device_type=requested_device_type,
+            )
         if requested_device_type and not _request_device_matches(requested_device_type, document):
             return _dynamic_decision(
                 OUT_OF_SCOPE,
@@ -385,6 +396,16 @@ def _decide_dynamic_scope(
                 comparison=comparison,
                 request_device_type=requested_device_type,
             )
+        if query.has_explicit_device and comparison.relation == UNCERTAIN:
+            return _dynamic_decision(
+                UNKNOWN_SCOPE,
+                "request_device",
+                comparison.reason or "identity_not_distinguishing",
+                query=query,
+                document=document,
+                comparison=comparison,
+                request_device_type=requested_device_type,
+            )
         return _dynamic_decision(
             IN_SCOPE,
             "request_device",
@@ -403,6 +424,15 @@ def _decide_dynamic_scope(
                 OUT_OF_SCOPE,
                 "session_document",
                 "explicit_device_switch",
+                query=query,
+                document=session_document,
+                comparison=comparison,
+            )
+        if query.has_explicit_device and comparison.relation == UNCERTAIN:
+            return _dynamic_decision(
+                UNKNOWN_SCOPE,
+                "session_document",
+                comparison.reason or "identity_not_distinguishing",
                 query=query,
                 document=session_document,
                 comparison=comparison,
@@ -430,6 +460,15 @@ def _decide_dynamic_scope(
                     OUT_OF_SCOPE,
                     "session_device",
                     "explicit_device_switch",
+                    query=query,
+                    document=document,
+                    comparison=comparison,
+                )
+            if query.has_explicit_device and comparison.relation == UNCERTAIN:
+                return _dynamic_decision(
+                    UNKNOWN_SCOPE,
+                    "session_device",
+                    comparison.reason or "identity_not_distinguishing",
                     query=query,
                     document=document,
                     comparison=comparison,
