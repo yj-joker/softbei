@@ -7,7 +7,8 @@ JAVA_TEMPLATE="$ROOT/../../package_templates/conf/weixiu.env.example"
 INSTALL_CONFIG="$ROOT/config/install.env"
 INSTALLER="$ROOT/install.sh"
 VERIFY="$ROOT/verify.sh"
-HELPER="$ROOT/lib/service-token.sh"
+PRODUCTION_HELPER="${SERVICE_TOKEN_HELPER_UNDER_TEST:-$ROOT/lib/service-token.sh}"
+HELPER="$PRODUCTION_HELPER"
 FAILURES=0
 
 pass() { printf '[PASS] %s\n' "$1"; }
@@ -22,17 +23,36 @@ assert_not_contains() {
     local file="$1" text="$2" name="$3"
     ! contains "$file" "$text" && pass "$name" || fail "$name"
 }
+mode_matches() {
+    local actual="$1" expected="$2" platform="$3"
+    case "$platform" in
+        msys*|cygwin*|win32*)
+            [[ "$actual" == '644' && ( "$expected" == '600' || "$expected" == '640' || "$expected" == '644' ) ]]
+            ;;
+        *)
+            [[ "$actual" == "$expected" ]]
+            ;;
+    esac
+}
 assert_mode() {
     local file="$1" expected="$2" name="$3" actual
     actual="$(stat -c '%a' "$file")"
-    if [[ "$actual" == "$expected" ]]; then
-        pass "$name"
-    elif [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32* ]] && [[ "$actual" == '644' && ( "$expected" == '640' || "$expected" == '600' ) || "$actual" == '755' && "$expected" == '644' ]]; then
-        pass "$name（Windows Git Bash stat权限兼容）"
+    if mode_matches "$actual" "$expected" "$OSTYPE"; then
+        if [[ "$actual" == "$expected" ]]; then
+            pass "$name"
+        else
+            pass "$name（Windows Git Bash stat仅验证644兼容映射）"
+        fi
     else
         fail "$name（实际${actual}，期望${expected}）"
     fi
 }
+
+if mode_matches '755' '644' 'msys'; then
+    fail 'Windows动态stat兼容不得将755映射为期望644'
+else
+    pass 'Windows动态stat兼容明确拒绝755映射为期望644'
+fi
 
 assert_contains "$INSTALL_CONFIG" 'API_TOKEN=' 'install.env声明API_TOKEN'
 assert_contains "$INSTALL_CONFIG" 'INTERNAL_TOKEN=' 'install.env声明INTERNAL_TOKEN'
@@ -48,8 +68,9 @@ assert_contains "$INSTALLER" 'write_service_token_secrets "$SECRETS_FILE"' '安�
 assert_contains "$INSTALLER" 'mkdir -p "$APP_STAGE/lib"' '安装器创建运行时helper目录'
 assert_contains "$INSTALLER" 'chmod 0640 "$CONFIG_ROOT/fixagent.env"' '安装器FixAgent服务env权限为0640'
 assert_contains "$INSTALLER" 'chmod 0640 "$CONFIG_ROOT/weixiu.env"' '安装器Java服务env权限为0640'
-assert_contains "$HELPER" 'chmod 0600 "$secrets_file"' '共享secrets写入权限为0600'
-assert_contains "$HELPER" 'chmod 0640 "$fixagent_env" "$weixiu_env"' '共享渲染服务env权限为0640'
+assert_contains "$PRODUCTION_HELPER" 'chmod 0600 "$secrets_file"' 'Windows动态stat局限由生产helper静态0600语句补强'
+assert_contains "$PRODUCTION_HELPER" 'chmod 0640 "$fixagent_env" "$weixiu_env"' 'Windows动态stat局限由生产helper静态0640语句补强'
+assert_contains "$PRODUCTION_HELPER" 'chmod 0644 "$target_file"' 'Windows动态stat局限由生产helper静态0644语句补强'
 assert_contains "$INSTALLER" 'source "$PACKAGE_ROOT/lib/service-token.sh"' '安装器加载共享令牌helper'
 assert_contains "$INSTALLER" 'load_service_token_files "$INSTALL_CONFIG" "$SECRETS_FILE"' '安装器按显式输入优先加载令牌'
 assert_contains "$INSTALLER" 'resolve_service_tokens' '安装器调用双令牌解析'
@@ -202,22 +223,44 @@ else
     app_stage="$tmpdir/app-stage"
     mkdir -p "$app_stage/lib"
     copy_runtime_service_helper "$HELPER" "$app_stage/lib/service-token.sh"
-    assert_mode "$app_stage/lib/service-token.sh" '644' '模拟运行时helper复制权限为644'
+    case "$OSTYPE" in
+        msys*|cygwin*|win32*)
+            pass 'Windows Git Bash脚本动态stat无法表达生产helper的0644，以静态chmod语句补强且不接受755映射'
+            ;;
+        *)
+            assert_mode "$app_stage/lib/service-token.sh" '644' '非Windows精确验证运行时helper复制权限为644'
+            ;;
+    esac
 
     install_secrets="$tmpdir/install-secrets.env"
-    printf 'API_TOKEN=old-file-api\nINTERNAL_TOKEN=old-file-internal\n' > "$install_secrets"
-    chmod 0600 "$install_secrets"
-    assert_mode "$install_secrets" '600' '模拟install-secrets写入权限为600'
+    printf 'OTHER=value\n' > "$install_secrets"
+    API_TOKEN='written-api-value'
+    INTERNAL_TOKEN='written-internal-value'
+    write_service_token_secrets "$install_secrets"
+    assert_contains "$install_secrets" 'OTHER=value' '实际install-secrets写入保留其他非token配置'
+    assert_contains "$install_secrets" 'API_TOKEN=written-api-value' '实际install-secrets写入API令牌'
+    assert_contains "$install_secrets" 'INTERNAL_TOKEN=written-internal-value' '实际install-secrets写入internal令牌'
+    assert_mode "$install_secrets" '600' '实际调用write_service_token_secrets后权限为600'
 
     collision_secrets="$tmpdir/collision-secrets.env"
-    printf 'API_TOKEN=old-api\nINTERNAL_TOKEN=old-internal\n' > "$collision_secrets"
+    collision_before="$tmpdir/collision-secrets.before"
+    printf 'OTHER=preserved\nAPI_TOKEN=old-api\nINTERNAL_TOKEN=old-internal\n' > "$collision_secrets"
+    cp "$collision_secrets" "$collision_before"
     collision_output="$tmpdir/collision-output"
     if bash -c 'set -Eeuo pipefail; source "$1"; random_service_token() { printf collision-value; }; API_TOKEN=""; INTERNAL_TOKEN=""; resolve_service_tokens; write_service_token_secrets "$2"' _ "$HELPER" "$collision_secrets" >"$collision_output" 2>&1; then
-        fail '连续随机碰撞阻止secrets落盘'
-    elif grep -Fq 'collision-value' "$collision_output" || grep -Fq 'API_TOKEN=old-api' "$collision_secrets" || grep -Fq 'INTERNAL_TOKEN=old-internal' "$collision_secrets"; then
-        pass '连续随机碰撞失败且不覆盖旧secrets'
+        fail '连续随机碰撞命令独立断言失败'
     else
-        fail '连续随机碰撞失败后secrets状态异常'
+        pass '连续随机碰撞命令独立断言失败'
+    fi
+    if grep -Fq 'collision-value' "$collision_output"; then
+        fail '连续随机碰撞输出独立断言不含碰撞值'
+    else
+        pass '连续随机碰撞输出独立断言不含碰撞值'
+    fi
+    if cmp -s "$collision_before" "$collision_secrets"; then
+        pass '连续随机碰撞前后secrets逐字节完全一致'
+    else
+        fail '连续随机碰撞前后secrets逐字节完全一致'
     fi
 fi
 
