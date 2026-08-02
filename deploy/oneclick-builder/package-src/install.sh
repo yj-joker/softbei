@@ -194,17 +194,8 @@ log "$CURRENT_STAGE"
 ensure_service_user
 install -d -o root -g "$APP_GROUP" -m 0750 "$CONFIG_ROOT"
 install -d -o root -g root -m 0750 "$STATE_ROOT"
-if [[ -f "$INSTALL_CONFIG" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$INSTALL_CONFIG"
-    set +a
-fi
-if [[ -f "$SECRETS_FILE" ]]; then
-    set -a
-    # shellcheck disable=SC1090
-    source "$SECRETS_FILE"
-    set +a
+if [[ -f "$INSTALL_CONFIG" || -f "$SECRETS_FILE" ]]; then
+    load_service_token_files "$INSTALL_CONFIG" "$SECRETS_FILE"
 fi
 
 if [[ -d /var/lib/mysql-oracle/mysql && ! -f "$SECRETS_FILE" && -z "${MYSQL_ROOT_PASSWORD:-}" ]]; then
@@ -565,9 +556,8 @@ MYSQL_USER=${MYSQL_APP_USER}
 MYSQL_PASSWORD=${MYSQL_APP_PASSWORD}
 JAVA_SERVICE_URL=http://127.0.0.1:8080
 RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@127.0.0.1:5672/
-INTERNAL_TOKEN=${INTERNAL_TOKEN}
-API_TOKEN=${API_TOKEN}
 EOF
+chmod 0600 "$CONFIG_ROOT/fixagent.env"
 
 cat > "$CONFIG_ROOT/weixiu.env" <<EOF
 SPRING_PROFILES_ACTIVE=prod
@@ -598,15 +588,14 @@ REDIS_HOST=${REDIS_HOST}
 REDIS_PORT=${REDIS_PORT}
 REDIS_PASSWORD=${REDIS_PASSWORD}
 PYTHON_SERVICE_URL=http://127.0.0.1:8000
-INTERNAL_TOKEN=${INTERNAL_TOKEN}
-AI_API_TOKEN=${API_TOKEN}
 MINIO_ENDPOINT=http://127.0.0.1:9000
 MINIO_PUBLIC_BASE_URL=/files
 MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
 MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
 MINIO_BUCKET=weixiu-private-wendang
 EOF
-chmod 0640 "$CONFIG_ROOT/fixagent.env" "$CONFIG_ROOT/weixiu.env"
+render_service_token_envs "$CONFIG_ROOT/fixagent.env" "$CONFIG_ROOT/weixiu.env"
+chmod 0600 "$CONFIG_ROOT/weixiu.env"
 chown root:"$APP_GROUP" "$CONFIG_ROOT/fixagent.env" "$CONFIG_ROOT/weixiu.env"
 
 cat > /etc/systemd/system/maintai-fixagent.service <<EOF

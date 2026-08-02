@@ -16,18 +16,12 @@ if [[ "$EUID" -ne 0 || ! -r "$FIX_ENV" || ! -r "$JAVA_ENV" || ! -r "$SECRETS_ENV
     exit 1
 fi
 
-set -a
 # shellcheck disable=SC1090
-source "$FIX_ENV"
-FIX_API_TOKEN="${API_TOKEN:-}"
-FIX_INTERNAL_TOKEN="${INTERNAL_TOKEN:-}"
-source "$JAVA_ENV"
-JAVA_API_TOKEN="${AI_API_TOKEN:-}"
-JAVA_INTERNAL_TOKEN="${INTERNAL_TOKEN:-}"
-JAVA_PROFILE="${SPRING_PROFILES_ACTIVE:-}"
-source "$SECRETS_ENV"
-SECRET_API_TOKEN="${API_TOKEN:-}"
-SECRET_INTERNAL_TOKEN="${INTERNAL_TOKEN:-}"
+source "$(dirname -- "${BASH_SOURCE[0]}")/lib/service-token.sh"
+set -a
+snapshot_service_env "$FIX_ENV" fix
+snapshot_service_env "$JAVA_ENV" java
+snapshot_service_env "$SECRETS_ENV" secrets
 set +a
 
 check_nonempty() {
@@ -50,7 +44,7 @@ check_equal 'FixAgent INTERNAL_TOKEN = Java INTERNAL_TOKEN' "$FIX_INTERNAL_TOKEN
 check_equal 'install API_TOKEN = FixAgent API_TOKEN' "$SECRET_API_TOKEN" "$FIX_API_TOKEN"
 check_equal 'install INTERNAL_TOKEN = FixAgent INTERNAL_TOKEN' "$SECRET_INTERNAL_TOKEN" "$FIX_INTERNAL_TOKEN"
 [[ "$FIX_API_TOKEN" != "$FIX_INTERNAL_TOKEN" ]] && pass '两枚服务令牌不同' || fail '两枚服务令牌不同'
-[[ "$JAVA_PROFILE" == 'prod' ]] && pass 'Java profile为prod' || fail 'Java profile不是prod'
+[[ "${JAVA_PROFILE:-}" == 'prod' ]] && pass 'SPRING_PROFILES_ACTIVE为prod' || fail 'SPRING_PROFILES_ACTIVE不是prod'
 
 [[ "$(uname -m)" == 'loongarch64' ]] && pass 'CPU架构为loongarch64' || fail 'CPU架构不是loongarch64'
 [[ "$('/usr/lib/jvm/java-21/bin/java' -version 2>&1 | head -n1)" == *'21.'* ]] && pass 'JDK 21' || fail 'JDK 21'
