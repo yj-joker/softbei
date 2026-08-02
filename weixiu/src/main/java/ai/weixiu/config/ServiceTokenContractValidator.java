@@ -41,6 +41,6 @@ public class ServiceTokenContractValidator {
     }
 
     private static String normalize(String token) {
-        return token == null ? "" : token.trim();
+        return token == null ? "" : token.strip();
     }
 }
