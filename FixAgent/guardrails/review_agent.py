@@ -18,6 +18,8 @@ import time
 import logging
 from typing import List, Dict, Any, Optional
 
+import httpx
+
 from agents.base_agent import AgentOutput
 
 logger = logging.getLogger(__name__)
@@ -342,7 +344,9 @@ class _GraphCheck:
         try:
             import httpx
             from config.settings import get_settings
-            base_url = get_settings().java_service_url
+            settings = get_settings()
+            base_url = settings.java_service_url
+            headers = {"X-Internal-Token": settings.internal_token}
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 for c in claims:
@@ -355,9 +359,14 @@ class _GraphCheck:
                     try:
                         resp = await client.get(
                             f"{base_url}/weixiu/path/fault-exists",
-                            params={"name": fn}
+                            params={"name": fn},
+                            headers=headers,
                         )
-                        fault_exists = resp.json().get("data", False) if resp.status_code == 200 else False
+                        if resp.status_code != 200:
+                            unverified.append({"fault_name": fn, "solution_title": st,
+                                              "reason": f"故障查询失败（HTTP {resp.status_code}）"})
+                            continue
+                        fault_exists = resp.json().get("data", False)
 
                         if not fault_exists:
                             unverified.append({"fault_name": fn, "solution_title": st,
@@ -366,9 +375,14 @@ class _GraphCheck:
                         if st:
                             resp = await client.get(
                                 f"{base_url}/weixiu/path/solution-exists",
-                                params={"title": st}
+                                params={"title": st},
+                                headers=headers,
                             )
-                            sol_exists = resp.json().get("data", False) if resp.status_code == 200 else False
+                            if resp.status_code != 200:
+                                unverified.append({"fault_name": fn, "solution_title": st,
+                                                  "reason": f"方案查询失败（HTTP {resp.status_code}）"})
+                                continue
+                            sol_exists = resp.json().get("data", False)
 
                             if sol_exists:
                                 verified.append({"fault_name": fn, "solution_title": st,

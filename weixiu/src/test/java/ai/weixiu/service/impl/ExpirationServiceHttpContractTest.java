@@ -2,6 +2,10 @@ package ai.weixiu.service.impl;
 
 import ai.weixiu.mapper.ExpirationReviewMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
+import org.slf4j.LoggerFactory;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import org.junit.jupiter.api.Test;
@@ -25,6 +29,40 @@ class ExpirationServiceHttpContractTest {
 
     private static final String API_TOKEN = "api-token-A";
     private static final String INTERNAL_TOKEN = "internal-token-B";
+
+    @Test
+    void doesNotLogTriggeredWhenManualKgResponseReportsBusinessFailure() throws Exception {
+        CountDownLatch requestLatch = new CountDownLatch(1);
+        HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/ai/manual-kg/extract", exchange -> {
+            try (exchange) {
+                exchange.getRequestBody().readAllBytes();
+                respond(exchange, "{\"success\":false,\"message\":\"KG failed\",\"data\":{\"errors\":[\"HTTP 403\"]}}");
+                requestLatch.countDown();
+            }
+        });
+        server.start();
+
+        Logger logger = (Logger) LoggerFactory.getLogger(ExpirationServiceImpl.class);
+        ListAppender<ILoggingEvent> appender = new ListAppender<>();
+        appender.start();
+        logger.addAppender(appender);
+        try (AnnotationConfigApplicationContext context = expirationContext(server)) {
+            ExpirationServiceImpl service = context.getBean(ExpirationServiceImpl.class);
+            service.triggerKGExtractAsync("document-failure", 1L, "测试设备", "测试手册");
+            assertThat(requestLatch.await(5, TimeUnit.SECONDS)).isTrue();
+            Thread.sleep(200);
+        } finally {
+            logger.detachAppender(appender);
+            server.stop(0);
+        }
+
+        List<String> messages = appender.list.stream().map(ILoggingEvent::getFormattedMessage).toList();
+        assertThat(messages).anyMatch(message -> message.contains("业务失败") && message.contains("document-failure"));
+        assertThat(messages).noneMatch(message -> message.contains("[KG抽取] 已触发:") && message.contains("document-failure"));
+        assertThat(messages).noneMatch(message -> message.contains(INTERNAL_TOKEN));
+        assertThat(messages).noneMatch(message -> message.contains(API_TOKEN));
+    }
 
     @Test
     void sendsApiTokenToEveryFixAgentExpirationEndpoint() throws Exception {

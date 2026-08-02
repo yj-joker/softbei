@@ -29,7 +29,17 @@ from services.llm.service import get_llm_service
 
 logger = logging.getLogger(__name__)
 
-# ──────────────── 提示词 ────────────────
+
+class JavaApiError(RuntimeError):
+    """Java 内部回调失败，保留调用路径和 HTTP 状态但不暴露鉴权信息。"""
+
+    def __init__(self, path: str, status_code: Any = None):
+        status = status_code if status_code is not None else "unavailable"
+        super().__init__(f"Java API request failed: path={path} status={status}")
+        self.path = path
+        self.status_code = status_code
+
+
 
 _DEVICE_SYSTEM = """你是工业设备维修领域的专家。给定维修手册的文件名和开头内容，提取设备信息。
 
@@ -334,12 +344,18 @@ class ManualKGExtractor:
                             if (proc_resp or {}).get("solutionId"):
                                 result.procedures_created += 1
 
-            # 并发处理所有section
-            await asyncio.gather(
+            # 并发处理所有section；每个分区异常必须进入业务结果，不能静默丢弃。
+            section_results = await asyncio.gather(
                 *[process_section(title, sec_chunks)
                   for title, sec_chunks in sections.items()],
                 return_exceptions=True,
             )
+            for section_title, section_result in zip(sections, section_results):
+                if isinstance(section_result, Exception):
+                    error_text = str(section_result)
+                    result.errors.append(
+                        f"section={section_title}: {error_text}"
+                    )
 
         except Exception as e:
             logger.error("[KG抽取] 异常: document_id=%s err=%s", document_id, e, exc_info=True)
@@ -570,12 +586,15 @@ class ManualKGExtractor:
                     json=body,
                     headers=headers,
                 )
-                resp.raise_for_status()
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    raise JavaApiError(path, resp.status_code)
                 data = resp.json()
                 return data.get("data") if isinstance(data, dict) and "data" in data else data
-        except Exception as e:
-            logger.warning("[KG抽取] Java API失败: path=%s err=%s", path, e)
-            return None
+        except JavaApiError:
+            raise
+        except Exception:
+            logger.warning("[KG抽取] Java API失败: path=%s", path)
+            raise JavaApiError(path)
 
 
 # ──────────────── 工具函数 ────────────────

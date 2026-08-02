@@ -100,7 +100,19 @@ public class ExpirationServiceImpl implements ExpirationService {
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
                     .subscribe(
-                            resp -> log.info("[KG抽取] 已触发: documentId={}", documentId),
+                            resp -> {
+                                Object success = resp != null ? resp.get("success") : null;
+                                if (Boolean.FALSE.equals(success)) {
+                                    log.warn("[KG抽取] 业务失败，未记录已触发: documentId={} message={}",
+                                            documentId, resp.get("message"));
+                                    return;
+                                }
+                                if (!Boolean.TRUE.equals(success)) {
+                                    log.warn("[KG抽取] 响应缺少成功标志，未记录已触发: documentId={}", documentId);
+                                    return;
+                                }
+                                log.info("[KG抽取] 已触发: documentId={}", documentId);
+                            },
                             e   -> log.warn("[KG抽取] 触发失败（非阻塞）: documentId={} err={}", documentId, e.getMessage())
                     );
         } catch (Exception e) {
