@@ -242,10 +242,8 @@ RABBITMQ_USER=${RABBITMQ_USER}
 RABBITMQ_PASSWORD=${RABBITMQ_PASSWORD}
 MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
 MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
-API_TOKEN=${API_TOKEN}
-INTERNAL_TOKEN=${INTERNAL_TOKEN}
 EOF
-chmod 0600 "$SECRETS_FILE"
+write_service_token_secrets "$SECRETS_FILE"
 
 CURRENT_STAGE="安装LoongArch黄金运行时"
 log "$CURRENT_STAGE"
@@ -513,7 +511,7 @@ cp -a "$PACKAGE_ROOT/sql/fix.sql" "$APP_STAGE/resources/sql/fix.sql"
 cp -a "$PACKAGE_ROOT/neo4j/neo4j-indexes.cypher" "$APP_STAGE/resources/neo4j/neo4j-indexes.cypher"
 cp -a "$PACKAGE_ROOT/scripts/configure-minio.py" "$APP_STAGE/scripts/configure-minio.py"
 cp -a "$PACKAGE_ROOT/verify.sh" "$APP_STAGE/verify.sh"
-cp -a "$PACKAGE_ROOT/lib/service-token.sh" "$APP_STAGE/lib/service-token.sh"
+copy_runtime_service_helper "$PACKAGE_ROOT/lib/service-token.sh" "$APP_STAGE/lib/service-token.sh"
 rm -rf -- "$APP_STAGE/app/FixAgent/.venv"
 cp -a "$RUNTIME_STAGE/runtime/fixagent-venv" "$APP_STAGE/app/FixAgent/.venv"
 chmod 0755 "$APP_STAGE/app/FixAgent/.venv/bin/python" "$APP_STAGE/verify.sh"

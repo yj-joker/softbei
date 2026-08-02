@@ -5,6 +5,21 @@ random_service_token() {
     openssl rand -hex 24
 }
 
+copy_runtime_service_helper() {
+    local source_file="$1" target_file="$2"
+    mkdir -p "$(dirname -- "$target_file")"
+    cp -a "$source_file" "$target_file"
+    chmod 0644 "$target_file"
+}
+
+write_service_token_secrets() {
+    local secrets_file="$1"
+    : "${API_TOKEN:?API_TOKEN未解析}"
+    : "${INTERNAL_TOKEN:?INTERNAL_TOKEN未解析}"
+    printf 'API_TOKEN=%s\nINTERNAL_TOKEN=%s\n' "$API_TOKEN" "$INTERNAL_TOKEN" >> "$secrets_file"
+    chmod 0600 "$secrets_file"
+}
+
 load_service_token_files() {
     local install_config="$1" secrets_file="$2"
     local inherited_api="${API_TOKEN:-}" inherited_internal="${INTERNAL_TOKEN:-}"

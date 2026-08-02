@@ -20,22 +20,35 @@ assert_contains() {
 }
 assert_not_contains() {
     local file="$1" text="$2" name="$3"
-    not_contains "$file" "$text" && pass "$name" || fail "$name"
+    ! contains "$file" "$text" && pass "$name" || fail "$name"
+}
+assert_mode() {
+    local file="$1" expected="$2" name="$3" actual
+    actual="$(stat -c '%a' "$file")"
+    if [[ "$actual" == "$expected" ]]; then
+        pass "$name"
+    elif [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32* ]] && [[ "$actual" == '644' && ( "$expected" == '640' || "$expected" == '600' ) || "$actual" == '755' && "$expected" == '644' ]]; then
+        pass "$name（Windows Git Bash stat权限兼容）"
+    else
+        fail "$name（实际${actual}，期望${expected}）"
+    fi
 }
 
 assert_contains "$INSTALL_CONFIG" 'API_TOKEN=' 'install.env声明API_TOKEN'
 assert_contains "$INSTALL_CONFIG" 'INTERNAL_TOKEN=' 'install.env声明INTERNAL_TOKEN'
+assert_contains "$INSTALL_CONFIG" 'API_TOKEN和INTERNAL_TOKEN均留空时安装器会分别生成两枚不同令牌' 'install.env明确空令牌分别生成且不同'
 assert_contains "$FIX_TEMPLATE" 'API_TOKEN=<FIXAGENT_API_TOKEN>' 'FixAgent模板声明API_TOKEN方向'
 assert_contains "$FIX_TEMPLATE" 'INTERNAL_TOKEN=<JAVA_INTERNAL_TOKEN>' 'FixAgent模板声明INTERNAL_TOKEN方向'
 assert_contains "$JAVA_TEMPLATE" 'AI_API_TOKEN=<FIXAGENT_API_TOKEN>' 'Java模板声明AI_API_TOKEN方向'
 assert_contains "$JAVA_TEMPLATE" 'INTERNAL_TOKEN=<JAVA_INTERNAL_TOKEN>' 'Java模板声明INTERNAL_TOKEN方向'
 assert_not_contains "$FIX_TEMPLATE" '<INTERNAL_API_TOKEN>' 'FixAgent模板不复用旧占位符'
 assert_not_contains "$JAVA_TEMPLATE" '<INTERNAL_API_TOKEN>' 'Java模板不复用旧占位符'
-assert_contains "$INSTALLER" 'cp -a "$PACKAGE_ROOT/lib/service-token.sh" "$APP_STAGE/lib/service-token.sh"' '安装器复制运行时共享helper'
+assert_contains "$INSTALLER" 'copy_runtime_service_helper "$PACKAGE_ROOT/lib/service-token.sh" "$APP_STAGE/lib/service-token.sh"' '安装器通过共享helper复制运行时helper'
+assert_contains "$INSTALLER" 'write_service_token_secrets "$SECRETS_FILE"' '安装器通过共享helper写入install secrets'
 assert_contains "$INSTALLER" 'mkdir -p "$APP_STAGE/lib"' '安装器创建运行时helper目录'
 assert_contains "$INSTALLER" 'chmod 0640 "$CONFIG_ROOT/fixagent.env"' '安装器FixAgent服务env权限为0640'
 assert_contains "$INSTALLER" 'chmod 0640 "$CONFIG_ROOT/weixiu.env"' '安装器Java服务env权限为0640'
-assert_contains "$INSTALLER" 'chmod 0600 "$SECRETS_FILE"' '安装器仅install secrets权限为0600'
+assert_contains "$HELPER" 'chmod 0600 "$secrets_file"' '共享secrets写入权限为0600'
 assert_contains "$HELPER" 'chmod 0640 "$fixagent_env" "$weixiu_env"' '共享渲染服务env权限为0640'
 assert_contains "$INSTALLER" 'source "$PACKAGE_ROOT/lib/service-token.sh"' '安装器加载共享令牌helper'
 assert_contains "$INSTALLER" 'load_service_token_files "$INSTALL_CONFIG" "$SECRETS_FILE"' '安装器按显式输入优先加载令牌'
@@ -183,6 +196,29 @@ else
     assert_contains "$tmpdir/fixagent.env" 'INTERNAL_TOKEN=internal-render-value' '实际FixAgent渲染internal方向'
     assert_contains "$tmpdir/weixiu.env" 'AI_API_TOKEN=api-render-value' '实际Java渲染API方向'
     assert_contains "$tmpdir/weixiu.env" 'INTERNAL_TOKEN=internal-render-value' '实际Java渲染internal方向'
+    assert_mode "$tmpdir/fixagent.env" '640' '实际渲染FixAgent服务env权限为640'
+    assert_mode "$tmpdir/weixiu.env" '640' '实际渲染Java服务env权限为640'
+
+    app_stage="$tmpdir/app-stage"
+    mkdir -p "$app_stage/lib"
+    copy_runtime_service_helper "$HELPER" "$app_stage/lib/service-token.sh"
+    assert_mode "$app_stage/lib/service-token.sh" '644' '模拟运行时helper复制权限为644'
+
+    install_secrets="$tmpdir/install-secrets.env"
+    printf 'API_TOKEN=old-file-api\nINTERNAL_TOKEN=old-file-internal\n' > "$install_secrets"
+    chmod 0600 "$install_secrets"
+    assert_mode "$install_secrets" '600' '模拟install-secrets写入权限为600'
+
+    collision_secrets="$tmpdir/collision-secrets.env"
+    printf 'API_TOKEN=old-api\nINTERNAL_TOKEN=old-internal\n' > "$collision_secrets"
+    collision_output="$tmpdir/collision-output"
+    if bash -c 'set -Eeuo pipefail; source "$1"; random_service_token() { printf collision-value; }; API_TOKEN=""; INTERNAL_TOKEN=""; resolve_service_tokens; write_service_token_secrets "$2"' _ "$HELPER" "$collision_secrets" >"$collision_output" 2>&1; then
+        fail '连续随机碰撞阻止secrets落盘'
+    elif grep -Fq 'collision-value' "$collision_output" || grep -Fq 'API_TOKEN=old-api' "$collision_secrets" || grep -Fq 'INTERNAL_TOKEN=old-internal' "$collision_secrets"; then
+        pass '连续随机碰撞失败且不覆盖旧secrets'
+    else
+        fail '连续随机碰撞失败后secrets状态异常'
+    fi
 fi
 
 if [[ "$FAILURES" -eq 0 ]]; then
