@@ -506,15 +506,18 @@ log "$CURRENT_STAGE"
 systemctl stop maintai-java.service maintai-fixagent.service 2>/dev/null || true
 APP_STAGE="$(mktemp -d /opt/fix/maintai-app.XXXXXX)"
 mkdir -p "$APP_STAGE/app" "$APP_STAGE/frontend" "$APP_STAGE/resources/sql" "$APP_STAGE/resources/neo4j" "$APP_STAGE/scripts"
+mkdir -p "$APP_STAGE/lib"
 cp -a "$PACKAGE_ROOT/app/." "$APP_STAGE/app/"
 cp -a "$PACKAGE_ROOT/frontend/." "$APP_STAGE/frontend/"
 cp -a "$PACKAGE_ROOT/sql/fix.sql" "$APP_STAGE/resources/sql/fix.sql"
 cp -a "$PACKAGE_ROOT/neo4j/neo4j-indexes.cypher" "$APP_STAGE/resources/neo4j/neo4j-indexes.cypher"
 cp -a "$PACKAGE_ROOT/scripts/configure-minio.py" "$APP_STAGE/scripts/configure-minio.py"
 cp -a "$PACKAGE_ROOT/verify.sh" "$APP_STAGE/verify.sh"
+cp -a "$PACKAGE_ROOT/lib/service-token.sh" "$APP_STAGE/lib/service-token.sh"
 rm -rf -- "$APP_STAGE/app/FixAgent/.venv"
 cp -a "$RUNTIME_STAGE/runtime/fixagent-venv" "$APP_STAGE/app/FixAgent/.venv"
 chmod 0755 "$APP_STAGE/app/FixAgent/.venv/bin/python" "$APP_STAGE/verify.sh"
+chmod 0644 "$APP_STAGE/lib/service-token.sh"
 if [[ -d "$APP_ROOT" ]]; then
     mv "$APP_ROOT" "${APP_ROOT}.previous.$(date +%Y%m%d-%H%M%S)"
 fi
@@ -557,7 +560,7 @@ MYSQL_PASSWORD=${MYSQL_APP_PASSWORD}
 JAVA_SERVICE_URL=http://127.0.0.1:8080
 RABBITMQ_URL=amqp://${RABBITMQ_USER}:${RABBITMQ_PASSWORD}@127.0.0.1:5672/
 EOF
-chmod 0600 "$CONFIG_ROOT/fixagent.env"
+chmod 0640 "$CONFIG_ROOT/fixagent.env"
 
 cat > "$CONFIG_ROOT/weixiu.env" <<EOF
 SPRING_PROFILES_ACTIVE=prod
@@ -595,7 +598,8 @@ MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
 MINIO_BUCKET=weixiu-private-wendang
 EOF
 render_service_token_envs "$CONFIG_ROOT/fixagent.env" "$CONFIG_ROOT/weixiu.env"
-chmod 0600 "$CONFIG_ROOT/weixiu.env"
+chmod 0640 "$CONFIG_ROOT/fixagent.env"
+chmod 0640 "$CONFIG_ROOT/weixiu.env"
 chown root:"$APP_GROUP" "$CONFIG_ROOT/fixagent.env" "$CONFIG_ROOT/weixiu.env"
 
 cat > /etc/systemd/system/maintai-fixagent.service <<EOF

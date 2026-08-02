@@ -31,6 +31,12 @@ assert_contains "$JAVA_TEMPLATE" 'AI_API_TOKEN=<FIXAGENT_API_TOKEN>' 'Java模板
 assert_contains "$JAVA_TEMPLATE" 'INTERNAL_TOKEN=<JAVA_INTERNAL_TOKEN>' 'Java模板声明INTERNAL_TOKEN方向'
 assert_not_contains "$FIX_TEMPLATE" '<INTERNAL_API_TOKEN>' 'FixAgent模板不复用旧占位符'
 assert_not_contains "$JAVA_TEMPLATE" '<INTERNAL_API_TOKEN>' 'Java模板不复用旧占位符'
+assert_contains "$INSTALLER" 'cp -a "$PACKAGE_ROOT/lib/service-token.sh" "$APP_STAGE/lib/service-token.sh"' '安装器复制运行时共享helper'
+assert_contains "$INSTALLER" 'mkdir -p "$APP_STAGE/lib"' '安装器创建运行时helper目录'
+assert_contains "$INSTALLER" 'chmod 0640 "$CONFIG_ROOT/fixagent.env"' '安装器FixAgent服务env权限为0640'
+assert_contains "$INSTALLER" 'chmod 0640 "$CONFIG_ROOT/weixiu.env"' '安装器Java服务env权限为0640'
+assert_contains "$INSTALLER" 'chmod 0600 "$SECRETS_FILE"' '安装器仅install secrets权限为0600'
+assert_contains "$HELPER" 'chmod 0640 "$fixagent_env" "$weixiu_env"' '共享渲染服务env权限为0640'
 assert_contains "$INSTALLER" 'source "$PACKAGE_ROOT/lib/service-token.sh"' '安装器加载共享令牌helper'
 assert_contains "$INSTALLER" 'load_service_token_files "$INSTALL_CONFIG" "$SECRETS_FILE"' '安装器按显式输入优先加载令牌'
 assert_contains "$INSTALLER" 'resolve_service_tokens' '安装器调用双令牌解析'
@@ -89,22 +95,25 @@ else
     old_internal='old-internal-value'
     explicit_api='explicit-api-value'
     explicit_internal='explicit-internal-value'
+    printf 'API_TOKEN=%s\nINTERNAL_TOKEN=%s\n' "$old_api" "$old_internal" > "$tmpdir/old-secrets.env"
+    printf 'API_TOKEN=%s\nINTERNAL_TOKEN=%s\n' "$explicit_api" "$explicit_internal" > "$tmpdir/explicit-install.env"
     priority_output="$tmpdir/priority-output"
-    if bash -c 'set -Eeuo pipefail; source "$1"; API_TOKEN="$2"; INTERNAL_TOKEN="$3"; load_service_token_files "$4" "$5"; [[ "$API_TOKEN" == "$2" && "$INTERNAL_TOKEN" == "$3" ]]' _ "$HELPER" "$explicit_api" "$explicit_internal" "$tmpdir/missing-install.env" "$tmpdir/old-secrets.env" >"$priority_output" 2>&1; then
+    if bash -c 'set -Eeuo pipefail; source "$1"; load_service_token_files "$2" "$3"; [[ "$API_TOKEN" == "$4" && "$INTERNAL_TOKEN" == "$5" ]]' _ "$HELPER" "$tmpdir/explicit-install.env" "$tmpdir/old-secrets.env" "$explicit_api" "$explicit_internal" >"$priority_output" 2>&1; then
         pass '重装时显式API和internal优先于旧密钥'
     else
         fail '重装时显式API和internal优先于旧密钥'
     fi
-    printf 'API_TOKEN=%s\nINTERNAL_TOKEN=%s\n' "$old_api" "$old_internal" > "$tmpdir/old-secrets.env"
-    if bash -c 'set -Eeuo pipefail; source "$1"; API_TOKEN="$2"; INTERNAL_TOKEN=""; load_service_token_files "$3" "$4"; [[ "$API_TOKEN" == "$2" && "$INTERNAL_TOKEN" != "$4" ]]' _ "$HELPER" "$explicit_api" "$tmpdir/missing-install.env" "$tmpdir/old-secrets.env"; then
-        pass '重装时显式API覆盖旧API且补生成internal'
+    printf 'API_TOKEN=%s\n' "$explicit_api" > "$tmpdir/explicit-api-install.env"
+    if env -u API_TOKEN -u INTERNAL_TOKEN bash -c 'set -Eeuo pipefail; source "$1"; load_service_token_files "$2" "$3"; [[ "$API_TOKEN" == "$4" && "$INTERNAL_TOKEN" == "$5" ]]' _ "$HELPER" "$tmpdir/explicit-api-install.env" "$tmpdir/old-secrets.env" "$explicit_api" "$old_internal"; then
+        pass '重装仅显式API时internal严格沿用旧密钥'
     else
-        fail '重装时显式API覆盖旧API且补生成internal'
+        fail '重装仅显式API时internal严格沿用旧密钥'
     fi
-    if bash -c 'set -Eeuo pipefail; source "$1"; API_TOKEN=""; INTERNAL_TOKEN="$2"; load_service_token_files "$3" "$4"; [[ "$INTERNAL_TOKEN" == "$2" && "$API_TOKEN" != "$3" ]]' _ "$HELPER" "$explicit_internal" "$tmpdir/missing-install.env" "$tmpdir/old-secrets.env"; then
-        pass '重装时显式internal覆盖旧internal且补生成API'
+    printf 'INTERNAL_TOKEN=%s\n' "$explicit_internal" > "$tmpdir/explicit-internal-install.env"
+    if env -u API_TOKEN -u INTERNAL_TOKEN bash -c 'set -Eeuo pipefail; source "$1"; load_service_token_files "$2" "$3"; [[ "$API_TOKEN" == "$4" && "$INTERNAL_TOKEN" == "$5" ]]' _ "$HELPER" "$tmpdir/explicit-internal-install.env" "$tmpdir/old-secrets.env" "$old_api" "$explicit_internal"; then
+        pass '重装仅显式internal时API严格沿用旧密钥'
     else
-        fail '重装时显式internal覆盖旧internal且补生成API'
+        fail '重装仅显式internal时API严格沿用旧密钥'
     fi
     same_priority_output="$tmpdir/same-priority-output"
     if bash -c 'set -Eeuo pipefail; source "$1"; API_TOKEN=same-explicit-value; INTERNAL_TOKEN=same-explicit-value; load_service_token_files "$2" "$3"; resolve_service_tokens' _ "$HELPER" "$tmpdir/missing-install.env" "$tmpdir/old-secrets.env" >"$same_priority_output" 2>&1; then
@@ -134,12 +143,28 @@ else
         pass '连续随机碰撞最终失败且不产生令牌输出'
     fi
 
+    fix_env="$tmpdir/snapshot-fix.env"
+    java_env="$tmpdir/snapshot-java.env"
+    secrets_env="$tmpdir/snapshot-secrets.env"
+    printf 'INTERNAL_TOKEN=file-fix-internal\n' > "$fix_env"
+    printf 'INTERNAL_TOKEN=file-java-internal\nSPRING_PROFILES_ACTIVE=prod\n' > "$java_env"
+    printf 'INTERNAL_TOKEN=file-secrets-internal\n' > "$secrets_env"
+    API_TOKEN=external-api INTERNAL_TOKEN=external-internal AI_API_TOKEN=external-java SPRING_PROFILES_ACTIVE=dev
+    snapshot_service_env "$fix_env" fix
+    snapshot_service_env "$java_env" java
+    snapshot_service_env "$secrets_env" secrets
+    [[ -z "$FIX_API_TOKEN" && "$FIX_INTERNAL_TOKEN" == 'file-fix-internal' ]] \
+        && pass '实际FixAgent快照缺字段且不受外部污染' || fail '实际FixAgent快照缺字段或受外部污染'
+    [[ -z "$JAVA_API_TOKEN" && "$JAVA_INTERNAL_TOKEN" == 'file-java-internal' && "$JAVA_PROFILE" == 'prod' ]] \
+        && pass '实际Java快照缺API且不受外部污染' || fail '实际Java快照缺API或受外部污染'
+    [[ -z "$SECRET_API_TOKEN" && "$SECRET_INTERNAL_TOKEN" == 'file-secrets-internal' ]] \
+        && pass '实际secrets快照缺API且不受外部污染' || fail '实际secrets快照缺API或受外部污染'
+
     API_TOKEN='api-render-value'
     INTERNAL_TOKEN='internal-render-value'
     : > "$tmpdir/fixagent.env"
     : > "$tmpdir/weixiu.env"
     render_service_token_envs "$tmpdir/fixagent.env" "$tmpdir/weixiu.env"
-    chmod 0600 "$tmpdir/fixagent.env" "$tmpdir/weixiu.env"
     [[ -f "$tmpdir/fixagent.env" && -f "$tmpdir/weixiu.env" ]] \
         && pass '临时渲染文件权限由共享helper写入合同' || fail '临时渲染文件权限由共享helper写入合同'
 

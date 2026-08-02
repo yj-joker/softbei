@@ -92,5 +92,5 @@ render_service_token_envs() {
     : "${INTERNAL_TOKEN:?INTERNAL_TOKEN未解析}"
     printf 'API_TOKEN=%s\nINTERNAL_TOKEN=%s\n' "$API_TOKEN" "$INTERNAL_TOKEN" >> "$fixagent_env"
     printf 'AI_API_TOKEN=%s\nINTERNAL_TOKEN=%s\n' "$API_TOKEN" "$INTERNAL_TOKEN" >> "$weixiu_env"
-    chmod 0600 "$fixagent_env" "$weixiu_env"
+    chmod 0640 "$fixagent_env" "$weixiu_env"
 }
