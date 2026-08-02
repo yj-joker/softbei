@@ -18,6 +18,8 @@ from services.retrieval.device_identity import (
     DocumentIdentity,
     QueryContract,
     compare_query_to_document,
+    query_is_unqualified_document_head,
+    query_mentions_unresolved_identity,
 )
 
 
@@ -325,6 +327,33 @@ def _decide_dynamic_scope(
                 request_document_id=requested_document_id,
                 request_device_type=requested_device_type,
             )
+        # An explicit request device and an explicit document form a binding
+        # contract independent of the intent model.  Reject their mismatch
+        # before consulting the query-extraction fallback; otherwise a router
+        # miss can downgrade a known mismatch to ``unknown`` and accidentally
+        # leave the selected manual available for retrieval.
+        if requested_device_type and not _request_device_matches(requested_device_type, document):
+            return _dynamic_decision(
+                OUT_OF_SCOPE,
+                "request_document",
+                "device_document_conflict",
+                query=query,
+                document=document,
+                relation=UNMATCHED,
+                request_document_id=requested_document_id,
+                request_device_type=requested_device_type,
+            )
+        if query_mentions_unresolved_identity(query, document):
+            return _dynamic_decision(
+                UNKNOWN_SCOPE,
+                "request_document",
+                "unresolved_device_identity",
+                query=query,
+                document=document,
+                relation=UNCERTAIN,
+                request_document_id=requested_document_id,
+                request_device_type=requested_device_type,
+            )
         comparison = compare_query_to_document(query, document)
         if query.has_explicit_device and comparison.relation == UNMATCHED:
             return _dynamic_decision(
@@ -337,22 +366,15 @@ def _decide_dynamic_scope(
                 request_document_id=requested_document_id,
                 request_device_type=requested_device_type,
             )
-        if query.has_explicit_device and comparison.relation == UNCERTAIN:
+        if (
+            query.has_explicit_device
+            and comparison.relation == UNCERTAIN
+            and not query_is_unqualified_document_head(query, document)
+        ):
             return _dynamic_decision(
                 UNKNOWN_SCOPE,
                 "request_document",
                 comparison.reason or "identity_not_distinguishing",
-                query=query,
-                document=document,
-                comparison=comparison,
-                request_document_id=requested_document_id,
-                request_device_type=requested_device_type,
-            )
-        if requested_device_type and not _request_device_matches(requested_device_type, document):
-            return _dynamic_decision(
-                OUT_OF_SCOPE,
-                "request_document",
-                "device_document_conflict",
                 query=query,
                 document=document,
                 comparison=comparison,
@@ -385,6 +407,16 @@ def _decide_dynamic_scope(
                 request_device_type=requested_device_type,
             )
         document = candidates[0]
+        if query_mentions_unresolved_identity(query, document):
+            return _dynamic_decision(
+                UNKNOWN_SCOPE,
+                "request_device",
+                "unresolved_device_identity",
+                query=query,
+                document=document,
+                relation=UNCERTAIN,
+                request_device_type=requested_device_type,
+            )
         comparison = compare_query_to_document(query, document)
         if query.has_explicit_device and comparison.relation == UNMATCHED:
             return _dynamic_decision(
@@ -396,7 +428,11 @@ def _decide_dynamic_scope(
                 comparison=comparison,
                 request_device_type=requested_device_type,
             )
-        if query.has_explicit_device and comparison.relation == UNCERTAIN:
+        if (
+            query.has_explicit_device
+            and comparison.relation == UNCERTAIN
+            and not query_is_unqualified_document_head(query, document)
+        ):
             return _dynamic_decision(
                 UNKNOWN_SCOPE,
                 "request_device",
@@ -418,6 +454,15 @@ def _decide_dynamic_scope(
 
     session_document = catalog.document(session_document_id) if _clean(session_document_id) else None
     if session_document is not None:
+        if query_mentions_unresolved_identity(query, session_document):
+            return _dynamic_decision(
+                UNKNOWN_SCOPE,
+                "session_document",
+                "unresolved_device_identity",
+                query=query,
+                document=session_document,
+                relation=UNCERTAIN,
+            )
         comparison = compare_query_to_document(query, session_document)
         if query.has_explicit_device and comparison.relation == UNMATCHED:
             return _dynamic_decision(
@@ -428,7 +473,11 @@ def _decide_dynamic_scope(
                 document=session_document,
                 comparison=comparison,
             )
-        if query.has_explicit_device and comparison.relation == UNCERTAIN:
+        if (
+            query.has_explicit_device
+            and comparison.relation == UNCERTAIN
+            and not query_is_unqualified_document_head(query, session_document)
+        ):
             return _dynamic_decision(
                 UNKNOWN_SCOPE,
                 "session_document",
@@ -454,6 +503,15 @@ def _decide_dynamic_scope(
         ]
         if len(session_matches) == 1:
             document = session_matches[0]
+            if query_mentions_unresolved_identity(query, document):
+                return _dynamic_decision(
+                    UNKNOWN_SCOPE,
+                    "session_device",
+                    "unresolved_device_identity",
+                    query=query,
+                    document=document,
+                    relation=UNCERTAIN,
+                )
             comparison = compare_query_to_document(query, document)
             if query.has_explicit_device and comparison.relation == UNMATCHED:
                 return _dynamic_decision(
@@ -464,7 +522,11 @@ def _decide_dynamic_scope(
                     document=document,
                     comparison=comparison,
                 )
-            if query.has_explicit_device and comparison.relation == UNCERTAIN:
+            if (
+                query.has_explicit_device
+                and comparison.relation == UNCERTAIN
+                and not query_is_unqualified_document_head(query, document)
+            ):
                 return _dynamic_decision(
                     UNKNOWN_SCOPE,
                     "session_device",

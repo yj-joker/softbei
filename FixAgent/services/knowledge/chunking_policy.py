@@ -6,6 +6,8 @@ import hashlib
 import re
 from typing import Any, Dict, Iterable, List
 
+from services.retrieval.procedure_scope import procedure_scope_from_toc_path
+
 
 GENERAL_CHUNK_TARGET = 520
 GENERAL_CHUNK_OVERLAP = 90
@@ -189,6 +191,9 @@ def _emit_chunk(
     # 目录路径仅作为 metadata 信号（供精排"同节救援"用），不进嵌入文本 → 向量与 v21 一致
     if toc_path:
         chunk_metadata["toc_path"] = toc_path
+        procedure_scope = procedure_scope_from_toc_path(toc_path)
+        if procedure_scope:
+            chunk_metadata.update(procedure_scope.to_metadata())
     if parent_chunk_id:
         chunk_metadata["parent_chunk_id"] = parent_chunk_id
     if source_index is not None:
@@ -597,7 +602,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
     step_chunk_ids: List[str] = []
     step_chunk_ids_by_page: Dict[Any, List[str]] = {}
     text_chunk_ids: List[str] = []
+    text_chunk_ids_by_page: Dict[Any, List[str]] = {}
     text_context_snippets: List[str] = []
+    text_context_snippets_by_page: Dict[Any, List[str]] = {}
     # 稳定的 section 身份：优先使用标题 hash，保证跨版本 provenance 可追踪
     sec_id = _section_id(section_index, _as_text(section.get("section_title")))
 
@@ -666,7 +673,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                     step_chunk_ids.append(chunk["id"])
                     step_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_chunk_ids.append(chunk["id"])
+                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
+                    text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
         elif _looks_like_troubleshooting(text):
             chunk = _emit_chunk(
                 chunks,
@@ -686,7 +695,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             if chunk:
                 emitted_primary.append(chunk)
                 text_chunk_ids.append(chunk["id"])
+                text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                 text_context_snippets.append(chunk["metadata"]["raw_text"])
+                text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
         elif _looks_like_parameter(text, label):
             label = "parameter"
             for part in _split_general_text(text):
@@ -715,7 +726,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 if chunk:
                     emitted_primary.append(chunk)
                     text_chunk_ids.append(chunk["id"])
+                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
+                    text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
         else:
             label = "safety" if _looks_like_safety(text) else "general"
             for part in _split_general_text(text):
@@ -739,7 +752,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 if chunk:
                     emitted_primary.append(chunk)
                     text_chunk_ids.append(chunk["id"])
+                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
+                    text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
 
         if label not in {"safety", "outline"}:
             seen_safety_texts = {
@@ -768,7 +783,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 )
                 if chunk:
                     text_chunk_ids.append(chunk["id"])
+                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
+                    text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
 
     for table_index, table in enumerate(_merge_continued_tables(section.get("tables") or [])):
         table_text = _table_to_text(table)
@@ -911,6 +928,13 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 stable_suffix=f"{table_index:04d}:row:{row_index:04d}",
             )
 
+    procedure_scope_ids_by_page: Dict[Any, List[str]] = {}
+    for text_chunk in chunks:
+        scope_id = str((text_chunk.get("metadata") or {}).get("procedure_scope_id") or "")
+        text_page = text_chunk.get("page")
+        if scope_id and scope_id not in procedure_scope_ids_by_page.setdefault(text_page, []):
+            procedure_scope_ids_by_page[text_page].append(scope_id)
+
     for image_index, image in enumerate(section.get("images") or []):
         caption = _as_text(image.get("caption"))
         image_name = _as_text(image.get("image_name")) or f"img_{image_index}"
@@ -918,7 +942,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
         visual_context_text = _join_context_snippets(
             [
                 image.get("context_before", ""),
-                *text_context_snippets[-5:],
+                *(text_context_snippets_by_page.get(page) or [])[-5:],
                 image.get("context_after", ""),
             ]
         )
@@ -947,7 +971,8 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 "visual_context_text": visual_context_text,
                 "answer_role": "visual_reference",
                 "related_step_chunk_ids": related_step_ids,
-                "related_text_chunk_ids": text_chunk_ids[:5],
+                "related_text_chunk_ids": (text_chunk_ids_by_page.get(page) or text_chunk_ids[:5]),
+                "procedure_scope_ids": procedure_scope_ids_by_page.get(page) or [],
                 "binding_role": "same_page_step" if same_page_step_ids else "section_fallback",
                 "binding_confidence": 1.0 if same_page_step_ids else (0.35 if related_step_ids else 0.0),
             },

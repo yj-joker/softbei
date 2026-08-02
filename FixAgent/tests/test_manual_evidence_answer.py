@@ -8,7 +8,193 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from api.main import _format_manual_evidence_answer_from_metadata, _manual_query_kind
+from api.main import (
+    _direct_manual_text_supports_aspect,
+    _format_manual_evidence_answer_from_metadata,
+    _manual_action_target,
+    _manual_answer_should_refuse_detail_query,
+    _manual_best_section_records,
+    _manual_query_action,
+    _manual_query_kind,
+    _manual_strip_next_procedure_heading,
+)
+
+
+def test_manual_query_action_recognizes_adjustment_family() -> None:
+    assert _manual_query_action("如何调整气门间隙？") == "调整"
+    assert _manual_query_action("怎样调节气门间隙？") == "调整"
+    assert _manual_query_action("校正气门间隙的步骤") == "调整"
+    assert _manual_action_target("怎样调节气门间隙？", "调整") == "气门间隙"
+    assert _manual_query_kind("怎样调节气门间隙？") == "procedure"
+
+
+def test_exact_title_matches_outrank_seed_retrieval_section_labels(monkeypatch) -> None:
+    from api import main as api_main
+
+    correct = {
+        "id": "valve-gap-adjustment",
+        "content": "调整气门间隙。",
+        "metadata": {
+            "document_id": "manual-doc",
+            "parent_section_id": "sec-valve-gap",
+            "section_title": "4.6 气门间隙",
+            "page": 15,
+        },
+    }
+    wrong = {
+        "id": "valve-removal",
+        "content": "拆卸气门组件。",
+        "metadata": {
+            "document_id": "manual-doc",
+            "parent_section_id": "sec-valve-removal",
+            "section_title": "4.8 气门",
+            "section_match_ids": ["sec-valve-removal"],
+            "page": 16,
+        },
+    }
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [wrong],
+            }],
+        }],
+    }
+
+    monkeypatch.setattr(
+        api_main,
+        "_manual_title_match_records",
+        lambda message: ([correct], {"sec-valve-gap"}),
+    )
+    monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
+    monkeypatch.setattr(
+        api_main,
+        "_manual_group_score",
+        lambda message, kind, records, bonus_ids, title_scores: (
+            (504 if records[0]["id"] == "valve-gap-adjustment" else 523)
+            + (80 if records[0]["metadata"]["parent_section_id"] in bonus_ids else 0)
+        ),
+    )
+    monkeypatch.setattr(api_main, "_manual_expand_same_section_records", lambda records, ids: records)
+    monkeypatch.setattr(api_main, "_manual_expand_page_boundary_records", lambda records, ids: records)
+
+    records = _manual_best_section_records("如何调整气门间隙？", "procedure", metadata)
+
+    assert [record["id"] for record in records] == ["valve-gap-adjustment"]
+
+
+def test_detail_query_accepts_structured_multi_part_torque_evidence() -> None:
+    query = "安装发动机时放油螺栓和放水螺栓的拧紧力矩是多少？"
+    records = [
+        {
+            "content": (
+                "安装左曲轴箱放油螺栓、车架放油螺栓、水泵盖放水螺栓。\n"
+                "拧紧力矩要求：\n"
+                "放油螺栓：25 ± 4 N·m\n"
+                "放水螺栓：12 ± 1.5 N·m"
+            )
+        }
+    ]
+
+    assert not _manual_answer_should_refuse_detail_query(query, records)
+
+
+def test_procedure_body_line_starting_with_action_is_not_treated_as_next_heading() -> None:
+    content = (
+        "3. 装上定位销和全新的右曲轴箱盖垫片：\n"
+        "安装新垫片之前，在装配平面上均匀涂抹密封胶；\n"
+        "安装新垫片之后，盖上箱盖并对角预紧螺栓。"
+    )
+    metadata = {"toc_path": "手册 > 6.4 右曲轴箱盖与离合器 > 安装右盖"}
+
+    result = _manual_strip_next_procedure_heading(content, metadata)
+
+    assert "安装新垫片之前" in result
+    assert "安装新垫片之后" in result
+
+
+def test_procedure_body_colon_label_does_not_truncate_following_diagnosis() -> None:
+    content = (
+        "4. 测量压缩压力：\n"
+        "测量步骤：\n"
+        "a. 将油门开到最大处并再次测量。\n"
+        "结果分析：\n"
+        "若压力升高，则检查活塞环。"
+    )
+    metadata = {"toc_path": "手册 > 1.4 测量压缩压力"}
+
+    result = _manual_strip_next_procedure_heading(content, metadata)
+
+    assert "测量步骤" in result
+    assert "若压力升高，则检查活塞环" in result
+
+
+def test_retrieval_expansion_after_action_uses_the_preceding_operation_target() -> None:
+    expanded_aspect = "气缸与活塞 安装步骤 要求 注意事项"
+    direct_text = "5.4 安装气缸与活塞。依次安装活塞销和活塞销挡圈。"
+
+    assert _manual_action_target(expanded_aspect, "安装") == "气缸与活塞"
+    assert _direct_manual_text_supports_aspect(direct_text, expanded_aspect)
+
+
+def test_explicit_operation_detail_keeps_the_complete_document_subflow(monkeypatch) -> None:
+    from api import main as api_main
+
+    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda message: ([], set()))
+    monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
+    monkeypatch.setattr(
+        api_main,
+        "_manual_expand_same_section_records",
+        lambda records, section_ids: records,
+    )
+    monkeypatch.setattr(
+        api_main,
+        "_manual_expand_page_boundary_records",
+        lambda records, section_ids: records,
+    )
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [
+                    {
+                        "id": "seal-step",
+                        "content": "1. 密封处理\n在气缸头盖垫片两面涂抹耐热平面密封硅胶。",
+                        "metadata": {
+                            "document_id": "manual-doc",
+                            "parent_section_id": "sec-head-cover",
+                            "section_title": "4.5 气缸头盖",
+                            "chunk_type": "step_raw",
+                            "page": 13,
+                            "source_index": 1,
+                            "toc_path": "手册 > 4.5 气缸头盖 > 安装气缸头盖",
+                        },
+                    },
+                    {
+                        "id": "tighten-step",
+                        "content": "2. 安装与拧紧\n安装气缸头盖并对角均匀拧紧至规定扭矩。",
+                        "metadata": {
+                            "document_id": "manual-doc",
+                            "parent_section_id": "sec-head-cover",
+                            "section_title": "4.5 气缸头盖",
+                            "chunk_type": "step_raw",
+                            "page": 14,
+                            "source_index": 2,
+                            "toc_path": "手册 > 4.5 气缸头盖 > 安装气缸头盖",
+                        },
+                    },
+                ],
+            }],
+        }],
+    }
+
+    records = _manual_best_section_records(
+        "安装气缸头盖时哪些地方要涂耐热平面密封硅胶？",
+        "evidence",
+        metadata,
+    )
+
+    assert [record["id"] for record in records] == ["seal-step", "tighten-step"]
 
 
 def test_title_match_lookup_rejects_opposite_direction_section(monkeypatch) -> None:
@@ -152,6 +338,228 @@ def test_directional_cover_install_answer_stays_on_target_procedure_page(monkeyp
     assert "拆卸离合器" not in answer
     assert "装入离合器部件" not in answer
     assert "第26-27页" in answer
+
+
+def test_manual_evidence_answer_selects_only_matching_procedure_subflow(monkeypatch) -> None:
+    section_title = "6.4 右曲轴箱盖与离合器"
+    toc_root = f"摩托车发动机维修手册 > 六、右曲轴箱盖、离合器、机油泵、水泵 > {section_title}"
+    records = [
+        (
+            "cover-step-1",
+            26,
+            1,
+            "source-cover",
+            "安装右盖",
+            "1. 检查曲轴油封，损坏时更换。",
+            "procedure_step",
+        ),
+        (
+            "cover-step-2",
+            26,
+            2,
+            "source-cover",
+            "安装右盖",
+            "2. 安装离合器拉杆，并使顶杆槽与右盖顶杆孔对齐。",
+            "procedure_step",
+        ),
+        (
+            "remove-clutch",
+            27,
+            6,
+            "source-remove-clutch",
+            "拆卸离合器",
+            "1. 取下顶杆轴套组件并松开离合器螺母。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-1",
+            27,
+            7,
+            "source-install-clutch-1",
+            "安装离合器",
+            "1. 检查离合器各部件磨损情况。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-2a",
+            27,
+            8,
+            "source-install-clutch-2",
+            "安装离合器",
+            "2. 依次放入离合器衬套止推垫、离合器衬套和滚针轴承。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-2b",
+            27,
+            8,
+            "source-install-clutch-2",
+            "安装离合器",
+            "96.3×107×1 止推垫圈 19\n固定离合器，锁紧离合器螺母并校验扭力。\n"
+            "注意：安装摩擦片时，摩擦片与从动片两两相隔。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-warning",
+            27,
+            8,
+            "source-install-clutch-2",
+            "安装离合器",
+            "注意：安装摩擦片时，摩擦片与从动片两两相隔。",
+            "safety_warning",
+        ),
+    ]
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return [
+                {
+                    "id": record_id,
+                    "content": content,
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw" if answer_role == "procedure_step" else "text",
+                        "answer_role": answer_role,
+                        "page": page,
+                        "source_index": source_index,
+                        "parent_chunk_id": parent_chunk_id,
+                        "toc_path": f"{toc_root} > {procedure_heading}",
+                    },
+                }
+                for (
+                    record_id,
+                    page,
+                    source_index,
+                    parent_chunk_id,
+                    procedure_heading,
+                    content,
+                    answer_role,
+                ) in records
+            ]
+
+        def get_page_records(self, document_id, page, chunk_type=None, limit=120):
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [SimpleNamespace(
+                section_id="sec-right-cover-clutch",
+                document_id="manual-doc",
+                core_title="右曲轴箱盖与离合器",
+                full_title=section_title,
+            )]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+    metadata = {"react_trace": []}
+
+    answer = _format_manual_evidence_answer_from_metadata("如何安装离合器", metadata)
+
+    assert answer is not None
+    assert "检查离合器各部件磨损情况" in answer
+    assert "96.3×107×1 止推垫圈 19" in answer
+    assert "固定离合器，锁紧离合器螺母" in answer
+    assert answer.count("摩擦片与从动片两两相隔") == 1
+    assert "检查曲轴油封" not in answer
+    assert "安装离合器拉杆" not in answer
+    assert "取下顶杆轴套组件" not in answer
+    assert "3. 96.3×107×1" not in answer
+    assert "第27页" in answer
+    assert metadata["_deterministic_answer_evidence_pages"] == [27]
+    assert metadata["_deterministic_answer_procedure_action"] == "安装"
+    assert metadata["_deterministic_answer_procedure_target"] == "离合器"
+    assert metadata["_deterministic_answer_procedure_scope_id"].startswith("proc:")
+
+
+def test_manual_evidence_answer_cuts_off_next_subflow_heading(monkeypatch) -> None:
+    section_title = "6.4 右曲轴箱盖与离合器"
+    toc_root = f"手册 > {section_title}"
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return [
+                {
+                    "id": "remove-step-1",
+                    "content": "1. 取下顶杆轴套组件并取出离合器弹簧。",
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw",
+                        "page": 27,
+                        "source_index": 6,
+                        "parent_chunk_id": "source-remove",
+                        "toc_path": f"{toc_root} > 拆卸离合器",
+                    },
+                },
+                {
+                    "id": "remove-step-2",
+                    "content": (
+                        "2. 松开离合器螺母并依次取出从动盘、主动盘和衬套。\n"
+                        "安装离合器"
+                    ),
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw",
+                        "page": 27,
+                        "source_index": 6,
+                        "parent_chunk_id": "source-remove",
+                        "toc_path": f"{toc_root} > 拆卸离合器",
+                    },
+                },
+                {
+                    "id": "install-step-1",
+                    "content": "1. 检查离合器摩擦片。",
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw",
+                        "page": 27,
+                        "source_index": 7,
+                        "parent_chunk_id": "source-install",
+                        "toc_path": f"{toc_root} > 安装离合器",
+                    },
+                },
+            ]
+
+        def get_page_records(self, document_id, page, chunk_type=None, limit=120):
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [SimpleNamespace(
+                section_id="sec-combined",
+                document_id="manual-doc",
+                core_title="右曲轴箱盖与离合器",
+                full_title=section_title,
+            )]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    answer = _format_manual_evidence_answer_from_metadata("如何拆卸离合器", {"react_trace": []})
+
+    assert answer is not None
+    assert answer.index("1. 取下顶杆轴套组件") < answer.index("2. 松开离合器螺母")
+    assert "\n安装离合器\n" not in answer
+    assert "检查离合器摩擦片" not in answer
 
 
 def test_manual_evidence_answer_prefers_section_title_match_for_parameter(monkeypatch) -> None:
@@ -1506,6 +1914,107 @@ def test_manual_evidence_answer_prefers_tool_anchor_over_adjacent_parameter_tabl
     assert "第14页" in answer
     assert "塞尺插入凸轮轴基圆与滑动挺柱之间" in answer
     assert "0.13～0.20 mm" not in answer
+
+
+def test_manual_evidence_answer_rebinds_page_boundary_chunk_to_embedded_section_heading(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            if parent_section_id == "sec-valve-gap":
+                return [
+                    {
+                        "id": "gap-warning",
+                        "content": "注意：必须测量基圆位置，非凸轮升程段。",
+                        "metadata": {
+                            "chunk_type": "text",
+                            "document_id": "manual-doc",
+                            "section_title": "4.6 气门间隙",
+                            "parent_section_id": "sec-valve-gap",
+                            "page": 15,
+                        },
+                    }
+                ]
+            if parent_section_id == "sec-head-cover":
+                return [
+                    {
+                        "id": "head-cover-step",
+                        "content": "在气缸头盖垫片两面涂密封胶并安装气缸头盖。",
+                        "metadata": {
+                            "chunk_type": "text",
+                            "document_id": "manual-doc",
+                            "section_title": "4.5 气缸头盖",
+                            "parent_section_id": "sec-head-cover",
+                            "page": 14,
+                        },
+                    }
+                ]
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [
+                SimpleNamespace(
+                    section_id="sec-valve-gap",
+                    document_id="manual-doc",
+                    core_title="气门间隙",
+                    full_title="4.6 气门间隙",
+                )
+            ]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": [
+                            {
+                                "id": "stale-boundary-chunk",
+                                "content": (
+                                    "4.6 气门间隙\n"
+                                    "测量气门间隙\n"
+                                    "拆下气缸头盖。\n"
+                                    "将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。"
+                                ),
+                                "metadata": {
+                                    "chunk_type": "text",
+                                    "document_id": "manual-doc",
+                                    "section_title": "4.5 气缸头盖",
+                                    "parent_section_id": "sec-head-cover",
+                                    "procedure_scope_id": "proc:stale-head-cover",
+                                    "procedure_heading": "安装气缸头盖",
+                                    "procedure_action": "安装",
+                                    "procedure_target": "气缸头盖",
+                                    "toc_path": "摩托车发动机维修手册 > 4.5 气缸头盖 > 安装气缸头盖",
+                                    "page": 14,
+                                    "source_index": 9,
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+
+    answer = _format_manual_evidence_answer_from_metadata(
+        "测量气门间隙时塞尺插在哪里？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "塞尺插入凸轮轴基圆与滑动挺柱之间" in answer
+    assert "涂密封胶" not in answer
+    assert metadata["_deterministic_answer_section_title"] == "4.6 气门间隙"
+    assert metadata["_deterministic_answer_evidence_pages"] == [14]
 
 
 def test_manual_evidence_answer_prefers_letter_mark_anchors_over_neighbor_check_section(monkeypatch) -> None:

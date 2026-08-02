@@ -372,6 +372,13 @@ def test_stream_done_always_contains_knowledge_diagnostics() -> None:
         candidate_message="火花塞间隙标准为 0.7 到 0.9 mm。",
     )
     event = {"event": "done", "data": {"tools_used": output.tools_used}}
+    output.metadata.update({
+        "_deterministic_answer_evidence_pages": [3],
+        "_deterministic_answer_document_ids": ["manual-1"],
+        "_deterministic_answer_section_title": "2.1 火花塞",
+        "_deterministic_answer_section_ids": ["sec-spark-plug"],
+        "_deterministic_answer_table_complete": True,
+    })
 
     main._attach_stream_done_metadata(event, output.metadata)
 
@@ -381,6 +388,11 @@ def test_stream_done_always_contains_knowledge_diagnostics() -> None:
         "coverage_status",
         "response_plan_id",
         "evidence_ledger_digest",
+        "_deterministic_answer_evidence_pages",
+        "_deterministic_answer_document_ids",
+        "_deterministic_answer_section_title",
+        "_deterministic_answer_section_ids",
+        "_deterministic_answer_table_complete",
     )).issubset(metadata)
 
 
@@ -494,6 +506,47 @@ def test_direct_exact_section_bundle_upgrades_stale_partial_for_complete_procedu
     assert bundle["missing_aspect_ids"] == []
 
 
+def test_direct_exact_section_bundle_ignores_retrieval_only_device_context() -> None:
+    metadata = {
+        "scope_decision": {"status": "in_scope"},
+        "original_user_message": "安装右盖时曲轴油封和离合器拉杆要注意什么？",
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"source": "section_text_lookup"},
+                "result_data": [{
+                    "id": "right-cover-install",
+                    "content": (
+                        "检查曲轴油封，损坏时更换；安装离合器拉杆，"
+                        "使顶杆槽与右盖顶杆孔对齐。"
+                    ),
+                    "metadata": {
+                        "chunk_id": "right-cover-install",
+                        "original_title_match": True,
+                    },
+                }],
+            }],
+        }],
+    }
+    original = {
+        "coverage_status": "partial",
+        "aspect_support": [{
+            "aspect_id": "expanded-retrieval-aspect",
+            "aspect_text": "摩托车 右盖安装 离合器拉杆 安装注意事项",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        "missing_aspect_ids": ["expanded-retrieval-aspect"],
+        "capabilities": {"may_cite_manual": True},
+    }
+
+    bundle = main._direct_answer_evidence_bundle(metadata, original)
+
+    assert bundle is not None
+    assert bundle["coverage_status"] == "complete"
+    assert bundle["missing_aspect_ids"] == []
+
+
 def test_direct_exact_section_bundle_keeps_non_parameter_missing_aspect_partial() -> None:
     metadata = {
         "scope_decision": {"status": "in_scope"},
@@ -538,6 +591,73 @@ def test_direct_exact_section_bundle_keeps_non_parameter_missing_aspect_partial(
     assert bundle is not None
     assert bundle["coverage_status"] == "partial"
     assert bundle["missing_aspect_ids"] == ["seal-check"]
+
+
+def test_complete_exact_title_table_answer_does_not_append_stale_partial_notice() -> None:
+    original_bundle = {
+        "coverage_status": "partial",
+        "aspect_support": [{
+            "aspect_id": "inventory-query",
+            "aspect_text": "摩托车发动机 气缸活塞 装配 部件清单",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        "missing_aspect_ids": ["inventory-query"],
+        "conflict_eligible": [],
+        "capabilities": {"may_cite_manual": True},
+    }
+    trace = [
+        {
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [{
+                    "id": "semantic-hit",
+                    "content": "气缸活塞装配部件清单",
+                    "metadata": {
+                        "qualification": "qualified",
+                        "document_id": "manual-1",
+                        "chunk_id": "semantic-hit",
+                        "evidence_bundle": original_bundle,
+                    },
+                }],
+            }],
+        },
+        {
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"source": "section_table_lookup"},
+                "result_data": [{
+                    "id": "complete-table",
+                    "content": "1. 气缸体分部件；数量：1\n2. 箱体缸体垫片；数量：1",
+                    "metadata": {
+                        "qualification": "qualified",
+                        "document_id": "manual-1",
+                        "chunk_id": "complete-table",
+                        "original_title_match": True,
+                    },
+                }],
+            }],
+        },
+    ]
+    output = _output("rag_table_direct", trace)
+    output.metadata.update({
+        "deterministic_table_answer": True,
+        "_deterministic_answer_table_complete": True,
+        "scope_decision": {"status": "in_scope"},
+    })
+
+    finalized = main._finalize_knowledge_output(
+        "帮我查询摩托车发动机气缸活塞装配部件清单",
+        output,
+        candidate_message=(
+            "根据手册第17-18页“5.1 气缸活塞装配部件清单”，气缸活塞装配所用部件如下：\n"
+            "1. 气缸体分部件；数量：1\n"
+            "2. 箱体缸体垫片；数量：1"
+        ),
+    )
+
+    assert finalized.metadata["coverage_status"] == "complete"
+    assert "当前资料没有明确说明" not in finalized.message
 
 
 def test_rag_fast_path_is_finalized_before_return(monkeypatch) -> None:

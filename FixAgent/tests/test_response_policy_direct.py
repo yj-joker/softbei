@@ -77,6 +77,26 @@ def test_general_ai_direct_regenerates_emoji_violation_once(monkeypatch) -> None
     assert "禁止使用 emoji" in llm.calls[0]["messages"][0]["content"]
 
 
+def test_insufficient_evidence_requests_verifiable_material_without_model_assumption() -> None:
+    request = ChatRequest(session_id="insufficient-1", message="某部件的精确安装参数是多少？")
+    input_data = AgentInput(
+        user_message=request.message,
+        session_id=request.session_id,
+        context={
+            "intention": "parameter_query",
+            "response_policy": {"mode": "INSUFFICIENT_EVIDENCE"},
+        },
+    )
+
+    output = asyncio.run(main._try_response_policy_direct(request, input_data))
+
+    assert output is not None
+    assert "型号" not in output.message
+    assert "未说明" in output.message
+    assert "手册" in output.message
+    assert "可验证" in output.message
+
+
 def test_maintenance_ai_fallback_enforces_source_disclaimer(monkeypatch) -> None:
     llm = _FakeLLM("可以先记录异响出现的工况和位置。")
     monkeypatch.setattr(main, "get_llm_service", lambda: llm)

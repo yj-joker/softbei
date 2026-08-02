@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from services.retrieval.device_identity import DeviceCatalog, QueryContract
+from services.retrieval.device_identity import (
+    DeviceCatalog,
+    QueryContract,
+    query_has_grounded_operation_target,
+)
 from services.retrieval.scope import ScopeRegistry, decide_scope, get_scope_registry
 
 
@@ -66,6 +70,29 @@ def test_aircraft_query_is_rejected_against_motorcycle_manual() -> None:
     assert decision.status == "out_of_scope"
     assert decision.document_id == MANUAL_ID
     assert decision.detected_device_type == "飞机活塞发动机"
+    assert decision.reason == "device_document_conflict"
+
+
+def test_explicit_requested_device_mismatch_precedes_unresolved_query_identity() -> None:
+    """A router miss must not override an explicit request/document mismatch."""
+    query = "飞机活塞发动机功率下降有哪些常见原因？"
+    decision = decide_scope(
+        query,
+        request_document_id=MANUAL_ID,
+        request_device_type="aircraft-piston-engine",
+        query_contract=QueryContract.from_mapping(
+            {
+                # Reproduce a conservative intent result that only identifies
+                # the component and leaves the device identity blank.
+                "component": "活塞发动机",
+                "action": "功率下降",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
+    assert decision.status == "out_of_scope"
     assert decision.reason == "device_document_conflict"
 
 
@@ -267,7 +294,7 @@ def test_uncertain_device_identity_never_exposes_a_retrieval_filter() -> None:
     assert decision.retrieval_filter() == {}
 
 
-def test_selected_document_does_not_override_uncertain_explicit_identity() -> None:
+def test_selected_document_can_scope_an_unqualified_dynamic_identity_head() -> None:
     query = "发动机异响是什么原因？"
 
     decision = decide_scope(
@@ -283,8 +310,139 @@ def test_selected_document_does_not_override_uncertain_explicit_identity() -> No
         catalog=_dynamic_catalog(),
     )
 
+    assert decision.status == "in_scope"
+    assert decision.reason == "document_confirmed"
+    assert decision.retrieval_filter() == {
+        "document_id": MANUAL_ID,
+        "device_type": "",
+    }
+
+
+def test_selected_document_accepts_focused_confirmation_of_no_external_identity() -> None:
+    query = "拆卸发动机时排放机油要拆哪两个放油螺栓？"
+
+    decision = decide_scope(
+        query,
+        request_document_id=MANUAL_ID,
+        query_contract=QueryContract.from_mapping(
+            {
+                "component": "放油螺栓",
+                "action": "拆卸",
+                "task_action": "formal_procedure",
+                "identity_resolution": "confirmed_absent",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
+    assert decision.status == "in_scope"
+    assert decision.reason == "document_confirmed"
+    assert decision.retrieval_filter() == {
+        "document_id": MANUAL_ID,
+        "device_type": "",
+    }
+
+
+def test_non_operation_task_cannot_confirm_a_carrier_as_an_action() -> None:
+    query = QueryContract.from_mapping(
+        {
+            "action": "飞机",
+            "task_action": "find_cause",
+        },
+        raw_query="飞机发动机的异响是什么原因？",
+    )
+    document = _dynamic_catalog().document(MANUAL_ID)
+
+    assert document is not None
+    assert query_has_grounded_operation_target(query, document) is False
+
+
+def test_selected_document_rejects_a_truncated_generic_identity_span() -> None:
+    query = "飞机发动机异响是什么原因？"
+
+    decision = decide_scope(
+        query,
+        request_document_id=MANUAL_ID,
+        query_contract=QueryContract.from_mapping(
+            {
+                "raw_device_span": "发动机",
+                "device_category": "发动机",
+                "action": "fault_diagnosis",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
     assert decision.status == "unknown"
-    assert decision.reason == "identity_not_distinguishing"
+    assert decision.reason == "unresolved_device_identity"
+    assert decision.retrieval_filter() == {}
+
+
+def test_session_document_rejects_a_truncated_generic_identity_span() -> None:
+    query = "卡车发动机异响是什么原因？"
+
+    decision = decide_scope(
+        query,
+        session_document_id=MANUAL_ID,
+        query_contract=QueryContract.from_mapping(
+            {
+                "raw_device_span": "发动机",
+                "device_category": "发动机",
+                "action": "fault_diagnosis",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
+    assert decision.status == "unknown"
+    assert decision.reason == "unresolved_device_identity"
+    assert decision.retrieval_filter() == {}
+
+
+def test_requested_device_rejects_a_truncated_generic_identity_span() -> None:
+    query = "飞机发动机异响是什么原因？"
+
+    decision = decide_scope(
+        query,
+        request_device_type="motorcycle-engine",
+        query_contract=QueryContract.from_mapping(
+            {
+                "raw_device_span": "发动机",
+                "device_category": "发动机",
+                "action": "fault_diagnosis",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
+    assert decision.status == "unknown"
+    assert decision.reason == "unresolved_device_identity"
+    assert decision.retrieval_filter() == {}
+
+
+def test_session_device_rejects_a_truncated_generic_identity_span() -> None:
+    query = "卡车发动机异响是什么原因？"
+
+    decision = decide_scope(
+        query,
+        session_device_type="motorcycle-engine",
+        query_contract=QueryContract.from_mapping(
+            {
+                "raw_device_span": "发动机",
+                "device_category": "发动机",
+                "action": "fault_diagnosis",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
+    assert decision.status == "unknown"
+    assert decision.reason == "unresolved_device_identity"
     assert decision.retrieval_filter() == {}
 
 
@@ -312,6 +470,27 @@ def test_catalog_fallback_does_not_promote_generic_document_name_to_explicit_ide
     )
 
     assert decision.status == "unknown"
+    assert decision.retrieval_filter() == {}
+
+
+def test_selected_document_does_not_authorize_an_unresolved_qualified_identity() -> None:
+    query = "飞机发动机异响通常是什么原因"
+
+    decision = decide_scope(
+        query,
+        request_document_id=MANUAL_ID,
+        query_contract=QueryContract.from_mapping(
+            {
+                "component": "发动机",
+                "action": "fault_diagnosis",
+            },
+            raw_query=query,
+        ),
+        catalog=_dynamic_catalog(),
+    )
+
+    assert decision.status == "unknown"
+    assert decision.reason == "unresolved_device_identity"
     assert decision.retrieval_filter() == {}
 
 

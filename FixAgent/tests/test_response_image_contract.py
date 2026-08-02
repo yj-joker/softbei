@@ -77,6 +77,49 @@ def test_evidence_pages_contract_keeps_all_final_answer_pages_in_order() -> None
     assert metadata["image_selection_contract"]["selected_pages"] == [19, 20, 21]
 
 
+def test_evidence_pages_step_binding_does_not_drop_an_answer_page_without_binding_metadata() -> None:
+    metadata = {
+        "original_user_message": "如何安装气缸与活塞？",
+        "query_understanding_selection_mode": "evidence_pages",
+        "_deterministic_answer_evidence_pages": [19, 20, 21],
+        "allowed_source_chunk_ids": ["step-19", "step-20"],
+        "allowed_document_ids": ["manual-1"],
+    }
+
+    selected = main._select_evidence_images_for_response(
+        [
+            _image(19, "p19", step_ids=["step-19"]),
+            _image(20, "p20", step_ids=["step-20"]),
+            _image(21, "p21"),
+        ],
+        metadata,
+    )
+
+    assert [item.page for item in selected] == [19, 20, 21]
+    assert metadata["image_selection_contract"]["selected_pages"] == [19, 20, 21]
+
+
+def test_evidence_pages_accepts_image_explicitly_selected_by_its_own_source_id() -> None:
+    metadata = {
+        "original_user_message": "如何安装气缸与活塞？",
+        "query_understanding_selection_mode": "evidence_pages",
+        "_deterministic_answer_evidence_pages": [19, 20, 21],
+        "allowed_source_chunk_ids": ["step-19", "step-20", "image-p21"],
+        "allowed_document_ids": ["manual-1"],
+    }
+
+    selected = main._select_evidence_images_for_response(
+        [
+            _image(19, "p19", step_ids=["step-19"]),
+            _image(20, "p20", step_ids=["step-20"]),
+            _image(21, "p21", step_ids=["next-section-step"]),
+        ],
+        metadata,
+    )
+
+    assert [item.page for item in selected] == [19, 20, 21]
+
+
 def test_contract_prefers_final_answer_pages_over_broader_allowed_pages() -> None:
     metadata = {
         "original_user_message": "如何拆卸气门？",

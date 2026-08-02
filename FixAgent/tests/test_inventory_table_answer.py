@@ -479,6 +479,7 @@ def test_direct_section_table_items_prefers_title_index_inventory_match(monkeypa
     )
 
     assert [item["id"] for item in items] == ["tbl-m10"]
+    assert items[0]["metadata"]["original_title_match"] is True
 
 
 def test_inventory_table_answer_parses_pipe_table_content() -> None:
@@ -892,3 +893,104 @@ def test_inventory_table_answer_merges_cross_page_continuation_with_original_dup
     assert "6. 定位销 12×20；数量：1；备注：此定位销不拆" in answer
     assert "7. 连杆；数量：1" in answer
     assert "原表序号如此" in answer
+
+
+def test_inventory_table_answer_uses_declared_page_range_for_complete_merged_table() -> None:
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "result_data": [
+                            {
+                                "id": "merged-cylinder-piston-table",
+                                "content": "5.1 气缸活塞装配部件清单",
+                                "metadata": {
+                                    "chunk_type": "table",
+                                    "chunk_label": "table_full",
+                                    "section_title": "5.1 气缸活塞装配部件清单",
+                                    "page": 17,
+                                    "page_range": "17-18",
+                                    "caption": "第17-18页表格",
+                                    "table_rows": 8,
+                                    "parent_section_id": "sec-cylinder-piston-inventory",
+                                    "table_full": {
+                                        "headers": ["序号", "零件名称", "数量", "备注"],
+                                        "rows": [
+                                            ["1", "气缸体分部件", "1", ""],
+                                            ["2", "箱体缸体垫片", "1", ""],
+                                            ["3", "活塞销挡圈", "2", "挡圈必须完全装配到槽内"],
+                                            ["4", "活塞销", "1", ""],
+                                            ["5", "活塞", "1", ""],
+                                            ["6", "φ8×14 空心定位销", "1", ""],
+                                            ["6", "定位销 12×20", "1", "此定位销不拆"],
+                                            ["7", "连杆", "1", ""],
+                                        ],
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    answer = _format_inventory_table_answer_from_metadata(
+        "帮我查询摩托车发动机气缸活塞装配部件清单",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "根据手册第17-18页" in answer
+    assert metadata["_deterministic_answer_evidence_pages"] == [17, 18]
+    assert metadata["_deterministic_answer_table_complete"] is True
+
+
+def test_inventory_table_answer_treats_legacy_textual_table_full_as_complete() -> None:
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "result_data": [
+                            {
+                                "id": "legacy-text-table-full",
+                                "content": (
+                                    "表格：第17-18页表格\n"
+                                    "序号 | 零件名称 | 数量 | 备注\n"
+                                    "1 | 气缸体分部件 | 1\n"
+                                    "2 | 箱体缸体垫片 | 1\n"
+                                    "3 | 活塞销挡圈 | 2 | 挡圈必须完全装配到槽内\n"
+                                    "4 | 活塞销 | 1\n"
+                                    "5 | 活塞 | 1\n"
+                                    "6 | φ8×14 空心定位销 | 1\n"
+                                    "6 | 定位销 12×20 | 1 | 此定位销不拆\n"
+                                    "7 | 连杆 | 1"
+                                ),
+                                "metadata": {
+                                    "chunk_type": "table",
+                                    "chunk_label": "table_full",
+                                    "section_title": "5.1 气缸活塞装配部件清单",
+                                    "page": 17,
+                                    "page_range": "17-18",
+                                    "caption": "第17-18页表格",
+                                    "table_rows": 8,
+                                    "parent_section_id": "sec-cylinder-piston-inventory",
+                                },
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    answer = _format_inventory_table_answer_from_metadata(
+        "帮我查询摩托车发动机气缸活塞装配部件清单",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "根据手册第17-18页" in answer
+    assert metadata["_deterministic_answer_table_complete"] is True

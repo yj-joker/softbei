@@ -80,6 +80,7 @@ class IntentDecision(BaseModel):
     action: str = ""
     orientation: str = ""
     risk_level: str = ""
+    identity_resolution: str = ""
     allowed_tools: List[str] = Field(default_factory=list)
     preferred_tools: List[str] = Field(default_factory=list)
     forbidden_tools: List[str] = Field(default_factory=list)
@@ -383,6 +384,10 @@ class IntentRouter:
         data = json.loads(response.get("content") or "{}")
         return QueryContract.from_mapping(data, raw_query=text)
 
+    async def refine_query_contract(self, text: str) -> QueryContract:
+        """Re-check an ambiguous generic identity span with the focused extractor."""
+        return await self._extract_query_contract_with_llm(text)
+
     @staticmethod
     def _merge_query_contract(
         decision: IntentDecision,
@@ -563,7 +568,11 @@ class IntentRouter:
             decision.source = "rules"
             return self._apply_strategy(decision)
         inferred_action = self._infer_task_action(text, [])
-        if decision.task_action in {"general_answer", ""} and inferred_action != "general_answer":
+        # A recognized action in the current utterance is a deterministic
+        # authorization boundary.  The LLM may fill an otherwise unknown
+        # action, but it must not override explicit cause/repair/procedure
+        # semantics and accidentally broaden document scope.
+        if inferred_action != "general_answer":
             decision.task_action = inferred_action
 
         decision = self._apply_target_layer_consistency(decision, text)

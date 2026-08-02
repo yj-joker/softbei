@@ -108,6 +108,28 @@ def test_ordered_title_match_requires_tail_character_to_avoid_entity_overgeneral
     assert hits == []
 
 
+def test_section_entity_with_specific_part_suffix_matches_shared_title_stem() -> None:
+    index = _index_with_titles(
+        ("sec:rotor-clutch", "磁电机转子离合器分部件", "7.3 磁电机转子离合器分部件"),
+        ("sec:rotor", "磁电机转子", "7.2 磁电机转子"),
+    )
+
+    hits = index.find("磁电机转子离合器单向器")
+
+    assert [hit.section_id for hit in hits] == ["sec:rotor-clutch"]
+
+
+def test_shared_title_stem_ignores_trailing_action_request() -> None:
+    index = _index_with_titles(
+        ("sec:rotor-clutch", "磁电机转子离合器分部件", "7.3 磁电机转子离合器分部件"),
+        ("sec:rotor", "磁电机转子", "7.2 磁电机转子"),
+    )
+
+    hits = index.find("磁电机转子离合器单向器怎么检查？")
+
+    assert [hit.section_id for hit in hits] == ["sec:rotor-clutch"]
+
+
 def test_explicit_direction_entity_prioritizes_matching_sections() -> None:
     index = _index_with_titles(
         ("sec-right-procedure", "右曲轴箱盖与离合器", "6.4 右曲轴箱盖与离合器"),

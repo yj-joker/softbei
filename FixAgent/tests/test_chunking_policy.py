@@ -24,6 +24,33 @@ def test_numbered_steps_receive_incrementing_child_index_within_source_chunk() -
     assert len({chunk["metadata"]["parent_chunk_id"] for chunk in steps}) == 1
 
 
+def test_procedure_chunks_persist_subflow_identity_from_toc_path() -> None:
+    chunks = build_section_index_chunks(
+        {
+            "section_title": "6.4 右曲轴箱盖与离合器",
+            "text_chunks": [{
+                "text": "1. 检查离合器摩擦片。\n2. 依次装入离合器部件。",
+                "page": 27,
+                "chunk_label": "step",
+                "toc_path": (
+                    "摩托车发动机维修手册 > 六、右曲轴箱盖、离合器、机油泵、水泵 "
+                    "> 6.4 右曲轴箱盖与离合器 > 安装离合器"
+                ),
+            }],
+            "tables": [],
+            "images": [],
+        },
+        section_index=28,
+    )
+
+    steps = [chunk for chunk in chunks if chunk["metadata"].get("answer_role") == "procedure_step"]
+
+    assert {chunk["metadata"]["procedure_action"] for chunk in steps} == {"安装"}
+    assert {chunk["metadata"]["procedure_target"] for chunk in steps} == {"离合器"}
+    assert len({chunk["metadata"]["procedure_scope_id"] for chunk in steps}) == 1
+    assert all(chunk["metadata"]["procedure_heading"] == "安装离合器" for chunk in steps)
+
+
 def test_continued_table_preserves_structured_row_source_pages_across_three_pages() -> None:
     chunks = build_section_index_chunks(
         {
@@ -110,3 +137,49 @@ def test_image_chunks_bind_only_steps_from_the_same_source_page() -> None:
     assert images[20]["metadata"]["related_step_chunk_ids"] == [steps_by_page[20]]
     assert images[19]["metadata"]["binding_confidence"] == 1.0
     assert images[20]["metadata"]["binding_confidence"] == 1.0
+    assert "活塞与气缸必须使用相同组别" not in images[19]["metadata"]["visual_context_text"]
+    assert "安装全新的箱体缸体垫片" not in images[20]["metadata"]["visual_context_text"]
+    assert images[19]["metadata"]["related_text_chunk_ids"] == [steps_by_page[19]]
+    assert images[20]["metadata"]["related_text_chunk_ids"] == [steps_by_page[20]]
+
+
+def test_image_chunks_carry_same_page_procedure_scope_ids() -> None:
+    chunks = build_section_index_chunks(
+        {
+            "section_title": "6.4 右曲轴箱盖与离合器",
+            "text_chunks": [
+                {
+                    "text": "1. 检查曲轴油封。",
+                    "page": 26,
+                    "chunk_label": "step",
+                    "toc_path": "手册 > 6.4 右曲轴箱盖与离合器 > 安装右盖",
+                },
+                {
+                    "text": "1. 检查离合器摩擦片。",
+                    "page": 27,
+                    "chunk_label": "step",
+                    "toc_path": "手册 > 6.4 右曲轴箱盖与离合器 > 安装离合器",
+                },
+            ],
+            "tables": [],
+            "images": [
+                {"image_name": "page_026.png", "page": 26},
+                {"image_name": "page_027.png", "page": 27},
+            ],
+        },
+        section_index=28,
+    )
+
+    scopes_by_page = {
+        chunk["page"]: chunk["metadata"]["procedure_scope_id"]
+        for chunk in chunks
+        if chunk["metadata"].get("answer_role") == "procedure_step"
+    }
+    images = {
+        chunk["page"]: chunk
+        for chunk in chunks
+        if chunk["chunk_label"] == "image"
+    }
+
+    assert images[26]["metadata"]["procedure_scope_ids"] == [scopes_by_page[26]]
+    assert images[27]["metadata"]["procedure_scope_ids"] == [scopes_by_page[27]]

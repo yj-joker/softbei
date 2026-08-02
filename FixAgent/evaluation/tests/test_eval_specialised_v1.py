@@ -93,28 +93,47 @@ def test_conflict_fixture_declares_isolated_non_production_redis_guard() -> None
     assert len(trace["react_trace"]) >= 1
 
 
-def test_conflict_fixture_proves_both_conflict_cases_are_deterministically_scoreable() -> None:
+def test_conflict_fixture_proves_all_three_conflict_turns_are_deterministically_scoreable() -> None:
     cases = {case.case_id: case for case in read_jsonl_dataset(DATASET_PATH)}
     metadata = json.loads((FIXTURE_DIR / "conflict_trace.json").read_text(encoding="utf-8"))
-    answers = {
-        "spec_ev_007": "两个来源不一致：手册为20±2 N·m，后台规则为25±2 N·m，需要人工确认。",
-        "spec_ev_008": "来源存在冲突：手册为60 N·m，图谱为65 N·m，需要人工确认。",
-    }
+    checks = [
+        (
+            MaintenanceEvalTurn(
+                query=cases["spec_ev_007"].query,
+                expected_scope=cases["spec_ev_007"].expected_scope,
+                expected_coverage_status=cases["spec_ev_007"].expected_coverage_status,
+                conflict_constraints=cases["spec_ev_007"].conflict_constraints,
+                source_request_mode=cases["spec_ev_007"].source_request_mode,
+                style_expectation=cases["spec_ev_007"].style_expectation,
+            ),
+            "两个来源不一致：手册为20±2 N·m，后台规则为25±2 N·m，需要人工确认。",
+        ),
+        (
+            MaintenanceEvalTurn(
+                query=cases["spec_ev_008"].query,
+                expected_scope=cases["spec_ev_008"].expected_scope,
+                expected_coverage_status=cases["spec_ev_008"].expected_coverage_status,
+                conflict_constraints=cases["spec_ev_008"].conflict_constraints,
+                source_request_mode=cases["spec_ev_008"].source_request_mode,
+                style_expectation=cases["spec_ev_008"].style_expectation,
+            ),
+            "来源存在冲突：手册为60 N·m，图谱为65 N·m，需要人工确认。",
+        ),
+        (
+            cases["spec_mt_ev_002"].turns[1],
+            "两个来源不一致：手册为20±2 N·m，后台规则为25±2 N·m，需要人工确认。",
+        ),
+    ]
 
-    for case_id, answer in answers.items():
-        case = cases[case_id]
-        turn = MaintenanceEvalTurn(
-            query=case.query,
-            expected_scope=case.expected_scope,
-            expected_coverage_status=case.expected_coverage_status,
-            conflict_constraints=case.conflict_constraints,
-            source_request_mode=case.source_request_mode,
-            style_expectation=case.style_expectation,
-        )
+    passed = 0
+    for turn, answer in checks:
         score = score_turn_output(turn, answer, metadata)
         assert score.coverage_status == "conflict"
         assert score.conflict_handling_pass is True
         assert score.final_pass is True
+        passed += 1
+
+    assert passed == 3
 
 
 def test_all_four_evaluation_datasets_form_one_unique_130_case_suite() -> None:

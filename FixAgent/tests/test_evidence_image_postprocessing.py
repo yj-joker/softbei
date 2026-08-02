@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
@@ -12,7 +13,9 @@ from api.main import (
     _collect_direct_evidence_page_images,
     _filter_evidence_images_by_action_context,
     _filter_evidence_images_to_target_section,
+    _image_specific_anchor_terms,
     _narrow_evidence_images_to_query_target_pages,
+    _select_evidence_images_for_response,
     _text_evidence_pages,
     _apply_final_image_contract,
 )
@@ -102,6 +105,66 @@ def test_evidence_images_follow_text_evidence_pages_and_are_sorted() -> None:
     aligned = _align_evidence_images_to_text_evidence_pages(images, metadata)
 
     assert [image.page for image in aligned] == [19, 20, 21]
+
+
+def test_direct_section_images_follow_answer_procedure_scope(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=20, chunk_type=None):
+            assert document_id == "manual-doc"
+            assert section_id == "sec-combined"
+            assert chunk_type == "image"
+            return [
+                {
+                    "id": "image-cover",
+                    "metadata": {
+                        "chunk_type": "image",
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "page": 26,
+                        "image_url": "http://example.test/cover.png",
+                        "procedure_scope_ids": ["proc:install-cover"],
+                    },
+                },
+                {
+                    "id": "image-clutch",
+                    "metadata": {
+                        "chunk_type": "image",
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "page": 27,
+                        "image_url": "http://example.test/clutch.png",
+                        "procedure_scope_ids": ["proc:install-clutch"],
+                    },
+                },
+            ]
+
+    from services.knowledge import vector_service as vector_service_module
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    metadata = {
+        "original_user_message": "如何安装离合器",
+        "_deterministic_answer_procedure_scope_id": "proc:install-clutch",
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [{
+                    "content": "1. 检查离合器摩擦片。",
+                    "metadata": {
+                        "retrieval_plan_intent": "procedure",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec-combined",
+                        "section_match_ids": ["sec-combined"],
+                        "chunk_type": "step_raw",
+                        "context_role": "primary",
+                    },
+                }],
+            }],
+        }],
+    }
+
+    images = asyncio.run(api_main._collect_direct_section_images(metadata))
+
+    assert [(image.page, image.source_chunk_id) for image in images] == [(27, "image-clutch")]
 
 
 def test_evidence_images_are_not_filtered_when_text_pages_are_absent() -> None:
@@ -307,6 +370,55 @@ def test_collect_direct_evidence_page_images_keeps_images_from_deterministic_pag
 
     assert [image.page for image in images] == [21]
     assert images[0].source_chunk_id == "image-substep-page"
+
+
+def test_collect_direct_evidence_page_images_renders_page_when_indexed_image_is_neighbor_section(
+    monkeypatch,
+) -> None:
+    class FakeVectorService:
+        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
+            assert document_id == "manual-doc"
+            assert page == 21
+            assert chunk_type == "image"
+            return [{
+                "id": "image-next-section",
+                "content": "5.6 安装活塞环 第21页插图",
+                "metadata": {
+                    "chunk_type": "image",
+                    "document_id": "manual-doc",
+                    "page": 21,
+                    "section_title": "5.6 安装活塞环",
+                    "image_url": "http://example.test/next-section.png",
+                    "visual_context_text": "安装活塞销和活塞销挡圈",
+                },
+            }]
+
+    monkeypatch.setattr(
+        api_main,
+        "_render_evidence_pdf_page_image",
+        lambda metadata, document_id, page: EvidenceImage(
+            image_url="/files/rendered_pages/manual-doc/page_021.png",
+            caption="第21页页面截图",
+            page=21,
+            section_title="5.4 安装气缸与活塞",
+            document_id="manual-doc",
+            source_chunk_id="rendered-page:manual-doc:21",
+            context_role="page_render",
+        ),
+    )
+    metadata = {
+        "original_user_message": "如何安装气缸与活塞？",
+        "_deterministic_answer_evidence_pages": [21],
+        "_deterministic_answer_document_ids": ["manual-doc"],
+        "_deterministic_answer_section_title": "5.4 安装气缸与活塞",
+    }
+
+    images = _collect_direct_evidence_page_images(
+        metadata,
+        vector_service=FakeVectorService(),
+    )
+
+    assert [image.source_chunk_id for image in images] == ["rendered-page:manual-doc:21"]
 
 
 def test_collect_direct_evidence_page_images_renders_page_when_indexed_images_do_not_match_query(monkeypatch) -> None:
@@ -950,3 +1062,95 @@ def test_target_section_filter_drops_same_page_neighbor_section_image_for_invent
     assert [(image.section_title, image.source_chunk_id) for image in filtered] == [
         ("5.1 气缸活塞装配部件清单", "053f60433fa4:19:img:0000")
     ]
+
+
+def test_section_overview_uses_visual_context_to_choose_cross_page_inventory_image(monkeypatch) -> None:
+    """A stale text-evidence page must not hide the image that covers all requested parts."""
+
+    class FakeVectorService:
+        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
+            assert document_id == "manual-doc"
+            assert chunk_type == "image"
+            contexts = {
+                23: "离合器、机油泵装配零件清单，φ8×14 空心定位销数量2，O型圈数量1",
+                24: "离合器、机油泵装配零件清单，φ10×14 空心定位销数量3，O型圈数量3",
+            }
+            return [
+                {
+                    "id": f"inventory-p{page}",
+                    "metadata": {
+                        "chunk_type": "image",
+                        "document_id": "manual-doc",
+                        "page": page,
+                        "image_url": f"http://example.test/p{page}.png",
+                        "visual_context_text": contexts[page],
+                    },
+                }
+            ]
+
+    from services.knowledge import vector_service as vector_service_module
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    title = "6.2 离合器、机油泵装配零件清单"
+    images = [
+        EvidenceImage(
+            image_url="http://example.test/p23.png",
+            caption=f"{title} 第23页插图",
+            page=23,
+            section_title=title,
+            document_id="manual-doc",
+            source_chunk_id="inventory-p23",
+        ),
+        EvidenceImage(
+            image_url="http://example.test/p24.png",
+            caption=f"{title} 第24页插图",
+            page=24,
+            section_title=title,
+            document_id="manual-doc",
+            source_chunk_id="inventory-p24",
+        ),
+    ]
+    metadata = {
+        "original_user_message": (
+            "离合器、机油泵装配零件清单里φ10×14空心定位销和O型圈数量是多少？"
+        ),
+        "_deterministic_answer_evidence_pages": [23],
+        "_deterministic_answer_section_title": title,
+        "query_understanding_selection_mode": "section_overview",
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": [
+                            {
+                                "content": (
+                                    "9.8×2.5 丙烯酸酯胶 O型圈 数量3；"
+                                    "φ10×14 空心定位销 数量3"
+                                ),
+                                "metadata": {
+                                    "chunk_type": "table",
+                                    # A cross-page table row can retain its
+                                    # first-page metadata after import.
+                                    "page": 23,
+                                    "page_range": "23-24",
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ],
+    }
+
+    selected = _select_evidence_images_for_response(images, metadata)
+
+    assert [image.page for image in selected] == [24]
+
+
+def test_inventory_image_anchor_stops_at_first_requested_part_suffix() -> None:
+    anchors = _image_specific_anchor_terms(
+        "零件清单里φ10×14空心定位销和O型圈数量是多少？"
+    )
+
+    assert "φ10×14空心定位销" in anchors

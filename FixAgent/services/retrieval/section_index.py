@@ -44,11 +44,24 @@ ACTION_TITLE_ALIASES = {
     "检查": ("检查", "检修", "查看", "看"),
     "测量": ("测量", "检测", "测试", "测"),
     "更换": ("更换", "替换", "换"),
+    "调整": ("调整", "调节", "校正"),
 }
+_TRAILING_ACTION_REQUEST_RE = re.compile(
+    r"(?:"
+    r"(?:怎么|如何|怎样)(?:进行)?(?:安装|装配|拆卸|拆除|检查|检修|查看|测量|检测|测试|更换|替换|调整|调节|校正)(?:一下)?"
+    r"|(?:安装|装配|拆卸|拆除|检查|检修|查看|测量|检测|测试|更换|替换|调整|调节|校正)(?:的)?(?:步骤|流程|方法|要求|注意事项)"
+    r")$"
+)
 
 
 def _compact_chinese(text: str) -> str:
     return "".join(CHINESE_RE.findall(text or ""))
+
+
+def _strip_trailing_action_request(compact_query: str) -> str:
+    """Remove request grammar from an entity-first query before stem scoring."""
+    stripped = _TRAILING_ACTION_REQUEST_RE.sub("", compact_query or "")
+    return stripped or compact_query
 
 
 def _lcs_length(left: str, right: str) -> int:
@@ -274,6 +287,36 @@ class SectionTitleIndex:
         # "给我展示" 时不会精确命中；而 "装配/部件清单" 又容易被泛词过滤。
         # 这里先按完整标题子串收窄，命中后直接返回，避免相邻清单章节混入。
         compact_query = _compact_chinese(query)
+        stem_query = _strip_trailing_action_request(compact_query)
+        shared_entity_stems: Dict[str, tuple[SectionRef, int]] = {}
+        for core_title, refs in self._exact.items():
+            compact_core = _compact_chinese(core_title)
+            if len(compact_core) < 6 or len(stem_query) < 6:
+                continue
+            prefix_length = 0
+            for left, right in zip(compact_core, stem_query):
+                if left != right:
+                    break
+                prefix_length += 1
+            core_coverage = prefix_length / len(compact_core)
+            query_coverage = prefix_length / len(stem_query)
+            if prefix_length < 6 or min(core_coverage, query_coverage) < 0.60:
+                continue
+            score = 4000 + prefix_length * 20 + int(min(core_coverage, query_coverage) * 100)
+            for ref in refs:
+                k = _key(ref)
+                if k not in shared_entity_stems or shared_entity_stems[k][1] < score:
+                    shared_entity_stems[k] = (ref, score)
+
+        if shared_entity_stems:
+            sorted_hits = sorted(shared_entity_stems.values(), key=lambda x: x[1], reverse=True)
+            best_score = sorted_hits[0][1]
+            strong_hits = [
+                (ref, score) for ref, score in sorted_hits
+                if score >= best_score - 50
+            ]
+            return [ref for ref, _score in strong_hits[:MAX_SECTIONS_PER_QUERY]]
+
         embedded_exact: Dict[str, tuple[SectionRef, int]] = {}
         for core_title, refs in self._exact.items():
             compact_core = _compact_chinese(core_title)

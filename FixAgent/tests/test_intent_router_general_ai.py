@@ -101,6 +101,65 @@ class _IntentThenIdentityLLM:
         return {"content": json.dumps(payload, ensure_ascii=False)}
 
 
+class _DoubleMissIdentityLLM:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def chat(self, messages, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            payload = {
+                "target_layer": "document_content",
+                "target_object": "发动机异响",
+                "user_goal": "查找原因",
+                "intent": "fault_diagnosis",
+                "task_action": "find_cause",
+                "confidence": 0.95,
+                "action": "fault_diagnosis",
+            }
+        else:
+            payload = {
+                "raw_device_span": "",
+                "device_name": "",
+                "device_category": "",
+                "carrier_or_application": "",
+                "manufacturer": "",
+                "model": "",
+                "component": "发动机",
+                "action": "fault_diagnosis",
+                "orientation": "",
+                "risk_level": "medium",
+            }
+        return {"content": json.dumps(payload, ensure_ascii=False)}
+
+
+class _RepairBiasedCauseLLM:
+    async def chat(self, messages, **kwargs):
+        return {
+            "content": json.dumps(
+                {
+                    "target_layer": "operation_task",
+                    "target_object": "飞机发动机异响",
+                    "user_goal": "维修发动机",
+                    "intent": "maintenance_guidance",
+                    "task_action": "repair_guidance",
+                    "confidence": 0.99,
+                    "raw_device_span": "",
+                    "device_name": "",
+                    "device_category": "",
+                    "carrier_or_application": "",
+                    "manufacturer": "",
+                    "model": "",
+                    "component": "发动机",
+                    "action": "飞机",
+                    "orientation": "",
+                    "risk_level": "medium",
+                },
+                ensure_ascii=False,
+            )
+        }
+
+
 def test_general_knowledge_overrides_llm_maintenance_bias() -> None:
     decision = asyncio.run(
         IntentRouter(_MaintenanceBiasedLLM()).classify("给我讲讲高等数学中级数的概念")
@@ -166,6 +225,28 @@ def test_missing_primary_identity_is_completed_by_focused_query_contract_extract
     assert decision.raw_device_span == "飞机发动机"
     assert decision.carrier_or_application == "飞机"
     assert decision.component == "发动机"
+
+
+def test_double_identity_miss_never_signs_confirmed_absence() -> None:
+    llm = _DoubleMissIdentityLLM()
+
+    decision = asyncio.run(
+        IntentRouter(llm).classify("飞机发动机有异响通常是什么原因")
+    )
+
+    assert llm.calls == 2
+    assert decision.raw_device_span == ""
+    assert decision.identity_resolution == ""
+
+
+def test_cause_semantics_override_llm_repair_guidance_bias() -> None:
+    decision = asyncio.run(
+        IntentRouter(_RepairBiasedCauseLLM()).classify("飞机发动机的异响是什么原因？")
+    )
+
+    assert decision.intent == "fault_diagnosis"
+    assert decision.target_layer == "document_content"
+    assert decision.task_action == "find_cause"
 
 
 def test_ungrounded_device_span_from_model_is_discarded() -> None:

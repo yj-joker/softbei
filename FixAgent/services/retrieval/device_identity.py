@@ -30,6 +30,7 @@ _HARD_CONFLICT_FIELDS = (
     "manufacturer",
     "model",
 )
+_COMPONENT_CATEGORY_SUFFIXES = ("部件", "组件", "零件", "总成")
 
 
 def _text(value: Any) -> str:
@@ -41,10 +42,34 @@ def _normalized(value: Any) -> str:
     return re.sub(r"[\s_\-—–·,，。:：/\\()（）\[\]【】]+", "", text)
 
 
+def _is_grounded_operation_target(raw_query: str, action: str, raw_span: str) -> bool:
+    """Whether the extracted span is the grammatical target of an operation.
+
+    This is an entity-role check, not a component-name list: a component-like
+    category immediately following the grounded action is an operation target,
+    while carrier/manufacturer/model-qualified spans remain device identities.
+    """
+    query = _normalized(raw_query)
+    normalized_action = _normalized(action)
+    span = _normalized(raw_span)
+    if not query or not normalized_action or not span:
+        return False
+    start = query.find(normalized_action)
+    while start >= 0:
+        tail = query[start + len(normalized_action):]
+        if tail.startswith(span):
+            remainder = tail[len(span):]
+            if not remainder or remainder[0] in "时的前后、？?；;":
+                return True
+        start = query.find(normalized_action, start + len(normalized_action))
+    return False
+
+
 @dataclass(frozen=True)
 class QueryContract:
     raw_query: str
     intent: str = ""
+    task_action: str = ""
     raw_device_span: str = ""
     device_name: str = ""
     device_category: str = ""
@@ -55,6 +80,7 @@ class QueryContract:
     action: str = ""
     orientation: str = ""
     risk_level: str = ""
+    identity_resolution: str = ""
 
     @classmethod
     def from_mapping(
@@ -78,16 +104,40 @@ class QueryContract:
             )
             if value
         }
-        category = _normalized(data.get("device_category"))
+        normalized_span = _normalized(raw_span)
+        normalized_component = _normalized(component)
+        normalized_category = _normalized(data.get("device_category"))
+        category_is_component_like = any(
+            normalized_category.endswith(_normalized(suffix))
+            for suffix in _COMPONENT_CATEGORY_SUFFIXES
+        )
+        component_remainder_length = len(normalized_span) - len(normalized_component)
+        component_with_short_modifier = bool(
+            normalized_span
+            and normalized_component
+            and category_is_component_like
+            and 0 < component_remainder_length <= 2
+            and (
+                normalized_span.startswith(normalized_component)
+                or normalized_span.endswith(normalized_component)
+            )
+        )
         has_identity_qualifier = bool(
             _text(data.get("carrier_or_application"))
             or _text(data.get("manufacturer"))
             or _text(data.get("model"))
-            or (category and category not in component_forms)
+        )
+        operation_target_is_component = bool(
+            category_is_component_like
+            and _is_grounded_operation_target(query, data.get("action"), raw_span)
         )
         if (
             span_is_grounded
-            and _normalized(raw_span) in component_forms
+            and (
+                normalized_span in component_forms
+                or component_with_short_modifier
+                or operation_target_is_component
+            )
             and not has_identity_qualifier
         ):
             span_is_grounded = False
@@ -95,9 +145,13 @@ class QueryContract:
             raw_span = ""
             for field in ("device_name", *_IDENTITY_FIELDS):
                 data[field] = ""
+        identity_resolution = _text(data.get("identity_resolution"))
+        if identity_resolution != "confirmed_absent" or raw_span:
+            identity_resolution = ""
         return cls(
             raw_query=query,
             intent=_text(data.get("intent")),
+            task_action=_text(data.get("task_action")),
             raw_device_span=raw_span,
             device_name=raw_span or _text(data.get("device_name")),
             device_category=_text(data.get("device_category")),
@@ -108,6 +162,7 @@ class QueryContract:
             action=_text(data.get("action")),
             orientation=_text(data.get("orientation")),
             risk_level=_text(data.get("risk_level")),
+            identity_resolution=identity_resolution,
         )
 
     @property
@@ -118,6 +173,7 @@ class QueryContract:
         return {
             "raw_query": self.raw_query,
             "intent": self.intent,
+            "task_action": self.task_action,
             "raw_device_span": self.raw_device_span,
             "device_name": self.device_name,
             "device_category": self.device_category,
@@ -128,6 +184,7 @@ class QueryContract:
             "action": self.action,
             "orientation": self.orientation,
             "risk_level": self.risk_level,
+            "identity_resolution": self.identity_resolution,
         }
 
 
@@ -210,6 +267,134 @@ class DeviceCatalog:
     def match(self, query: QueryContract) -> tuple[IdentityComparison, ...]:
         return tuple(compare_query_to_document(query, document) for document in self.documents)
 
+
+def document_identity_heads(document: DocumentIdentity) -> tuple[str, ...]:
+    """Return generic identity heads derived only from an imported manifest.
+
+    For example, a compound manifest identity made from a carrier qualifier
+    and a device category yields the category as its generic head.  No carrier
+    names or aliases are registered here; the result is entirely data-driven
+    by the imported document identity.
+    """
+    qualifiers = tuple(
+        value
+        for value in (
+            _normalized(document.carrier_or_application),
+            _normalized(document.manufacturer),
+            _normalized(document.model),
+        )
+        if value
+    )
+    heads: list[str] = []
+    for raw_name in (document.device_name, *document.aliases):
+        name = _normalized(raw_name)
+        if not name:
+            continue
+        head = name
+        for qualifier in qualifiers:
+            head = head.replace(qualifier, "")
+        if len(head) >= 2 and head != name:
+            heads.append(head)
+    category = _normalized(document.device_category)
+    if len(category) >= 2 and any(category in _normalized(name) for name in (document.device_name, *document.aliases)):
+        heads.append(category)
+    return tuple(dict.fromkeys(heads))
+
+
+def query_mentions_unresolved_identity(
+    query: QueryContract,
+    document: DocumentIdentity,
+) -> bool:
+    """Conservatively detect an identity-bearing query missed by extraction.
+
+    This signal can only *remove* retrieval authority.  It never turns an
+    unknown query into a matched document, so a dynamic catalog term cannot
+    become a reverse keyword whitelist.
+    """
+    raw_query = _normalized(query.raw_query)
+    if not raw_query:
+        return False
+    heads = document_identity_heads(document)
+    if not query.has_explicit_device:
+        if query.identity_resolution == "confirmed_absent":
+            return False
+        return any(head in raw_query for head in heads)
+
+    span = _normalized(query.raw_device_span)
+    if not span or span not in heads:
+        return False
+
+    # A model can return only the generic head from a larger compound identity.
+    # Treat that non-maximal span as unresolved.  The API layer may ask the
+    # focused semantic extractor to confirm that the prefix is an operation;
+    # without that confirmation, scope authorization remains conservative.
+    start = raw_query.find(span)
+    while start >= 0:
+        prefix = raw_query[:start]
+        if not prefix:
+            return False
+        start = raw_query.find(span, start + len(span))
+    return True
+
+
+def query_has_grounded_operation_target(
+    query: QueryContract,
+    document: DocumentIdentity,
+) -> bool:
+    """Whether focused semantics prove that a document head is an action target.
+
+    The action and the document-derived generic head must both be literal spans
+    in the current query, with the action immediately governing the head.  An
+    empty LLM extraction therefore cannot authorize a document by itself.
+    """
+    if (
+        query.task_action not in {"formal_procedure", "repair_guidance"}
+        or query.has_explicit_device
+        or not query.action
+    ):
+        return False
+    return any(
+        _is_grounded_operation_target(query.raw_query, query.action, head)
+        for head in document_identity_heads(document)
+    )
+
+
+def query_is_unqualified_document_head(
+    query: QueryContract,
+    document: DocumentIdentity,
+) -> bool:
+    """Whether the explicit span is only the selected document's generic head."""
+    span = _normalized(query.raw_device_span)
+    if not span or span not in document_identity_heads(document):
+        return False
+    return not any(
+        _normalized(getattr(query, field))
+        for field in ("carrier_or_application", "manufacturer", "model")
+    )
+
+
+def _query_device_name_candidates(query: QueryContract) -> tuple[str, ...]:
+    query_name = _normalized(query.device_name or query.raw_device_span)
+    if not query_name:
+        return ()
+    candidates = [query_name]
+    component_forms = {
+        value
+        for value in (
+            _normalized(query.component),
+            _normalized(query.orientation + query.component),
+            _normalized(query.component + query.orientation),
+        )
+        if value
+    }
+    for component in component_forms:
+        if query_name.endswith(component) and len(query_name) > len(component):
+            candidates.append(query_name[:-len(component)])
+        if query_name.startswith(component) and len(query_name) > len(component):
+            candidates.append(query_name[len(component):])
+    return tuple(dict.fromkeys(value for value in candidates if value))
+
+
 def compare_query_to_document(
     query: QueryContract,
     document: DocumentIdentity,
@@ -217,13 +402,21 @@ def compare_query_to_document(
     if not query.has_explicit_device:
         return IdentityComparison(UNCERTAIN, document, reason="query_device_not_explicit")
 
-    query_name = _normalized(query.device_name or query.raw_device_span)
+    # A selected document may scope its own generic identity head even when the
+    # intent model describes the category differently from the import manifest
+    # (for example, "机械装置" versus "内燃机").  Keep this comparison uncertain,
+    # never matched: only an explicit request/session document can authorize it.
+    if query_is_unqualified_document_head(query, document):
+        return IdentityComparison(UNCERTAIN, document, reason="identity_not_distinguishing")
+
+    query_names = _query_device_name_candidates(query)
+    query_name = query_names[0] if query_names else ""
     document_names = tuple(
         value for value in (_normalized(document.device_name), *map(_normalized, document.aliases)) if value
     )
     # 设备名和导入时确认的完整别名只做规范化精确匹配；
     # 通用类别名称不得通过子串关系授权更具体的复合设备名称。
-    name_compatible = bool(query_name and query_name in document_names)
+    name_compatible = bool(set(query_names).intersection(document_names))
     attribute_conflicts = tuple(
         field
         for field in _HARD_CONFLICT_FIELDS
@@ -252,7 +445,10 @@ def compare_query_to_document(
         if _normalized(getattr(query, field))
         and _normalized(getattr(query, field)) == _normalized(getattr(document, field))
     )
-    name_matches = bool(query_name and not category_only and name_compatible)
+    name_matches = bool(
+        name_compatible
+        and any(name != _normalized(query.device_category) for name in query_names)
+    )
     distinguishing_match = any(
         field in matched_fields for field in ("carrier_or_application", "manufacturer", "model")
     )

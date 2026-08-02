@@ -214,7 +214,7 @@ def test_component_and_orientation_are_not_promoted_to_device_identity() -> None
         {
             "raw_device_span": "右曲轴箱盖",
             "device_name": "右曲轴箱盖",
-            "device_category": "",
+            "device_category": "发动机部件",
             "carrier_or_application": "",
             "manufacturer": "",
             "model": "",
@@ -230,6 +230,57 @@ def test_component_and_orientation_are_not_promoted_to_device_identity() -> None
     assert query.component == "曲轴箱盖"
     assert query.action == "安装"
     assert query.orientation == "右"
+
+
+def test_component_with_missing_orientation_is_not_promoted_to_device_identity() -> None:
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "右曲轴箱盖",
+            "device_name": "右曲轴箱盖",
+            "device_category": "发动机部件",
+            "component": "曲轴箱盖",
+            "action": "安装",
+            "orientation": "",
+        },
+        raw_query="如何安装右曲轴箱盖",
+    )
+
+    assert query.has_explicit_device is False
+    assert query.device_name == ""
+    assert query.component == "曲轴箱盖"
+
+
+def test_operation_target_classified_as_component_is_not_promoted_to_device_identity() -> None:
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "右盖",
+            "device_name": "右盖",
+            "device_category": "机械部件",
+            "component": "曲轴油封, 离合器拉杆",
+            "action": "安装",
+        },
+        raw_query="安装右盖时曲轴油封和离合器拉杆要注意什么？",
+    )
+
+    assert query.has_explicit_device is False
+    assert query.device_name == ""
+    assert query.component == "曲轴油封, 离合器拉杆"
+
+
+def test_short_device_prefix_is_preserved_when_category_is_not_component_like() -> None:
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "A型泵",
+            "device_name": "A型泵",
+            "device_category": "工业设备",
+            "component": "泵",
+            "model": "",
+        },
+        raw_query="A型泵如何安装",
+    )
+
+    assert query.has_explicit_device is True
+    assert query.device_name == "A型泵"
 
 
 def test_same_device_name_is_not_rejected_for_different_category_taxonomies() -> None:
@@ -270,3 +321,18 @@ def test_distinct_open_vocabulary_device_names_conflict_without_alias_registry()
 
     assert result.relation == "unmatched"
     assert result.conflicts == ("device_name",)
+
+
+def test_device_name_with_component_suffix_matches_dynamic_document_identity() -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    query = _contract(
+        "帮我查询摩托车发动机气缸活塞装配部件清单",
+        raw_device_span="摩托车发动机气缸活塞",
+        device_name="摩托车发动机气缸活塞",
+        component="气缸活塞",
+    )
+
+    result = catalog.match(query)[0]
+
+    assert result.relation == "matched"
+    assert result.conflicts == ()
