@@ -3,6 +3,19 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def validate_auth_tokens(internal_token, api_token):
+    """Validate the two service-token contracts without exposing token values."""
+    normalized_internal = (internal_token or "").strip()
+    normalized_api = (api_token or "").strip()
+    if not normalized_internal:
+        raise ValueError("internal token 未配置，服务拒绝启动")
+    if not normalized_api:
+        raise ValueError("API token 未配置，服务拒绝启动")
+    if normalized_internal == normalized_api:
+        raise ValueError("internal token 与 API token 不能相同，服务拒绝启动")
+
+
 class Settings:
     dashscope_api_key = os.getenv("DASHSCOPE_API_KEY")
     llm_model = os.getenv("LLM_MODEL", "qwen-plus")

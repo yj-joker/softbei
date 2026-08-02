@@ -72,7 +72,7 @@ from services.intent_router import get_intent_router
 from services.preference_capture import schedule_capture
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from services.temporary_plan_service import get_temporary_plan_service
-from config.settings import get_settings
+from config.settings import get_settings, validate_auth_tokens
 from schemas.models import AgentMode
 
 logger = logging.getLogger(__name__)
@@ -169,6 +169,9 @@ def _extract_structured_chat_payload(message: str) -> tuple[str, list[dict] | No
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    settings = get_settings()
+    validate_auth_tokens(settings.internal_token, settings.api_token)
+
     # 启动：开启 MQ 消费者
     close_connection = None
     try:
