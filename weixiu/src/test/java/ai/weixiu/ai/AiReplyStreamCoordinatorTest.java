@@ -13,7 +13,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class AiReplyStreamCoordinatorTest {
@@ -94,26 +93,45 @@ class AiReplyStreamCoordinatorTest {
     }
 
     @Test
-    void doesNotForwardDoneWhenPersistenceFails() {
+    void forwardsDoneAndEvidenceImagesWhenPersistenceFails() throws Exception {
         Flux<String> result = AiReplyStreamCoordinator.coordinate(
-                Flux.just("{\"event\":\"done\",\"data\":{}}"),
+                Flux.just(
+                        "{\"event\":\"token\",\"data\":{\"content\":\"answer\"}}",
+                        "{\"event\":\"verification\",\"data\":{\"status\":\"complete\"}}",
+                        "{\"event\":\"done\",\"data\":{\"evidenceImages\":[{\"page\":26},{\"page\":27}],\"metadata\":{\"source_mode\":\"knowledge\"}}}"
+                ),
                 objectMapper,
                 (answer, doneEvent) -> {
                     throw new IllegalStateException("database unavailable");
                 }
         );
 
-        assertThrows(IllegalStateException.class, () -> result.collectList().block());
+        List<String> events = result.collectList().block();
+
+        assertEquals(3, events.size());
+        JsonNode done = objectMapper.readTree(events.get(2));
+        assertEquals("done", done.path("event").asText());
+        assertEquals(2, done.path("data").path("evidenceImages").size());
+        assertEquals(26, done.path("data").path("evidenceImages").get(0).path("page").asInt());
+        assertEquals("knowledge", done.path("data").path("metadata").path("source_mode").asText());
+        assertEquals("failed", done.path("data").path("persistenceStatus").asText());
+        assertTrue(done.path("data").path("assistantMessageId").isMissingNode());
+        assertTrue(done.path("data").path("sessionId").isMissingNode());
     }
 
     @Test
-    void doesNotForwardDoneWhenPersistenceReturnsNoMessageId() {
+    void forwardsDoneWhenPersistenceReturnsNoMessageId() throws Exception {
         Flux<String> result = AiReplyStreamCoordinator.coordinate(
                 Flux.just("{\"event\":\"done\",\"data\":{}}"),
                 objectMapper,
                 (answer, doneEvent) -> new AiMessage().setAiSessionId(101L)
         );
 
-        assertThrows(IllegalStateException.class, () -> result.collectList().block());
+        List<String> events = result.collectList().block();
+
+        assertEquals(1, events.size());
+        JsonNode done = objectMapper.readTree(events.get(0));
+        assertEquals("failed", done.path("data").path("persistenceStatus").asText());
+        assertTrue(done.path("data").path("assistantMessageId").isMissingNode());
     }
 }

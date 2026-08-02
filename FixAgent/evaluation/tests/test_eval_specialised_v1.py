@@ -13,7 +13,7 @@ from evaluation.maintenance_eval_schema import (
 EVALUATION_DIR = Path(__file__).resolve().parents[1]
 DATASET_PATH = EVALUATION_DIR / "datasets" / "eval_specialised_v1.jsonl"
 FIXTURE_DIR = EVALUATION_DIR / "fixtures" / "rag_quality_v2_conflict"
-ACTIVE_MANUAL_DOCUMENT_ID = "kdoc_2082825138343858177"
+ACTIVE_MANUAL_DOCUMENT_ID = "kdoc_2083453722632753154"
 
 
 def test_specialised_v1_has_thirty_cases_with_expected_groups_and_turn_budget() -> None:

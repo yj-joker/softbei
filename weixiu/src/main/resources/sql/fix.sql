@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS `ai_message` (
     `created_at`    DATETIME    NOT NULL COMMENT '创建时间',
     INDEX `idx_session_round`        (`ai_session_id`, `round_no`),
     INDEX `idx_session_created`      (`ai_session_id`, `created_at`),
-    INDEX `idx_session_consolidated` (`ai_session_id`, `consolidated`)
+    INDEX `idx_session_consolidated` (`ai_session_id`, `consolidated`),
+    INDEX `idx_question_message`     (`question_message_id`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'AI消息历史表';
 
 

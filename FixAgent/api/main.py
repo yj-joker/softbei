@@ -3,9 +3,12 @@ import hashlib
 import logging
 import os
 import re
+import subprocess
 import tempfile
 import time
+from collections.abc import Mapping
 from functools import partial
+from pathlib import Path
 from typing import List
 from fastapi import FastAPI, HTTPException, Request
 from typing import Any, List
@@ -67,6 +70,11 @@ from services.causal_followup import (
     resolve_follow_up,
 )
 from services.llm.service import get_llm_service
+from services.llm.output_style import (
+    USER_VISIBLE_PLAIN_TEXT_RULES,
+    regenerate_user_visible_text,
+    strip_user_visible_emojis,
+)
 from services.knowledge.image_summary_service import get_image_summary_service
 from services.intent_router import IntentDecision, get_intent_router
 from services.response_policy import derive_response_policy
@@ -77,6 +85,11 @@ from services.retrieval.scope import (
     decide_scope,
     format_scope_guard_message,
 )
+from services.retrieval.device_identity import (
+    DeviceCatalog,
+    QueryContract,
+    load_dynamic_device_catalog,
+)
 from services.retrieval.evidence import EvidenceLedger
 from services.retrieval.provenance import canonical_manual_chunk_id, dedupe_and_sort_manual_records
 from services.retrieval.query_constraints import (
@@ -84,6 +97,13 @@ from services.retrieval.query_constraints import (
     extract_query_constraints,
 )
 from services.retrieval.response_plan import build_response_plan, finalize_response
+from services.pending_clarification import (
+    clear_pending_clarification,
+    format_pending_resolution,
+    load_pending_clarification,
+    remember_pending_clarification,
+    resolve_pending_clarification,
+)
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from services.temporary_plan_service import get_temporary_plan_service
 from config.settings import get_settings
@@ -96,6 +116,100 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
+
+
+def _runtime_git_commit(repository_root: Path) -> str:
+    configured = str(os.environ.get("FIXAGENT_GIT_COMMIT") or "").strip()
+    if configured:
+        return configured
+    try:
+        completed = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return completed.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _runtime_git_dirty(repository_root: Path) -> bool:
+    configured = str(os.environ.get("FIXAGENT_GIT_DIRTY") or "").strip().casefold()
+    if configured:
+        return configured in {"1", "true", "yes", "dirty"}
+    try:
+        completed = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "--untracked-files=normal",
+                "--",
+                "FixAgent/api",
+                "FixAgent/agents",
+                "FixAgent/config",
+                "FixAgent/guardrails",
+                "FixAgent/mq",
+                "FixAgent/schemas",
+                "FixAgent/services",
+                "FixAgent/tools",
+                "weixiu/src/main",
+                "fix-/src",
+            ],
+            cwd=repository_root,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return bool(completed.stdout.strip())
+    except (OSError, subprocess.SubprocessError):
+        return True
+
+
+def _runtime_snapshot() -> dict[str, Any]:
+    repository_root = Path(__file__).resolve().parents[2]
+    worktree = str(os.environ.get("FIXAGENT_WORKTREE") or "").strip() or str(repository_root)
+    documents: list[dict[str, Any]] = []
+    catalog_available = True
+    try:
+        manifests = get_vector_service().list_all_manifests() or []
+        for manifest in manifests:
+            if not isinstance(manifest, Mapping) or str(manifest.get("status") or "") != "ready":
+                continue
+            document_id = str(manifest.get("document_id") or "").strip()
+            if not document_id:
+                continue
+            try:
+                revision = max(0, int(manifest.get("index_revision") or 0))
+            except (TypeError, ValueError):
+                revision = 0
+            documents.append(
+                {
+                    "document_id": document_id,
+                    "index_revision": revision,
+                    "status": "ready",
+                }
+            )
+        documents.sort(key=lambda item: item["document_id"])
+    except Exception as exc:
+        catalog_available = False
+        logger.warning("Runtime document catalog unavailable: %s", exc)
+
+    git_commit = _runtime_git_commit(repository_root)
+    dirty = _runtime_git_dirty(repository_root)
+    build_id = (git_commit[:12] if git_commit else "unknown") + ("-dirty" if dirty else "")
+    return {
+        "git_commit": git_commit,
+        "dirty": dirty,
+        "build_id": build_id,
+        "worktree": worktree,
+        "catalog_available": catalog_available,
+        "documents": documents,
+    }
 
 
 from contextlib import asynccontextmanager
@@ -183,6 +297,15 @@ def _extract_structured_chat_payload(message: str) -> tuple[str, list[dict] | No
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    runtime = _runtime_snapshot()
+    logger.info(
+        "[runtime] build_id=%s git_commit=%s dirty=%s worktree=%s documents=%s",
+        runtime["build_id"],
+        runtime["git_commit"],
+        runtime["dirty"],
+        runtime["worktree"],
+        runtime["documents"],
+    )
     # 启动：开启 MQ 消费者
     close_connection = None
     try:
@@ -203,6 +326,24 @@ app = FastAPI(
     description="AI推理引擎：FixAgent 统一诊断 + 3层确定性校验",
     lifespan=lifespan,
 )
+
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    runtime = _runtime_snapshot()
+    return {
+        "status": "ok" if runtime["catalog_available"] else "degraded",
+        "build_id": runtime["build_id"],
+    }
+
+
+@app.get("/ai/runtime")
+async def runtime_info() -> dict[str, Any]:
+    runtime = _runtime_snapshot()
+    return {
+        "status": "ok" if runtime["catalog_available"] else "degraded",
+        "runtime": runtime,
+    }
 
 _settings = get_settings()
 os.makedirs(_settings.local_file_storage_dir, exist_ok=True)
@@ -226,7 +367,7 @@ async def verify_api_token_middleware(request: Request, call_next):
     path = request.url.path
     if (
         request.method == "OPTIONS"
-        or path in ("/docs", "/redoc", "/openapi.json")
+        or path in ("/health", "/docs", "/redoc", "/openapi.json")
         or path.startswith(_settings.file_public_base_url + "/")
     ):
         return await call_next(request)
@@ -507,11 +648,43 @@ def _attach_stream_done_metadata(event: dict[str, Any], metadata: dict | None) -
             "coverage_status",
             "response_plan_id",
             "evidence_ledger_digest",
+            "pending_clarification",
         )
         if key in (metadata or {})
     }
     if diagnostics:
         event.setdefault("data", {}).setdefault("metadata", {}).update(diagnostics)
+
+
+def _pending_clarification_redis_client():
+    try:
+        return get_vector_service().redis
+    except Exception:
+        return None
+
+
+def _restore_trusted_pending_context(session_id: str, context: dict) -> dict:
+    client_pending = context.get("pending_clarification")
+    trusted = load_pending_clarification(
+        session_id,
+        client_pending=client_pending if isinstance(client_pending, Mapping) else None,
+        redis_client=_pending_clarification_redis_client(),
+    )
+    if trusted:
+        context["pending_clarification"] = trusted
+    elif isinstance(client_pending, Mapping) and client_pending.get("kind") == "evidence_conflict":
+        context.pop("pending_clarification", None)
+    return context
+
+
+def _sync_pending_clarification_state(session_id: str, metadata: Mapping[str, Any] | None) -> None:
+    pending = (metadata or {}).get("pending_clarification")
+    redis_client = _pending_clarification_redis_client()
+    if isinstance(pending, Mapping) and pending.get("kind") == "evidence_conflict":
+        if pending.get("status") == "awaiting_answer":
+            remember_pending_clarification(session_id, pending, redis_client=redis_client)
+        elif pending.get("status") == "resolved":
+            clear_pending_clarification(session_id, redis_client=redis_client)
 
 
 def _register_direct_manual_evidence(
@@ -695,11 +868,12 @@ async def _stream_direct_agent_output(output: AgentOutput):
     import asyncio as _asyncio
 
     match = output.metadata.get("domain_rule_match") or {}
+    visible_message = strip_user_visible_emojis(output.message)
     yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '规则引擎命中，正在生成确定性诊断', 'mode': 'domain_rule'}})}\n\n"
     yield f"data: {json_dumps({'event': 'tool', 'data': {'tool': DOMAIN_RULE_TOOL_NAME}})}\n\n"
-    yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': DOMAIN_RULE_TOOL_NAME, 'text': output.message, 'items': _domain_rule_tool_items(match)}})}\n\n"
+    yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': DOMAIN_RULE_TOOL_NAME, 'text': visible_message, 'items': _domain_rule_tool_items(match)}})}\n\n"
 
-    for i, char in enumerate(output.message):
+    for i, char in enumerate(visible_message):
         yield f"data: {json_dumps({'event': 'token', 'data': {'content': char}})}\n\n"
         if i % 15 == 0:
             await _asyncio.sleep(0)
@@ -783,12 +957,21 @@ async def _try_response_policy_direct(request: ChatRequest, input_data: AgentInp
             raw_response={"model": model_name},
         )
     if mode == "GENERAL_AI":
-        system = "你是检修 AI 助手的通用对话模块。当前问题不是设备手册检索问题，请直接使用通用知识自然回答，不要提到知识库、手册缺失或设备范围。不要输出 JSON。"
+        system = (
+            "你是检修 AI 助手的通用对话模块。当前问题不是设备手册检索问题，"
+            "请直接使用通用知识自然回答，不要提到知识库、手册缺失或设备范围。不要输出 JSON。"
+            + USER_VISIBLE_PLAIN_TEXT_RULES
+        )
         temperature = select_style(
             policy.get("style_profile", "general_ai"), request.session_id, str((input_data.context or {}).get("turn_ts", ""))
         ).temperature
     else:
-        system = "你是检修 AI 助手。当前知识库没有找到与用户指定设备对应的文档。请说明知识库没有该设备对应文档、以下内容来自 AI、仅供参考，然后给出低风险通用分析。不要伪装成手册结论，不要编造精确参数或高风险步骤。"
+        system = (
+            "你是检修 AI 助手。当前知识库没有找到与用户指定设备对应的文档。"
+            "请说明知识库没有该设备对应文档、以下内容来自 AI、仅供参考，然后给出低风险通用分析。"
+            "不要伪装成手册结论，不要编造精确参数或高风险步骤，不要引用法规编号、手册页码或未经当前知识库核验的标准编号。"
+            + USER_VISIBLE_PLAIN_TEXT_RULES
+        )
         temperature = select_style(
             policy.get("style_profile", "maintenance_ai"), request.session_id, str((input_data.context or {}).get("turn_ts", ""))
         ).temperature
@@ -799,15 +982,25 @@ async def _try_response_policy_direct(request: ChatRequest, input_data: AgentInp
         if isinstance(item, dict) and item.get("role") in {"user", "assistant"} and item.get("content")
     )
     messages.append({"role": "user", "content": input_data.user_message})
-    response = await get_llm_service().chat(messages, temperature=temperature, max_tokens=1200)
-    message = _clean_fallback_text(response.get("content", "") if isinstance(response, dict) else str(response or ""))
-    if mode == "MAINTENANCE_AI_FALLBACK" and not all(marker in message for marker in ("知识库", "AI", "仅供参考")):
-        message = "知识库没有该设备对应文档，以下内容来自 AI，仅供参考。 " + message
+    llm_service = get_llm_service()
+    response = await llm_service.chat(messages, temperature=temperature, max_tokens=1200)
+    raw_message = response.get("content", "") if isinstance(response, dict) else str(response or "")
+    raw_message, style_regenerated = await regenerate_user_visible_text(
+        llm_service,
+        raw_message,
+        max_tokens=1200,
+    )
+    message = _clean_fallback_text(raw_message)
+    fallback_safety_filters: list[str] = []
+    if mode == "MAINTENANCE_AI_FALLBACK":
+        message, fallback_safety_filters = _sanitize_maintenance_ai_fallback(message)
+    if mode == "MAINTENANCE_AI_FALLBACK":
+        message = _ensure_maintenance_ai_disclaimer(message)
     return AgentOutput(
         agent_name="fix_agent",
         message=message,
         intention=(input_data.context or {}).get("intention"),
-        metadata={"execution_mode": "general_ai_direct" if mode == "GENERAL_AI" else "maintenance_ai_fallback_direct", "deterministic_direct": True, "response_policy": policy, "scope_decision": (input_data.context or {}).get("scope_decision") or {}, "source_type": "ai", "disclaimer": mode == "MAINTENANCE_AI_FALLBACK"},
+        metadata={"execution_mode": "general_ai_direct" if mode == "GENERAL_AI" else "maintenance_ai_fallback_direct", "deterministic_direct": True, "response_policy": policy, "scope_decision": (input_data.context or {}).get("scope_decision") or {}, "source_type": "ai", "disclaimer": mode == "MAINTENANCE_AI_FALLBACK", "fallback_safety_filters": fallback_safety_filters, "style_regenerated": style_regenerated},
         raw_response=response if isinstance(response, dict) else {"content": message},
     )
 
@@ -816,7 +1009,8 @@ async def _stream_scope_guard_output(output: AgentOutput):
     import asyncio as _asyncio
 
     yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '正在核对设备与手册范围', 'mode': 'scope_guard'}})}\n\n"
-    for index, char in enumerate(output.message):
+    visible_message = strip_user_visible_emojis(output.message)
+    for index, char in enumerate(visible_message):
         yield f"data: {json_dumps({'event': 'token', 'data': {'content': char}})}\n\n"
         if index % 15 == 0:
             await _asyncio.sleep(0)
@@ -827,7 +1021,8 @@ async def _stream_scope_guard_output(output: AgentOutput):
 async def _stream_policy_direct_output(output: AgentOutput):
     import asyncio as _asyncio
 
-    for index, char in enumerate(output.message):
+    visible_message = strip_user_visible_emojis(output.message)
+    for index, char in enumerate(visible_message):
         event = {"event": "token", "data": {"content": char}}
         yield "data: " + json_dumps(event) + chr(10) + chr(10)
         if index % 15 == 0:
@@ -878,8 +1073,79 @@ async def _try_causal_follow_up_resolution(
     input_data: AgentInput,
 ) -> AgentOutput | None:
     started = time.time()
-    resolved = resolve_follow_up(input_data.context or {}, input_data.user_message)
+    context = input_data.context or {}
+    pending = context.get("pending_clarification")
+    is_awaiting = isinstance(pending, Mapping) and pending.get("status") == "awaiting_answer"
+    if is_awaiting and pending.get("kind") == "evidence_conflict":
+        resolved_conflict = resolve_pending_clarification(context, input_data.user_message)
+        if resolved_conflict:
+            clear_pending_clarification(
+                request.session_id,
+                redis_client=_pending_clarification_redis_client(),
+            )
+            restored_query = str(resolved_conflict.get("original_query") or request.message).strip()
+            selected_refs = [
+                str(item)
+                for item in resolved_conflict.get("selected_evidence_refs") or []
+                if str(item).strip()
+            ]
+            return AgentOutput(
+                agent_name="fix_agent",
+                message=format_pending_resolution(resolved_conflict),
+                intention="knowledge_query",
+                tools_used=[FOLLOW_UP_TOOL_NAME],
+                metadata={
+                    "execution_mode": "evidence_conflict_resolved",
+                    "deterministic_direct": True,
+                    "confidence_source": "user_clarification",
+                    "pending_clarification": resolved_conflict,
+                    "diagnostic_follow_up": resolved_conflict,
+                    "restored_query": restored_query,
+                    "selected_evidence_refs": selected_refs,
+                    "evidence_constraints": {
+                        "allowed_evidence_refs": selected_refs,
+                        "selection_source": "user_clarification",
+                    },
+                    "user_message": restored_query,
+                    "original_user_message": restored_query,
+                    "clarification_answer": input_data.user_message,
+                },
+                latency_ms=int((time.time() - started) * 1000),
+                raw_response=resolved_conflict,
+            )
+        return AgentOutput(
+            agent_name="fix_agent",
+            message=str(pending.get("question") or "请从给出的选项中确认一个答案。"),
+            intention="knowledge_query",
+            tools_used=[FOLLOW_UP_TOOL_NAME],
+            metadata={
+                "execution_mode": "clarification_repeat",
+                "deterministic_direct": True,
+                "pending_clarification": dict(pending),
+                "diagnostic_follow_up": dict(pending),
+                "restored_query": str(pending.get("original_query") or ""),
+                "clarification_answer": input_data.user_message,
+            },
+            latency_ms=int((time.time() - started) * 1000),
+            raw_response=dict(pending),
+        )
+    resolved = resolve_follow_up(context, input_data.user_message)
     if not resolved:
+        if is_awaiting:
+            return AgentOutput(
+                agent_name="fix_agent",
+                message=str(pending.get("question") or "请从给出的选项中确认一个答案。"),
+                intention="fault_diagnosis",
+                tools_used=[FOLLOW_UP_TOOL_NAME],
+                metadata={
+                    "execution_mode": "clarification_repeat",
+                    "deterministic_direct": True,
+                    "pending_clarification": dict(pending),
+                    "diagnostic_follow_up": dict(pending),
+                },
+                latency_ms=int((time.time() - started) * 1000),
+                raw_response=dict(pending),
+            )
         return None
 
     message = format_resolution_message(resolved)
@@ -888,6 +1154,7 @@ async def _try_causal_follow_up_resolution(
         "confidence_source": "causal_follow_up",
         "confidence_label": "追问收敛",
         "diagnostic_follow_up": resolved,
+        "pending_clarification": resolved,
         "react_trace": _causal_follow_up_trace(resolved),
         "verification": {
             "grounding": {"unverified_count": 0},
@@ -912,11 +1179,12 @@ async def _stream_causal_follow_up_output(output: AgentOutput):
     import asyncio as _asyncio
 
     result = output.metadata.get("diagnostic_follow_up") or {}
+    visible_message = strip_user_visible_emojis(output.message)
     yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '已根据追问回答重排候选根因', 'mode': 'causal_follow_up'}})}\n\n"
     yield f"data: {json_dumps({'event': 'tool', 'data': {'tool': FOLLOW_UP_TOOL_NAME}})}\n\n"
-    yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': FOLLOW_UP_TOOL_NAME, 'text': output.message, 'items': _causal_follow_up_tool_items(result)}})}\n\n"
+    yield f"data: {json_dumps({'event': 'tool_result', 'data': {'tool': FOLLOW_UP_TOOL_NAME, 'text': visible_message, 'items': _causal_follow_up_tool_items(result)}})}\n\n"
 
-    for i, char in enumerate(output.message):
+    for i, char in enumerate(visible_message):
         yield f"data: {json_dumps({'event': 'token', 'data': {'content': char}})}\n\n"
         if i % 15 == 0:
             await _asyncio.sleep(0)
@@ -1038,6 +1306,7 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     raw_message = request.message or ""
     effective_message = raw_message.strip() or IMAGE_ONLY_DEFAULT_MESSAGE
     context = dict(request.context or {})
+    _restore_trusted_pending_context(request.session_id, context)
     # 同轮记忆写仲裁：为本轮生成唯一 turn_ts（毫秒），同时传给偏好兜底与主 Agent 的 save_memory；
     # 两路带同一个值，Java saveMemory 才能在"同一句话"上按来源优先级仲裁（漏洞#1修复）。
     turn_ts = int(time.time() * 1000)
@@ -1052,12 +1321,24 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     )
     context["intent_decision"] = intent_decision.model_dump()
     context["intention"] = intent_decision.intent
+    query_contract = QueryContract.from_mapping(
+        intent_decision.model_dump(),
+        raw_query=raw_message,
+    )
+    context["query_contract"] = query_contract.to_dict()
+    try:
+        device_catalog = await load_dynamic_device_catalog()
+    except Exception as exc:
+        logger.error("[scope] dynamic document catalog unavailable: %s", exc)
+        device_catalog = DeviceCatalog(())
     scope_decision = decide_scope(
         raw_message,
         request_document_id=request.document_id,
         request_device_type=request.device_type,
         session_document_id=session_document_id,
         session_device_type=session_device_type,
+        query_contract=query_contract,
+        catalog=device_catalog,
     )
     context["scope_decision"] = scope_decision.to_dict()
     context["retrieval_scope"] = scope_decision.retrieval_filter()
@@ -1268,7 +1549,17 @@ def _inventory_rows_from_table_full(table_full) -> list[dict]:
     rows = table_full.get("rows") or table_full.get("data") or []
     parsed: list[dict] = []
     for raw_row in rows:
-        if isinstance(raw_row, dict):
+        if isinstance(raw_row, dict) and isinstance(raw_row.get("fields"), Mapping):
+            fields = raw_row.get("fields") or {}
+            row = _inventory_row_from_cells(
+                [_inventory_cell(header) for header in headers],
+                [_inventory_cell(fields.get(header)) for header in headers],
+            )
+            if row:
+                row["_row_id"] = str(raw_row.get("row_id") or "")
+                row["_source_page"] = raw_row.get("source_page")
+                row["_source_index"] = raw_row.get("source_index")
+        elif isinstance(raw_row, dict):
             row = _inventory_row_from_key_values(
                 "；".join(f"{key}={value}" for key, value in raw_row.items())
             )
@@ -1345,7 +1636,6 @@ def _select_inventory_primary_table_candidates(candidates: list[dict]) -> list[d
     if not primary_seqs:
         return candidates
     primary_max_seq = max(primary_seqs)
-    primary_row_count = len(primary_rows)
 
     kept_full_ids = {id(primary)}
     for candidate in ordered_full[1:]:
@@ -1359,12 +1649,10 @@ def _select_inventory_primary_table_candidates(candidates: list[dict]) -> list[d
             continue
         starts_after_primary = min(seqs) > primary_max_seq
         overlaps_primary_tail = min(seqs) <= primary_max_seq < max(seqs)
-        has_duplicate_seq = _inventory_rows_have_duplicate_sequence(rows)
-        small_later_table = len(rows) <= max(3, primary_row_count // 2)
         if overlaps_primary_tail:
             kept_full_ids.add(id(candidate))
             continue
-        if starts_after_primary and not (has_duplicate_seq and small_later_table):
+        if starts_after_primary:
             kept_full_ids.add(id(candidate))
 
     parent_ids_to_keep: set[str] = {
@@ -1779,6 +2067,9 @@ def _format_inventory_table_answer_from_metadata(
         if torque:
             line += f"；扭矩：{torque}"
         lines.append(line)
+
+    if _inventory_rows_have_duplicate_sequence(rows):
+        lines.append("注：清单中存在重复序号，原表序号如此。")
 
     return "\n".join(lines).strip()
 
@@ -3265,6 +3556,11 @@ def _extract_evidence_images(metadata: dict) -> List[EvidenceImage]:
                 document_id=item_meta.get("document_id", ""),
                 source_chunk_id=source_chunk_id,
                 context_role=item_meta.get("context_role", ""),
+                step_id=str((item_meta.get("related_step_chunk_ids") or [""])[0] or ""),
+                step_ids=[str(item) for item in item_meta.get("related_step_chunk_ids") or [] if str(item)],
+                aspect_id=str((item_meta.get("aspect_ids") or [""])[0] or ""),
+                role=str(item_meta.get("binding_role") or item_meta.get("context_role") or ""),
+                binding_confidence=float(item_meta.get("binding_confidence") or 0.0),
             )
         )
     return images
@@ -4202,6 +4498,8 @@ def _align_evidence_images_to_text_evidence_pages(
 _IMAGE_TARGET_SPECIFIC_TERMS = (
     "标记",
     "朝向",
+    "朝哪",
+    "哪边",
     "朝下",
     "朝上",
     "朝外",
@@ -4325,6 +4623,8 @@ def _narrow_evidence_images_to_query_target_pages(
     images: List[EvidenceImage],
     metadata: dict,
     vector_service=None,
+    *,
+    force: bool = False,
 ) -> List[EvidenceImage]:
     """Narrow over-expanded image evidence to the pages that match the query target.
 
@@ -4348,7 +4648,8 @@ def _narrow_evidence_images_to_query_target_pages(
         or (metadata or {}).get("message")
         or ""
     )
-    if not _image_query_has_specific_target(query):
+    anchors = _image_specific_anchor_terms(query)
+    if not force and not _image_query_has_specific_target(query) and not anchors:
         return sorted_images
 
     try:
@@ -4406,7 +4707,6 @@ def _narrow_evidence_images_to_query_target_pages(
             )
         )
 
-    anchors = _image_specific_anchor_terms(query)
     if anchors:
         anchor_hits: dict[int, int] = {}
         for page in sorted(image_pages):
@@ -4603,6 +4903,191 @@ def _filter_evidence_images_by_action_context(
     return sorted_images
 
 
+def _query_allows_rendered_page_fallback(query: str) -> bool:
+    compact_query = _compact_inventory_text(query)
+    visual_terms = (
+        "图片", "图示", "插图", "看图", "对应图", "如图",
+        "哪里", "位置", "插在哪里", "朝哪", "朝向", "哪边", "方向",
+        "标记", "对齐", "缺口",
+    )
+    if any(term in compact_query for term in visual_terms):
+        return True
+    fact_only_terms = (
+        "多少", "哪些", "是什么", "是多少", "数量", "规格",
+        "扭矩", "力矩", "扭力", "涂什么",
+    )
+    if any(term in compact_query for term in fact_only_terms):
+        return False
+    return _manual_query_kind(query) == "procedure"
+
+
+def _select_evidence_images_for_response(
+    images: List[EvidenceImage],
+    metadata: dict,
+) -> List[EvidenceImage]:
+    """Select images once from the final audited evidence bindings."""
+    from services.retrieval.image_selector import (
+        ImageSelectionContract,
+        PageEvidence,
+        select_pages_for_contract,
+    )
+    from services.retrieval.query_understanding import has_negative_image_request
+
+    policy = metadata.get("response_policy") if isinstance(metadata.get("response_policy"), dict) else {}
+    query = str(
+        metadata.get("original_user_message")
+        or metadata.get("user_message")
+        or metadata.get("message")
+        or ""
+    )
+    target_pages = [
+        int(page)
+        for page in (
+            metadata.get("_deterministic_answer_evidence_pages")
+            or metadata.get("allowed_evidence_pages")
+            or _text_evidence_pages(metadata)
+        )
+        if str(page).isdigit()
+    ]
+    target_pages = list(dict.fromkeys(target_pages))
+    configured_mode = str(metadata.get("query_understanding_selection_mode") or "")
+    if not configured_mode:
+        for item in _iter_trace_result_items(metadata):
+            item_metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            configured_mode = str(item_metadata.get("query_understanding_selection_mode") or "")
+            if configured_mode:
+                break
+    if (policy and policy.get("images_allowed") is False) or has_negative_image_request(query):
+        mode = "none"
+    elif configured_mode in {"single_target", "evidence_pages", "section_overview"}:
+        mode = configured_mode
+    elif _query_explicit_single_page_intent(query):
+        mode = "single_target"
+    elif _manual_query_kind(query) == "procedure" or len(target_pages) > 1:
+        mode = "evidence_pages"
+    else:
+        mode = "section_overview"
+
+    excluded_pages = [
+        int(value)
+        for value in re.findall(r"(?:不要|排除|不含|去掉|别用)[^。；，,]{0,12}?第?\s*(\d+)\s*页", query)
+    ]
+    mentioned_pages = [int(value) for value in re.findall(r"第\s*(\d+)\s*页", query)]
+    explicit_pages = [page for page in mentioned_pages if page not in set(excluded_pages)]
+    allowed_document_ids = [
+        str(value) for value in metadata.get("allowed_document_ids") or [] if str(value).strip()
+    ]
+    candidates = _sort_unique_evidence_images(images)
+    if allowed_document_ids:
+        scoped = [image for image in candidates if image.document_id in set(allowed_document_ids)]
+        candidates = scoped
+    allows_rendered_page_fallback = _query_allows_rendered_page_fallback(query)
+    if not allows_rendered_page_fallback:
+        candidates = [
+            image for image in candidates
+            if (image.context_role or image.role) != "page_render"
+        ]
+        if metadata.get("_deterministic_answer_evidence_pages"):
+            target_page_set = set(target_pages)
+            candidates = [
+                image for image in candidates
+                if _evidence_image_page(image) in target_page_set
+            ]
+    if mode != "none":
+        candidates = _filter_evidence_images_to_target_section(candidates, metadata)
+        candidates = _narrow_evidence_images_to_query_target_pages(
+            candidates,
+            metadata,
+            force=mode == "single_target",
+        )
+
+    target_step_ids = tuple(
+        str(value) for value in metadata.get("allowed_source_chunk_ids") or [] if str(value).strip()
+    )
+    contract = ImageSelectionContract(
+        mode=mode,
+        target_pages=tuple(target_pages),
+        target_evidence_ids=tuple(
+            str(value) for value in metadata.get("allowed_evidence_refs") or [] if str(value).strip()
+        ),
+        target_step_ids=target_step_ids,
+        document_id=allowed_document_ids[0] if len(allowed_document_ids) == 1 else "",
+        action=_manual_query_action(query),
+        orientation=next(
+            (term for term in ("朝上", "朝下", "朝外", "朝内", "顺时针", "逆时针") if term in query),
+            "",
+        ),
+        explicit_pages=tuple(explicit_pages),
+        excluded_pages=tuple(excluded_pages),
+    )
+    images_by_page: dict[int, list[EvidenceImage]] = {}
+    for image in candidates:
+        page = _evidence_image_page(image)
+        if page is not None:
+            images_by_page.setdefault(page, []).append(image)
+    text_by_page = _text_context_by_page_for_image_narrowing(metadata, set(images_by_page))
+    page_evidence = [
+        PageEvidence(
+            page=page,
+            text=text_by_page.get(page, ""),
+            image_text=" ".join(
+                " ".join(filter(None, (image.caption, image.section_title, image.context_role)))
+                for image in page_images
+            ),
+            group_key=" ".join(dict.fromkeys(
+                image.section_title for image in page_images if image.section_title
+            )),
+            images=[
+                {
+                    "doc_id": image.source_chunk_id or image.image_url,
+                    "content": image.caption,
+                    "metadata": {"chunk_type": "image", "page": page},
+                }
+                for image in page_images
+            ],
+        )
+        for page, page_images in sorted(images_by_page.items())
+    ]
+    selected_pages = select_pages_for_contract(query, page_evidence, contract)
+    selected = [image for image in candidates if _evidence_image_page(image) in set(selected_pages)]
+    if target_step_ids:
+        target_step_set = set(target_step_ids)
+        step_bound = [
+            image for image in selected
+            if target_step_set.intersection(image.step_ids or ([image.step_id] if image.step_id else []))
+        ]
+        if step_bound:
+            selected = step_bound
+    selected = _sort_unique_evidence_images(selected)
+    if mode == "single_target":
+        selected = selected[:1]
+    metadata["image_selection_contract"] = {
+        "mode": mode,
+        "selection_mode": mode,
+        "target_pages": target_pages,
+        "target_evidence_ids": list(contract.target_evidence_ids),
+        "target_step_ids": list(contract.target_step_ids),
+        "explicit_pages": explicit_pages,
+        "excluded_pages": excluded_pages,
+        "selected_pages": [
+            page for page in (_evidence_image_page(image) for image in selected) if page is not None
+        ],
+    }
+    return [
+        image.model_copy(update={
+            "role": image.role or mode,
+            "binding_confidence": max(
+                image.binding_confidence,
+                1.0 if (
+                    _evidence_image_page(image) in set(target_pages)
+                    or set(image.step_ids).intersection(target_step_ids)
+                ) else 0.5,
+            ),
+        })
+        for image in _sort_unique_evidence_images(selected)
+    ]
+
+
 _SUSPENDED_IMAGE_REFERENCES = ("如图所示", "按图所示", "见下图", "如下图")
 
 
@@ -4788,11 +5273,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
         fix_t0 = time.time()
         fix_result = None
         review_level = "full"
-        fix_result = await _try_response_policy_direct(request, input_data)
+        fix_result = await _try_causal_follow_up_resolution(request, input_data)
         if fix_result is not None:
             review_level = "light"
         if fix_result is None:
-            fix_result = await _try_causal_follow_up_resolution(request, input_data)
+            fix_result = await _try_response_policy_direct(request, input_data)
         if fix_result is not None:
             review_level = "light"
         if fix_result is None:
@@ -4810,8 +5295,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
 
         if fix_result is None:
             fix_result = await get_fix_agent().run_with_react(input_data)
-        fix_result.metadata["user_message"] = input_data.user_message
-        fix_result.metadata["original_user_message"] = request.message
+        fix_result.metadata.setdefault("user_message", input_data.user_message)
+        fix_result.metadata.setdefault("original_user_message", request.message)
         if input_data.context and input_data.context.get("intent_decision"):
             fix_result.metadata["intent_decision"] = input_data.context["intent_decision"]
         if input_data.context and input_data.context.get("scope_decision"):
@@ -4835,7 +5320,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
                     success=False,
                     code=500,
                     session_id=request.session_id,
-                    message=fix_result.message,
+                    message=strip_user_visible_emojis(fix_result.message),
                     tools_used=None,
                     latency_ms=fix_result.latency_ms
                 ).model_dump(by_alias=True)
@@ -4925,6 +5410,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
                     final_result.metadata["execution_mode"] = "causal_follow_up_question"
                     final_result.metadata["confidence_source"] = "causal_follow_up"
                     final_result.metadata["diagnostic_follow_up"] = follow_up
+                    final_result.metadata["pending_clarification"] = follow_up
                     final_result.tools_used = list(final_result.tools_used or [])
                     if FOLLOW_UP_TOOL_NAME not in final_result.tools_used:
                         final_result.tools_used.append(FOLLOW_UP_TOOL_NAME)
@@ -4941,10 +5427,6 @@ async def chat(request: ChatRequest) -> ChatResponse:
             page_images = _collect_direct_evidence_page_images(final_result.metadata)
             if page_images:
                 evidence_images = _merge_evidence_images(evidence_images, page_images)
-        evidence_images = _align_evidence_images_to_text_evidence_pages(evidence_images, final_result.metadata)
-        evidence_images = _narrow_evidence_images_to_query_target_pages(evidence_images, final_result.metadata)
-        evidence_images = _filter_evidence_images_by_action_context(evidence_images, final_result.metadata)
-        evidence_images = _filter_evidence_images_to_target_section(evidence_images, final_result.metadata)
 
         pre_audit_message = response_message
         final_result = _finalize_knowledge_output(
@@ -4957,11 +5439,14 @@ async def chat(request: ChatRequest) -> ChatResponse:
             diagnosis_items = None
             verification = {}
             has_issues = False
+        evidence_images = _select_evidence_images_for_response(evidence_images, final_result.metadata)
         response_message, evidence_images = _apply_final_image_contract(
             response_message,
             evidence_images,
             final_result.metadata,
         )
+        response_message = strip_user_visible_emojis(response_message)
+        _sync_pending_clarification_state(request.session_id, final_result.metadata)
 
         return ChatResponse(
             session_id=request.session_id,
@@ -5076,6 +5561,54 @@ def _clean_fallback_text(text: str) -> str:
     return (plain or "").strip()
 
 
+_FALLBACK_UNVERIFIED_MEASUREMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*(?:mm|cm|N\s*[·*]?\s*m|kPa|MPa|rpm|r/min|℃|°C|V|A|%)\b",
+    flags=re.IGNORECASE,
+)
+
+
+_FALLBACK_UNVERIFIED_REFERENCE_RE = re.compile(
+    r"(?:CCAR|FAR)\s*[- ]?\s*\d+(?:\.\d+)*|(?:FAA\s+AC|EASA\s+AMC)\b|手册第\s*\d+\s*页",
+    flags=re.IGNORECASE,
+)
+
+
+def _sanitize_maintenance_ai_fallback(text: str) -> tuple[str, list[str]]:
+    """Remove exact values and source-like citations from ungrounded AI guidance."""
+    triggered: list[str] = []
+    safe_lines: list[str] = []
+    for line in str(text or "").splitlines():
+        safe_segments: list[str] = []
+        for segment in re.split(r"(?<=[。！？；;])", line):
+            if _FALLBACK_UNVERIFIED_MEASUREMENT_RE.search(segment):
+                triggered.append("unverified_measurement")
+                continue
+            if _FALLBACK_UNVERIFIED_REFERENCE_RE.search(segment):
+                triggered.append("unverified_reference")
+                continue
+            safe_segments.append(segment)
+        cleaned = "".join(safe_segments).strip()
+        if cleaned:
+            safe_lines.append(cleaned)
+    message = "\n".join(safe_lines).strip()
+    if not message:
+        message = "可以先记录异响出现的工况、位置和伴随现象；如异响突然出现、持续加重或伴随其他异常，应停止运行并交由合格人员检查。"
+    return message, list(dict.fromkeys(triggered))
+
+
+def _ensure_maintenance_ai_disclaimer(message: str) -> str:
+    missing: list[str] = []
+    if "知识库" not in message:
+        missing.append("知识库没有该设备对应文档")
+    if "AI" not in message:
+        missing.append("以下内容由 AI 基于通用知识生成")
+    if "仅供参考" not in message:
+        missing.append("内容仅供参考")
+    if not missing:
+        return message
+    return "，".join(missing) + "。 " + message
+
+
 async def _maintenance_fallback_answer(input_data: AgentInput, maint_ctx: dict):
     """检修场景兜底：抛开 ReAct/工具门槛，用「上下文+历史」做一次纯对话作答。"""
     decision = (input_data.context or {}).get("intent_decision") or {}
@@ -5119,7 +5652,9 @@ async def _maintenance_fallback_answer(input_data: AgentInput, maint_ctx: dict):
         "但涉及精确参数（扭矩、间隙、公差、具体型号规格、确切数值）时，只给方向、范围或排查方法，"
         "并提示『具体数值以该设备手册/铭牌为准』，绝不编造确切数字。"
         "严禁以「资料不足 / 无法回答 / 暂不能生成」搪塞；"
-        "严禁输出任何 JSON、花括号 {} 或字段名，只用自然段中文回答。\n\n"
+        "严禁输出任何 JSON、花括号 {} 或字段名，只用自然段中文回答。"
+        + USER_VISIBLE_PLAIN_TEXT_RULES
+        + "\n\n"
         + _render_maintenance_block(maint_ctx)
     )
 
@@ -5186,15 +5721,15 @@ async def chat_stream(request: ChatRequest):
         input_data = await _prepare_chat_agent_input(request)
 
         try:
-            policy_output = await _try_response_policy_direct(request, input_data)
-            if policy_output is not None:
-                async for event in _stream_policy_direct_output(policy_output):
-                    yield event
-                return
-
             follow_up_output = await _try_causal_follow_up_resolution(request, input_data)
             if follow_up_output is not None:
                 async for event in _stream_causal_follow_up_output(follow_up_output):
+                    yield event
+                return
+
+            policy_output = await _try_response_policy_direct(request, input_data)
+            if policy_output is not None:
+                async for event in _stream_policy_direct_output(policy_output):
                     yield event
                 return
 
@@ -5414,6 +5949,7 @@ async def chat_stream(request: ChatRequest):
                     stream_metadata["execution_mode"] = "causal_follow_up_question"
                     stream_metadata["confidence_source"] = "causal_follow_up"
                     stream_metadata["diagnostic_follow_up"] = diagnostic_follow_up
+                    stream_metadata["pending_clarification"] = diagnostic_follow_up
                     verified_tools = list(verified_tools or [])
                     if FOLLOW_UP_TOOL_NAME not in verified_tools:
                         verified_tools.append(FOLLOW_UP_TOOL_NAME)
@@ -5462,15 +5998,20 @@ async def chat_stream(request: ChatRequest):
             page_images = _collect_direct_evidence_page_images(image_metadata)
             if page_images:
                 evidence_images = _merge_evidence_images(evidence_images, page_images)
-            evidence_images = _align_evidence_images_to_text_evidence_pages(evidence_images, image_metadata)
-            evidence_images = _narrow_evidence_images_to_query_target_pages(evidence_images, image_metadata)
-            evidence_images = _filter_evidence_images_by_action_context(evidence_images, image_metadata)
-            evidence_images = _filter_evidence_images_to_target_section(evidence_images, image_metadata)
+            evidence_images = _select_evidence_images_for_response(evidence_images, image_metadata)
             final_message, evidence_images = _apply_final_image_contract(
                 final_message,
                 evidence_images,
                 stream_metadata,
             )
+            cleaned_final_message = strip_user_visible_emojis(final_message)
+            if cleaned_final_message != final_message:
+                final_message = cleaned_final_message
+                markers = (
+                    get_review_agent().get_inline_markers(final_message, verification)
+                    if markers
+                    else []
+                )
 
             if diagnostic_follow_up:
                 yield f"data: {json_dumps({'event': 'status', 'data': {'stage': '存在多个相近根因，正在生成区分性追问', 'mode': 'causal_follow_up'}})}\n\n"
@@ -5481,7 +6022,7 @@ async def chat_stream(request: ChatRequest):
             for i, char in enumerate(final_message):
                 while marker_idx < len(markers) and markers[marker_idx]["char_pos"] <= i:
                     m = markers[marker_idx]
-                    yield f"data: {json_dumps({'event': 'marker', 'data': {'text': m['text'], 'type': m['type']}})}\n\n"
+                    yield f"data: {json_dumps({'event': 'marker', 'data': {'text': strip_user_visible_emojis(m['text']), 'type': m['type']}})}\n\n"
                     marker_idx += 1
 
                 yield f"data: {json_dumps({'event': 'token', 'data': {'content': char}})}\n\n"
@@ -5491,7 +6032,7 @@ async def chat_stream(request: ChatRequest):
             # 末尾剩余标记（安全追加文本中可能出现的新段落）
             while marker_idx < len(markers):
                 m = markers[marker_idx]
-                yield f"data: {json_dumps({'event': 'marker', 'data': {'text': m['text'], 'type': m['type']}})}\n\n"
+                yield f"data: {json_dumps({'event': 'marker', 'data': {'text': strip_user_visible_emojis(m['text']), 'type': m['type']}})}\n\n"
                 marker_idx += 1
 
             # 验证摘要事件
@@ -5518,6 +6059,7 @@ async def chat_stream(request: ChatRequest):
             }
             if diagnostic_follow_up:
                 final_done["data"]["diagnosticFollowUp"] = diagnostic_follow_up
+            _sync_pending_clarification_state(request.session_id, stream_metadata)
             _attach_stream_done_metadata(final_done, stream_metadata)
             if diagnosis_items:
                 final_done["data"]["diagnosisItems"] = _serialize_diagnosis_items(diagnosis_items)
@@ -5558,6 +6100,7 @@ async def knowledge_import(request: KnowledgeImportRequest) -> KnowledgeImportRe
             device_type=request.device_type,
             manual_type=request.manual_type,
             document_version=request.document_version,
+            document_identity=request.document_identity,
             replace_existing=request.replace_existing
         )
         logger.info(f"[knowledge_import] 文件={result['file_name']} "

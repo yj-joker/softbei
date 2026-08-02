@@ -12,6 +12,8 @@ import copy
 import re
 from typing import Any, Mapping
 
+from services.pending_clarification import build_diagnostic_clarification
+
 
 FOLLOW_UP_TOOL_NAME = "causal_follow_up"
 MIN_CANDIDATES = 2
@@ -144,13 +146,22 @@ def build_follow_up(
         top_gap = hypotheses[0]["confidence"] - hypotheses[1]["confidence"]
         if top_gap > 0.18:
             return None
+        public_options = _public_options(copy.deepcopy(scenario["options"]))
+        clarification = build_diagnostic_clarification(
+            scenario_id=scenario["id"],
+            query=query,
+            subject="发动机冒蓝烟候选根因",
+            question=scenario["question"],
+            alternatives=public_options,
+        )
         return {
+            **clarification,
             "id": scenario["id"],
             "status": "awaiting_answer",
             "question": scenario["question"],
             "reason": scenario["reason"],
             "hypotheses": hypotheses,
-            "options": _public_options(copy.deepcopy(scenario["options"])),
+            "options": public_options,
             "originalQuery": query,
         }
     return None
@@ -161,6 +172,10 @@ def resolve_follow_up(context: Mapping[str, Any] | None, answer_text: str) -> di
     if not isinstance(context, Mapping):
         return None
     pending = context.get("diagnostic_follow_up")
+    if not isinstance(pending, Mapping):
+        common_pending = context.get("pending_clarification")
+        if isinstance(common_pending, Mapping) and common_pending.get("kind") == "diagnostic_cause":
+            pending = common_pending
     if not isinstance(pending, Mapping) or pending.get("status") != "awaiting_answer":
         return None
 
@@ -171,7 +186,7 @@ def resolve_follow_up(context: Mapping[str, Any] | None, answer_text: str) -> di
     option = _option_by_answer(
         copy.deepcopy(scenario["options"]),
         answer_text,
-        selected_id=context.get("selected_option_id"),
+        selected_id=context.get("selected_option_id") or context.get("selected_clarification_option_id"),
     )
     if option is None:
         return None

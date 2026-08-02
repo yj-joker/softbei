@@ -16,6 +16,7 @@ import AnswerFeedbackDialog from '@/components/ai/AnswerFeedbackDialog.vue'
 import ChatMessage from '@/components/ai/ChatMessage.vue'
 import SessionSidebar from '@/components/ai/SessionSidebar.vue'
 import { aiChatStore } from '@/stores/aiChatStore'
+import { buildClarificationContext } from '@/utils/clarification'
 
 const AGENT_PANEL_EVENTS = new Set([
   'tool',
@@ -212,10 +213,7 @@ function handleFollowUpSend(payload) {
     files: [],
     thinking: currentMode.value === 'maintenance',
     mode: currentMode.value,
-    context: {
-      diagnostic_follow_up: pendingFollowUp,
-      selected_option_id: payload.optionId,
-    },
+    context: buildClarificationContext(pendingFollowUp, payload.optionId),
   })
   scrollToBottom(true)
 }

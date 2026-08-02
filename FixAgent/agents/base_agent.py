@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from services.llm.service import LLMService
 from services.llm.react_loop import ReActLoop
+from services.llm.output_style import regenerate_user_visible_text
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -191,7 +192,7 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
         return {
             "evidence_status": "empty",
             "evidence_notice": (
-                "⚠ 知识检索没有召回任何手册片段。本次没有可用证据。"
+                "注意：知识检索没有召回任何手册片段。本次没有可用证据。"
                 "请明确告知用户知识库中暂无相关依据，不得补写通用原因、参数或操作步骤。"
             ),
             "coverage_status": "unsupported",
@@ -225,7 +226,7 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
         return {
             "evidence_status": "low_confidence",
             "evidence_notice": (
-                "⚠ 检索片段与当前设备或问题的匹配度不足，不能作为合格依据。"
+                "注意：检索片段与当前设备或问题的匹配度不足，不能作为合格依据。"
                 "不得补写通用原因、参数或操作步骤；请补充设备型号或对应手册。"
             ),
             "coverage_status": "unsupported",
@@ -917,6 +918,14 @@ class BaseAgent(ABC):
                 model=model_override
             )
 
+            styled_content, style_regenerated = await regenerate_user_visible_text(
+                self.llm_service,
+                response.get("content", ""),
+                model=model_override,
+            )
+            if styled_content != response.get("content", ""):
+                response = {**response, "content": styled_content}
+
             # 5. 处理响应
             intention = input_data.context.get("intention") if input_data.context else None
             react_trace = response.get("trace", [])
@@ -927,7 +936,8 @@ class BaseAgent(ABC):
                 metadata={
                     "execution_mode": "react",
                     "react_trace": react_trace,
-                    "react_iterations": len(react_trace)
+                    "react_iterations": len(react_trace),
+                    "style_regenerated": style_regenerated,
                 },
                 intention=intention
             )

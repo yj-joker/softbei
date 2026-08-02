@@ -9,9 +9,10 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, Mapping
 
-from services.retrieval.aspects import QuestionAspect
+from services.retrieval.aspects import QuestionAspect, canonical_aspect_text, split_question_aspects
 from services.retrieval.evidence import EvidenceLedger, determine_coverage
 from services.retrieval.provenance import dedupe_and_sort_manual_records
+from services.pending_clarification import build_evidence_conflict_clarification
 
 
 _MANUAL_LEADS = ("根据手册", "依据手册", "按照手册", "根据资料", "依据资料")
@@ -56,6 +57,7 @@ class ResponsePlan:
     missing_aspects: tuple[str, ...]
     conflicts: tuple[dict[str, Any], ...]
     ledger_digest: str
+    pending_clarification: dict[str, Any] | None = None
 
     def deterministic_fallback(self) -> str:
         if self.coverage_status == "unsupported":
@@ -105,13 +107,44 @@ class ResponsePlan:
         return f"{status_rules.get(self.coverage_status, status_rules['unsupported'])}{source_rules[self.source_mode]}"
 
     def to_metadata(self) -> dict[str, Any]:
-        return {
+        sources = [
+            entry.get("source") if isinstance(entry.get("source"), Mapping) else {}
+            for entry in self.allowed_evidence
+        ]
+        allowed_evidence_refs = list(dict.fromkeys(
+            str(entry.get("evidence_id") or "")
+            for entry in self.allowed_evidence
+            if str(entry.get("evidence_id") or "").strip()
+        ))
+        allowed_source_chunk_ids = list(dict.fromkeys(
+            str(source.get("chunk_id") or "")
+            for source in sources
+            if str(source.get("chunk_id") or "").strip()
+        ))
+        allowed_evidence_pages = list(dict.fromkeys(
+            source.get("page")
+            for source in sources
+            if source.get("page") not in (None, "")
+        ))
+        allowed_document_ids = list(dict.fromkeys(
+            str(source.get("document_id") or "")
+            for source in sources
+            if str(source.get("document_id") or "").strip()
+        ))
+        metadata = {
             "response_plan_id": self.plan_id,
             "coverage_status": self.coverage_status,
             "source_mode": self.source_mode,
             "missing_aspects": list(self.missing_aspects),
             "evidence_ledger_digest": self.ledger_digest,
+            "allowed_evidence_refs": allowed_evidence_refs,
+            "allowed_source_chunk_ids": allowed_source_chunk_ids,
+            "allowed_evidence_pages": allowed_evidence_pages,
+            "allowed_document_ids": allowed_document_ids,
         }
+        if self.pending_clarification:
+            metadata["pending_clarification"] = dict(self.pending_clarification)
+        return metadata
 
     def _source_label(self) -> str:
         source_types = {
@@ -211,6 +244,18 @@ def build_response_plan(
     )
     if not missing_labels:
         missing_labels = tuple(sorted(missing_ids))
+    original_aspects = split_question_aspects(query)
+    if (
+        coverage_status == "partial"
+        and len(original_aspects) == 1
+        and qualified
+        and not _has_explicit_multi_part_request(query)
+        and not any(_is_explicit_user_missing_aspect(query, label) for label in missing_labels)
+    ):
+        # Retrieval queries may add recall-only terms such as device family or
+        # "manual text". They cannot create new user-visible answer obligations.
+        coverage_status = "complete"
+        missing_labels = ()
     conflicts = tuple(
         dict(item)
         for item in evidence_bundle.get("conflict_eligible") or []
@@ -237,6 +282,13 @@ def build_response_plan(
     }
     canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     plan_id = f"response-plan-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
+    pending_clarification = None
+    if coverage_status == "conflict" and conflicts:
+        pending_clarification = build_evidence_conflict_clarification(
+            query,
+            conflicts[0],
+            list(allowed),
+        )
     return ResponsePlan(
         plan_id=plan_id,
         coverage_status=coverage_status,
@@ -245,7 +297,31 @@ def build_response_plan(
         missing_aspects=missing_labels,
         conflicts=conflicts,
         ledger_digest=ledger.digest,
+        pending_clarification=pending_clarification,
     )
+
+
+def _is_explicit_user_missing_aspect(query: str, label: str) -> bool:
+    query_text = canonical_aspect_text(query)
+    label_text = canonical_aspect_text(label)
+    if not query_text or not label_text:
+        return False
+    if label_text in query_text:
+        return True
+    for prefix in ("建议", "具体", "标准", "对应", "相关"):
+        if label_text.startswith(prefix):
+            label_text = label_text[len(prefix):]
+            break
+    for suffix in ("数值", "信息", "要求"):
+        if label_text.endswith(suffix):
+            label_text = label_text[:-len(suffix)]
+            break
+    return len(label_text) >= 2 and label_text in query_text
+
+
+def _has_explicit_multi_part_request(query: str) -> bool:
+    text = unicodedata.normalize("NFKC", str(query or ""))
+    return any(marker in text for marker in ("并", "以及", "同时", "分别", "和", "与", "及", "、", ";", "；"))
 
 
 def _order_manual_evidence(entries: tuple[dict[str, Any], ...]) -> list[dict[str, Any]]:
@@ -291,7 +367,11 @@ def finalize_response(
                 violations.append(f"unbound_measurement:{object_text}:{measurement.group('value')}:{unit}")
     if _contradicts_safety_requirement(answer, allowed_text):
         violations.append("unbound_safety_requirement")
-    if plan.source_mode == "normal" and answer.startswith(_MANUAL_LEADS):
+    if (
+        not evidence_rendered
+        and plan.source_mode == "normal"
+        and answer.startswith(_MANUAL_LEADS)
+    ):
         violations.append("unsolicited_manual_lead")
     if plan.coverage_status == "partial" and plan.missing_aspects:
         if not all(item in answer for item in plan.missing_aspects) or not any(

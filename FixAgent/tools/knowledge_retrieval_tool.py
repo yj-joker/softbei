@@ -797,8 +797,11 @@ class KnowledgeRetrievalTool(BaseTool):
             return selected
 
         image_mode = str(getattr(query_understanding, "image_mode", "") or "same_section")
-        high_confidence_single_best = image_mode == "single_best" and query_understanding_confidence >= 0.85
-        max_pages = 1 if image_mode == "single_best" else 2
+        selection_mode = str(getattr(query_understanding, "selection_mode", "") or "")
+        high_confidence_single_best = (
+            image_mode == "single_best" or selection_mode == "single_target"
+        ) and query_understanding_confidence >= 0.85
+        max_pages = 1 if image_mode == "single_best" or selection_mode == "single_target" else None
         doc_ids = cls._document_ids_for_page_selector(ranked, selected, document_id)
         if not doc_ids:
             return selected
@@ -864,7 +867,7 @@ class KnowledgeRetrievalTool(BaseTool):
             and any(term in query for term in ("O型圈", "定位销", "垫圈", "齿轮", "链轮", "水泵轴"))
             and any(word in query for word in ("清单", "零件", "部件", "装配"))
         )
-        too_many_image_pages = len(unique_selected_image_pages) > max_pages
+        too_many_image_pages = max_pages is not None and len(unique_selected_image_pages) > max_pages
         sparse_image_page_gap = (
             len(unique_selected_image_pages) >= 2
             and (max(unique_selected_image_pages) - min(unique_selected_image_pages)) >= 3
@@ -1700,6 +1703,7 @@ class KnowledgeRetrievalTool(BaseTool):
             metadata["query_understanding"] = query_understanding.to_metadata()
             metadata["query_understanding_intent"] = query_understanding.intent
             metadata["query_understanding_image_mode"] = query_understanding.image_mode
+            metadata["query_understanding_selection_mode"] = query_understanding.selection_mode
             metadata["query_understanding_confidence"] = query_understanding.confidence
             # 透传 section_match_ids 给下游（api/main.py 直取通道 + review_agent 步骤校验依赖此信号）
             metadata["section_match_ids"] = sm_ids

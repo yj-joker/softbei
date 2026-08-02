@@ -42,6 +42,7 @@ def test_explicit_negative_image_request_disables_image_lookup() -> None:
 
     assert understanding.intent == "general"
     assert understanding.image_mode == "none"
+    assert understanding.selection_mode == "none"
     assert "图片" not in understanding.canonical_query
     assert "不需要图片" not in understanding.target_query
 
@@ -52,3 +53,17 @@ def test_which_page_image_request_is_single_best() -> None:
     assert understanding.intent == "image_lookup"
     assert understanding.image_mode == "single_best"
     assert understanding.confidence >= 0.8
+
+
+def test_explicit_single_step_image_request_uses_single_target_contract() -> None:
+    understanding = understand_query("拆卸凸轮轴前对齐正时标记，只要这一步对应的图")
+
+    assert understanding.intent == "image_lookup"
+    assert understanding.selection_mode == "single_target"
+
+
+def test_complete_procedure_image_request_uses_evidence_pages_contract() -> None:
+    understanding = understand_query("如何安装气缸与活塞？给我完整步骤的相关图片")
+
+    assert understanding.intent == "image_lookup"
+    assert understanding.selection_mode == "evidence_pages"

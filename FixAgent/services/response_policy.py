@@ -47,7 +47,6 @@ def _scope_status(scope: Mapping[str, Any]) -> str:
 
 def _is_explicit_conflict(scope: Mapping[str, Any]) -> bool:
     return _scope_reason(scope) in {
-        "device_document_conflict",
         "explicit_device_conflict",
         "explicit_document_conflict",
         "unknown_document",
@@ -57,9 +56,14 @@ def _is_explicit_conflict(scope: Mapping[str, Any]) -> bool:
 
 def _is_missing_device_document(scope: Mapping[str, Any]) -> bool:
     return _scope_reason(scope) in {
+        "device_document_conflict",
         "unsupported_device",
         "no_matching_device_document",
         "explicit_device_switch",
+        "identity_attribute_conflict",
+        "identity_not_distinguishing",
+        "query_device_not_explicit",
+        "no_confirmed_scope",
     } and bool(scope.get("detected_device_type") or scope.get("requested_device_type"))
 
 

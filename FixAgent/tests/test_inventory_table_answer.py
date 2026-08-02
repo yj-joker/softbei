@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from api.main import (
     _collect_direct_section_table_items,
     _format_inventory_table_answer_from_metadata,
+    _inventory_rows_from_table_full,
     _is_inventory_table_query,
 )
 
@@ -70,6 +71,105 @@ def test_inventory_table_answer_uses_table_full_from_react_trace() -> None:
     assert "11. GB119.2 φ2×5 圆柱销；数量：1" in answer
     assert "未检索到" not in answer
     assert "请您提供设备品牌与型号" not in answer
+
+
+def test_inventory_table_answer_reads_structured_fields_and_matching_row_page() -> None:
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "result_data": [
+                            {
+                                "id": "structured-table",
+                                "content": "5.1 气缸活塞装配部件清单",
+                                "metadata": {
+                                    "chunk_type": "table",
+                                    "chunk_label": "table_full",
+                                    "section_title": "5.1 气缸活塞装配部件清单",
+                                    "parent_section_id": "sec-cylinder-piston",
+                                    "page": 17,
+                                    "table_full": {
+                                        "table_id": "sec-cylinder-piston:table:0000",
+                                        "page_span": [17, 18],
+                                        "headers": ["序号", "零件名称", "数量", "备注"],
+                                        "rows": [
+                                            {
+                                                "row_id": "row-1",
+                                                "source_page": 17,
+                                                "source_index": 0,
+                                                "fields": {
+                                                    "序号": "9",
+                                                    "零件名称": "气缸头螺栓",
+                                                    "数量": "4",
+                                                    "备注": "12# 套筒 / 35 ± 3 N·m",
+                                                },
+                                            },
+                                            {
+                                                "row_id": "row-2",
+                                                "source_page": 18,
+                                                "source_index": 1,
+                                                "fields": {
+                                                    "序号": "10",
+                                                    "零件名称": "M10×1.25 盖形法兰面螺母",
+                                                    "数量": "4",
+                                                    "备注": "14# 套筒及扭力扳手 / 60 ± 5 N·m",
+                                                },
+                                            },
+                                        ],
+                                    },
+                                },
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    answer = _format_inventory_table_answer_from_metadata(
+        "气缸活塞装配部件清单里 M10 螺母数量和锁紧扭矩是多少？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "根据手册第18页" in answer
+    assert "M10×1.25 盖形法兰面螺母；数量：4" in answer
+    assert "扭矩：60±5 N·m" in answer
+    assert "气缸头螺栓" not in answer
+
+
+def test_inventory_rows_from_structured_table_preserve_row_provenance() -> None:
+    rows = _inventory_rows_from_table_full(
+        {
+            "headers": ["序号", "零件名称", "数量", "备注"],
+            "rows": [
+                {
+                    "row_id": "row-10",
+                    "source_page": 18,
+                    "source_index": 9,
+                    "fields": {
+                        "序号": "10",
+                        "零件名称": "M10×1.25 盖形法兰面螺母",
+                        "数量": "4",
+                        "备注": "14# 套筒 / 60 ± 5 N·m",
+                    },
+                }
+            ],
+        }
+    )
+
+    assert rows == [
+        {
+            "seq": "10",
+            "name": "M10×1.25 盖形法兰面螺母",
+            "quantity": "4",
+            "remark": "14# 套筒 / 60 ± 5 N·m",
+            "_row_id": "row-10",
+            "_source_page": 18,
+            "_source_index": 9,
+        }
+    ]
 
 
 def test_inventory_table_answer_ignores_non_inventory_queries() -> None:
@@ -723,7 +823,7 @@ def test_inventory_table_answer_treats_lookup_phrase_as_full_list_even_when_titl
     assert "与问题匹配的清单条目" not in answer
 
 
-def test_inventory_table_answer_drops_later_same_section_auxiliary_table_with_new_duplicate_sequence() -> None:
+def test_inventory_table_answer_merges_cross_page_continuation_with_original_duplicate_sequence() -> None:
     metadata = {
         "react_trace": [
             {
@@ -785,9 +885,10 @@ def test_inventory_table_answer_drops_later_same_section_auxiliary_table_with_ne
     )
 
     assert answer is not None
-    assert "根据手册第17页" in answer
+    assert "根据手册第17-18页" in answer
     assert "1. 气缸体分部件；数量：1" in answer
     assert "5. 活塞；数量：1" in answer
-    assert "φ8×14 空心定位销" not in answer
-    assert "定位销 12×20" not in answer
-    assert "连杆；数量：1" not in answer
+    assert "6. φ8×14 空心定位销；数量：1" in answer
+    assert "6. 定位销 12×20；数量：1；备注：此定位销不拆" in answer
+    assert "7. 连杆；数量：1" in answer
+    assert "原表序号如此" in answer

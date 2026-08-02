@@ -40,6 +40,36 @@ class _VisualBiasedLLM:
         }
 
 
+class _IdentityAwareLLM:
+    def __init__(self, raw_device_span: str = "卡车发动机"):
+        self.raw_device_span = raw_device_span
+
+    async def chat(self, messages, **kwargs):
+        return {
+            "content": json.dumps(
+                {
+                    "target_layer": "document_content",
+                    "target_object": "发动机异响",
+                    "user_goal": "查找原因",
+                    "intent": "fault_diagnosis",
+                    "task_action": "find_cause",
+                    "confidence": 0.99,
+                    "raw_device_span": self.raw_device_span,
+                    "device_name": self.raw_device_span,
+                    "device_category": "发动机",
+                    "carrier_or_application": "卡车",
+                    "manufacturer": "",
+                    "model": "",
+                    "component": "发动机",
+                    "action": "fault_diagnosis",
+                    "orientation": "",
+                    "risk_level": "medium",
+                },
+                ensure_ascii=False,
+            )
+        }
+
+
 def test_general_knowledge_overrides_llm_maintenance_bias() -> None:
     decision = asyncio.run(
         IntentRouter(_MaintenanceBiasedLLM()).classify("给我讲讲高等数学中级数的概念")
@@ -79,3 +109,25 @@ def test_manual_step_image_request_overrides_visual_identification_bias() -> Non
     assert decision.intent == "knowledge_query"
     assert decision.requires_knowledge_retrieval is True
     assert decision.requires_image_understanding is False
+
+
+def test_same_intent_call_extracts_open_vocabulary_query_identity() -> None:
+    decision = asyncio.run(
+        IntentRouter(_IdentityAwareLLM()).classify("卡车发动机异响是什么原因？")
+    )
+
+    assert decision.raw_device_span == "卡车发动机"
+    assert decision.device_category == "发动机"
+    assert decision.carrier_or_application == "卡车"
+    assert decision.component == "发动机"
+    assert decision.action == "fault_diagnosis"
+
+
+def test_ungrounded_device_span_from_model_is_discarded() -> None:
+    decision = asyncio.run(
+        IntentRouter(_IdentityAwareLLM("飞机发动机")).classify("如何安装右曲轴箱盖")
+    )
+
+    assert decision.raw_device_span == ""
+    assert decision.device_category == ""
+    assert decision.carrier_or_application == ""

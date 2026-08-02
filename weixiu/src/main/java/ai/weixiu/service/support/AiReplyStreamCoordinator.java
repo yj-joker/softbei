@@ -6,6 +6,8 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Flux;
 
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -13,6 +15,8 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BiFunction;
 
 public final class AiReplyStreamCoordinator {
+
+    private static final Logger log = LoggerFactory.getLogger(AiReplyStreamCoordinator.class);
 
     private AiReplyStreamCoordinator() {
     }
@@ -68,6 +72,13 @@ public final class AiReplyStreamCoordinator {
             return eventJson;
         }
 
+        ObjectNode objectRoot = (ObjectNode) root;
+        JsonNode existingData = objectRoot.get("data");
+        if (existingData == null || !existingData.isObject()) {
+            objectRoot.putObject("data");
+        }
+        ObjectNode data = (ObjectNode) objectRoot.get("data");
+
         AiMessage reply = persistOnce(
                 fullResponse,
                 persistenceStarted,
@@ -76,15 +87,10 @@ public final class AiReplyStreamCoordinator {
                 root
         );
         if (reply == null) {
-            return eventJson;
+            data.put("persistenceStatus", "failed");
+            return objectRoot.toString();
         }
 
-        ObjectNode objectRoot = (ObjectNode) root;
-        JsonNode existingData = objectRoot.get("data");
-        if (existingData == null || !existingData.isObject()) {
-            objectRoot.putObject("data");
-        }
-        ObjectNode data = (ObjectNode) objectRoot.get("data");
         if (reply.getId() != null) {
             data.put("assistantMessageId", reply.getId());
         }
@@ -102,11 +108,16 @@ public final class AiReplyStreamCoordinator {
             JsonNode doneEvent
     ) {
         if (persistenceStarted.compareAndSet(false, true)) {
-            AiMessage reply = persistReply.apply(fullResponse.toString(), doneEvent);
-            if (reply == null || reply.getId() == null || reply.getAiSessionId() == null) {
-                throw new IllegalStateException("Persisted assistant reply must have message and session ids");
+            try {
+                AiMessage reply = persistReply.apply(fullResponse.toString(), doneEvent);
+                if (reply == null || reply.getId() == null || reply.getAiSessionId() == null) {
+                    log.error("Assistant reply persistence returned without message and session ids");
+                    return null;
+                }
+                persistedReply.set(reply);
+            } catch (RuntimeException exception) {
+                log.error("Assistant reply persistence failed; forwarding the terminal stream event", exception);
             }
-            persistedReply.set(reply);
         }
         return persistedReply.get();
     }

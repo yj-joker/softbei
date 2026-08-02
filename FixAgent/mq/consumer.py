@@ -183,6 +183,7 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
         user_id = body.get("userId")
         document_version = body.get("documentVersion")
         device_type = body.get("deviceType")
+        document_identity = body.get("documentIdentity")
         manual_type = body.get("manualType")
         old_document_id = body.get("oldDocumentId")
         replace_existing = body.get("replaceExisting", False)
@@ -217,6 +218,7 @@ async def handle_knowledge_import(message: aio_pika.abc.AbstractIncomingMessage,
                 old_document_id=old_document_id,
                 manual_id=manual_id,
                 progress_cb=report_progress,
+                document_identity=document_identity,
             )
 
             await publish_result(channel, {

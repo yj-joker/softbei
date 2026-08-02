@@ -48,6 +48,17 @@ def test_normal_complete_plan_is_conclusion_first_without_manual_lead() -> None:
     assert "来源：手册第3页" in answer
 
 
+def test_response_plan_metadata_exposes_only_final_allowed_evidence_bindings() -> None:
+    plan = build_response_plan("火花塞间隙标准是多少？", _bundle("complete"), _ledger(page=3))
+
+    metadata = plan.to_metadata()
+
+    assert metadata["allowed_evidence_refs"] == ["manual:manual-1:chunk-1"]
+    assert metadata["allowed_source_chunk_ids"] == ["chunk-1"]
+    assert metadata["allowed_evidence_pages"] == [3]
+    assert metadata["allowed_document_ids"] == ["manual-1"]
+
+
 def test_explicit_quote_and_page_requests_keep_auditable_citations() -> None:
     quote = build_response_plan("请给我原文和页码", _bundle("complete"), _ledger())
     page = build_response_plan("这个在第几页？", _bundle("complete"), _ledger())
@@ -73,6 +84,62 @@ def test_partial_plan_answers_supported_fact_and_names_missing_aspect() -> None:
     assert "0.7 到 0.9 mm" in answer
     assert "建议更换周期" in answer
     assert "当前资料没有明确说明" in answer
+
+
+def test_retrieval_expansion_does_not_become_a_visible_missing_user_aspect() -> None:
+    bundle = _bundle(
+        "partial",
+        aspect_support=[{
+            "aspect_id": "expanded-query",
+            "aspect_text": "右曲轴箱盖 安装步骤 摩托车 发动机 手册原文",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        missing_aspect_ids=["expanded-query"],
+    )
+    ledger = _ledger(
+        text=(
+            "装上定位销和全新的右曲轴箱盖垫片，盖上右曲轴箱盖，"
+            "放入拉索支架和螺栓并对角均匀预紧。"
+        ),
+        page=26,
+    )
+
+    plan = build_response_plan("如何安装右曲轴箱盖", bundle, ledger)
+
+    assert plan.coverage_status == "complete"
+    assert plan.missing_aspects == ()
+    answer = plan.deterministic_fallback()
+    assert "当前资料没有明确说明" not in answer
+    assert "摩托车 发动机 手册原文" not in answer
+
+
+def test_explicit_missing_parameter_in_a_single_sentence_remains_partial() -> None:
+    bundle = _bundle(
+        "partial",
+        aspect_support=[
+            {
+                "aspect_id": "install",
+                "aspect_text": "右曲轴箱盖安装步骤",
+                "supported": True,
+                "evidence_ids": ["chunk-1"],
+            },
+            {
+                "aspect_id": "torque",
+                "aspect_text": "螺栓扭矩",
+                "supported": False,
+                "evidence_ids": [],
+            },
+        ],
+        missing_aspect_ids=["torque"],
+    )
+    ledger = _ledger(text="装上右曲轴箱盖并对角均匀预紧螺栓。", page=26)
+
+    plan = build_response_plan("如何安装右曲轴箱盖，螺栓扭矩是多少？", bundle, ledger)
+
+    assert plan.coverage_status == "partial"
+    assert plan.missing_aspects == ("螺栓扭矩",)
+    assert "关于“螺栓扭矩”，当前资料没有明确说明" in plan.deterministic_fallback()
 
 
 def test_unsupported_plan_never_offers_generic_causes_or_operations() -> None:
@@ -128,6 +195,23 @@ def test_bound_facts_pass_without_second_generation() -> None:
     assert audited.passed is True
     assert audited.used_fallback is False
     assert audited.answer == draft
+
+
+def test_evidence_rendered_table_is_not_discarded_for_manual_lead_style() -> None:
+    ledger = _ledger(text="1. 气缸体分部件；数量：1", page=17)
+    plan = build_response_plan(
+        "帮我查询气缸活塞装配部件清单",
+        _bundle("complete"),
+        ledger,
+    )
+    draft = "根据手册第17-18页“5.1 气缸活塞装配部件清单”，所用部件如下：\n1. 气缸体分部件；数量：1"
+
+    audited = finalize_response(plan, draft, evidence_rendered=True)
+
+    assert audited.passed is True
+    assert audited.used_fallback is False
+    assert audited.answer == draft
+    assert "unsolicited_manual_lead" not in audited.violations
 
 
 def test_manual_fallback_deduplicates_and_restores_source_order() -> None:
@@ -254,9 +338,12 @@ def test_conflict_fallback_maps_each_value_to_public_source() -> None:
         }],
     )
 
-    answer = build_response_plan("火花塞间隙是多少？", bundle, ledger).deterministic_fallback()
+    plan = build_response_plan("火花塞间隙是多少？", bundle, ledger)
+    answer = plan.deterministic_fallback()
 
     assert "0.7 mm（手册第3页，版本v1）" in answer
     assert "0.9 mm（手册第8页，版本v2）" in answer
     assert "gap-a" not in answer and "gap-b" not in answer
     assert "候选证据" not in answer
+    assert plan.pending_clarification is not None
+    assert plan.to_metadata()["pending_clarification"]["clarification_id"].startswith("clarification-")

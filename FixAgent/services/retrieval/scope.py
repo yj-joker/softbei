@@ -10,6 +10,16 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Mapping
 
+from services.retrieval.device_identity import (
+    MATCHED,
+    UNCERTAIN,
+    UNMATCHED,
+    DeviceCatalog,
+    DocumentIdentity,
+    QueryContract,
+    compare_query_to_document,
+)
+
 
 IN_SCOPE = "in_scope"
 OUT_OF_SCOPE = "out_of_scope"
@@ -51,13 +61,15 @@ class ScopeDecision:
     detected_device_type: str = ""
     requested_document_id: str = ""
     requested_device_type: str = ""
+    identity_relation: str = ""
+    identity_conflicts: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     def retrieval_filter(self) -> dict[str, str]:
-        if self.status == OUT_OF_SCOPE:
-            return {"document_id": "", "device_type": ""}
+        if self.status != IN_SCOPE:
+            return {}
         return {
             "document_id": self.document_id,
             "device_type": "" if self.document_id else self.device_type,
@@ -160,7 +172,24 @@ def decide_scope(
     session_document_id: Any = None,
     session_device_type: Any = None,
     registry: ScopeRegistry | None = None,
+    query_contract: QueryContract | Mapping[str, Any] | None = None,
+    catalog: DeviceCatalog | None = None,
 ) -> ScopeDecision:
+    if catalog is not None:
+        contract = (
+            query_contract
+            if isinstance(query_contract, QueryContract)
+            else QueryContract.from_mapping(query_contract, raw_query=query)
+        )
+        return _decide_dynamic_scope(
+            contract,
+            catalog=catalog,
+            request_document_id=request_document_id,
+            request_device_type=request_device_type,
+            session_document_id=session_document_id,
+            session_device_type=session_device_type,
+        )
+
     registry = registry or get_scope_registry()
     detected = registry.detect_device(query)
 
@@ -271,6 +300,234 @@ def decide_scope(
         return _decision(OUT_OF_SCOPE, "audited_alias", "unsupported_device", detected=detected)
 
     return _decision(UNKNOWN_SCOPE, "unknown", "no_confirmed_scope")
+
+
+def _decide_dynamic_scope(
+    query: QueryContract,
+    *,
+    catalog: DeviceCatalog,
+    request_document_id: Any = None,
+    request_device_type: Any = None,
+    session_document_id: Any = None,
+    session_device_type: Any = None,
+) -> ScopeDecision:
+    requested_document_id = _clean(request_document_id)
+    requested_device_type = _clean(request_device_type)
+
+    if requested_document_id:
+        document = catalog.document(requested_document_id)
+        if document is None:
+            return _dynamic_decision(
+                OUT_OF_SCOPE,
+                "request_document",
+                "unknown_document",
+                query=query,
+                request_document_id=requested_document_id,
+                request_device_type=requested_device_type,
+            )
+        comparison = compare_query_to_document(query, document)
+        if query.has_explicit_device and comparison.relation == UNMATCHED:
+            return _dynamic_decision(
+                OUT_OF_SCOPE,
+                "request_document",
+                "device_document_conflict",
+                query=query,
+                document=document,
+                comparison=comparison,
+                request_document_id=requested_document_id,
+                request_device_type=requested_device_type,
+            )
+        if requested_device_type and not _request_device_matches(requested_device_type, document):
+            return _dynamic_decision(
+                OUT_OF_SCOPE,
+                "request_document",
+                "device_document_conflict",
+                query=query,
+                document=document,
+                comparison=comparison,
+                request_document_id=requested_document_id,
+                request_device_type=requested_device_type,
+            )
+        return _dynamic_decision(
+            IN_SCOPE,
+            "request_document",
+            "document_confirmed",
+            query=query,
+            document=document,
+            comparison=comparison,
+            request_document_id=requested_document_id,
+            request_device_type=requested_device_type,
+        )
+
+    if requested_device_type:
+        candidates = [
+            document
+            for document in catalog.documents
+            if _request_device_matches(requested_device_type, document)
+        ]
+        if len(candidates) != 1:
+            return _dynamic_decision(
+                OUT_OF_SCOPE if not candidates else UNKNOWN_SCOPE,
+                "request_device",
+                "unsupported_device" if not candidates else "ambiguous_device",
+                query=query,
+                request_device_type=requested_device_type,
+            )
+        document = candidates[0]
+        comparison = compare_query_to_document(query, document)
+        if query.has_explicit_device and comparison.relation == UNMATCHED:
+            return _dynamic_decision(
+                OUT_OF_SCOPE,
+                "request_device",
+                "explicit_device_conflict",
+                query=query,
+                document=document,
+                comparison=comparison,
+                request_device_type=requested_device_type,
+            )
+        return _dynamic_decision(
+            IN_SCOPE,
+            "request_device",
+            "device_confirmed",
+            query=query,
+            document=document,
+            comparison=comparison,
+            request_device_type=requested_device_type,
+        )
+
+    session_document = catalog.document(session_document_id) if _clean(session_document_id) else None
+    if session_document is not None:
+        comparison = compare_query_to_document(query, session_document)
+        if query.has_explicit_device and comparison.relation == UNMATCHED:
+            return _dynamic_decision(
+                OUT_OF_SCOPE,
+                "session_document",
+                "explicit_device_switch",
+                query=query,
+                document=session_document,
+                comparison=comparison,
+            )
+        return _dynamic_decision(
+            IN_SCOPE,
+            "session_document",
+            "session_confirmed",
+            query=query,
+            document=session_document,
+            comparison=comparison,
+        )
+
+    if _clean(session_device_type):
+        session_matches = [
+            document
+            for document in catalog.documents
+            if _request_device_matches(session_device_type, document)
+        ]
+        if len(session_matches) == 1:
+            document = session_matches[0]
+            comparison = compare_query_to_document(query, document)
+            if query.has_explicit_device and comparison.relation == UNMATCHED:
+                return _dynamic_decision(
+                    OUT_OF_SCOPE,
+                    "session_device",
+                    "explicit_device_switch",
+                    query=query,
+                    document=document,
+                    comparison=comparison,
+                )
+            return _dynamic_decision(
+                IN_SCOPE,
+                "session_device",
+                "session_confirmed",
+                query=query,
+                document=document,
+                comparison=comparison,
+            )
+
+    comparisons = catalog.match(query)
+    matched = [item for item in comparisons if item.relation == MATCHED]
+    if len(matched) == 1:
+        return _dynamic_decision(
+            IN_SCOPE,
+            "query_identity",
+            "identity_confirmed",
+            query=query,
+            document=matched[0].document,
+            comparison=matched[0],
+        )
+    if len(matched) > 1:
+        return _dynamic_decision(
+            UNKNOWN_SCOPE,
+            "query_identity",
+            "ambiguous_device",
+            query=query,
+            relation=UNCERTAIN,
+        )
+    if query.has_explicit_device and comparisons and all(
+        item.relation == UNMATCHED for item in comparisons
+    ):
+        conflicts = tuple(dict.fromkeys(
+            conflict for item in comparisons for conflict in item.conflicts
+        ))
+        return _dynamic_decision(
+            OUT_OF_SCOPE,
+            "query_identity",
+            "identity_attribute_conflict",
+            query=query,
+            relation=UNMATCHED,
+            conflicts=conflicts,
+        )
+    reason = next(
+        (item.reason for item in comparisons if item.relation == UNCERTAIN),
+        "no_confirmed_scope",
+    )
+    return _dynamic_decision(
+        UNKNOWN_SCOPE,
+        "query_identity" if query.has_explicit_device else "unknown",
+        reason,
+        query=query,
+        relation=UNCERTAIN,
+    )
+
+
+def _dynamic_decision(
+    status: str,
+    source: str,
+    reason: str,
+    *,
+    query: QueryContract,
+    document: DocumentIdentity | None = None,
+    comparison: Any = None,
+    relation: str = "",
+    conflicts: tuple[str, ...] = (),
+    request_document_id: str = "",
+    request_device_type: str = "",
+) -> ScopeDecision:
+    resolved_relation = relation or getattr(comparison, "relation", "")
+    resolved_conflicts = conflicts or tuple(getattr(comparison, "conflicts", ()) or ())
+    return ScopeDecision(
+        status=status,
+        source=source,
+        reason=reason,
+        document_id=document.document_id if document else request_document_id,
+        device_type=(document.device_type or document.device_category) if document else "",
+        display_name=document.device_name if document else "",
+        detected_device_type=query.raw_device_span,
+        requested_document_id=request_document_id,
+        requested_device_type=request_device_type,
+        identity_relation=resolved_relation,
+        identity_conflicts=resolved_conflicts,
+    )
+
+
+def _request_device_matches(value: Any, document: DocumentIdentity) -> bool:
+    requested = _compact(value)
+    if not requested:
+        return False
+    return requested in {
+        _compact(document.device_type),
+        _compact(document.device_name),
+        _compact(document.model),
+    }
 
 
 def format_scope_guard_message(decision: ScopeDecision | Mapping[str, Any]) -> str:

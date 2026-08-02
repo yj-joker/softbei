@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from config.settings import get_settings
+from services.retrieval.device_identity import QueryContract
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +70,16 @@ class IntentDecision(BaseModel):
     allow_visual_answer_without_manual: bool = False
     answer_style: str = "plain_conversational"
     chat_subtype: str = ""
+    raw_device_span: str = ""
+    device_name: str = ""
+    device_category: str = ""
+    carrier_or_application: str = ""
+    manufacturer: str = ""
+    model: str = ""
+    component: str = ""
+    action: str = ""
+    orientation: str = ""
+    risk_level: str = ""
     allowed_tools: List[str] = Field(default_factory=list)
     preferred_tools: List[str] = Field(default_factory=list)
     forbidden_tools: List[str] = Field(default_factory=list)
@@ -282,6 +293,10 @@ class IntentRouter:
             "task_action 必须从 general_answer, find_cause, repair_guidance, formal_procedure, "
             "parameter_lookup, visual_compare, document_explain, inventory_list 中选择。"
             "confidence 为 0 到 1。不要生成用户回答，只判断用户当前想做什么。"
+            "同一次 JSON 中还要提取当前轮查询契约：raw_device_span 必须逐字复制用户消息中连续出现的设备短语，"
+            "没有明确设备时必须为空；device_name、device_category、carrier_or_application、manufacturer、model、"
+            "component、action、orientation、risk_level 分别表示设备名、设备类别、载体或应用、制造商、型号、"
+            "部件、动作、左右方向和风险等级。不得从历史或常识补写用户本轮未提到的设备。"
             "knowledge_inventory 仅用于用户明确询问知识库本身的文件、文档、上传、导入或入库状态。"
             "如果用户要求从知识库、手册或资料中查找、返回、展示图片、照片、示例图、结构图、示意图，"
             "这属于 document_content 的 knowledge_query，不属于 knowledge_inventory。"
@@ -303,7 +318,7 @@ class IntentRouter:
                 {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
             ],
             temperature=0,
-            max_tokens=120,
+            max_tokens=280,
             response_format={"type": "json_object"},
             model=self.settings.intent_router_model,
         )
@@ -314,6 +329,7 @@ class IntentRouter:
         target_layer = str(data.get("target_layer") or "").strip()
         if target_layer not in TARGET_LAYERS:
             target_layer = self._infer_target_layer(text, has_images)
+        query_contract = QueryContract.from_mapping(data, raw_query=text)
         return IntentDecision(
             target_layer=target_layer,
             target_object=str(data.get("target_object") or ""),
@@ -322,6 +338,16 @@ class IntentRouter:
             task_action=str(data.get("task_action") or "general_answer"),
             confidence=float(data.get("confidence", 0.0)),
             source="llm",
+            raw_device_span=query_contract.raw_device_span,
+            device_name=query_contract.device_name,
+            device_category=query_contract.device_category,
+            carrier_or_application=query_contract.carrier_or_application,
+            manufacturer=query_contract.manufacturer,
+            model=query_contract.model,
+            component=query_contract.component,
+            action=query_contract.action,
+            orientation=query_contract.orientation,
+            risk_level=query_contract.risk_level,
         )
 
     def _classify_by_rules(self, text: str, images: List[str]) -> IntentDecision:

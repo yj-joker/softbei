@@ -44,6 +44,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Service
 @AllArgsConstructor
@@ -90,31 +91,39 @@ public class AiServiceImpl implements AiService {
 
         log.info("最终消息: {}", aiChatRequest.getUserMessage());
         AiSession finalAiSession = aiSession;
+        AtomicBoolean replyPersisted = new AtomicBoolean(false);
         Flux<String> persistedFlux = AiReplyStreamCoordinator.coordinate(
                 getStringFlux(aiChatRequest, uri),
                 objectMapper,
-                (content, doneEvent) -> saveAiReply(
-                        finalAiSession, userId, questionMessage.getId(), content, doneEvent
-                )
+                (content, doneEvent) -> {
+                    AiMessage reply = saveAiReply(
+                            finalAiSession, userId, questionMessage.getId(), content, doneEvent
+                    );
+                    replyPersisted.set(
+                            reply != null && reply.getId() != null && reply.getAiSessionId() != null
+                    );
+                    return reply;
+                }
         );
         return persistedFlux
-                .doOnComplete(() -> {
-                    // [已退役] 实时记忆更新链路停用。
-                    // 事实纠正现由对话内 LLM 的 delete_memory(删错的)+save_memory(存对的)直接处理，
-                    // 语义判断比旧的轻量检测 Agent 准；旧链路去向量后 superseded 恒空，只会写入纠正事实
-                    // 却不替代旧事实，反而产生矛盾数据，故整条退役。
+                .doOnComplete(() -> completePersistedReply(
+                        replyPersisted.get(), finalAiSession, userId
+                ));
+    }
 
-                    // ===== 定时整合：每maxMemory轮发MQ消息 =====
-                    if (finalAiSession.getRoundCount() % maxMemory == 0) {
-                        memoryMessageProducer.sendConsolidate(
-                                finalAiSession.getId(), userId,
-                                finalAiSession.getRoundCount(), maxMemory
-                        );
-                    }
+    private void completePersistedReply(boolean replyPersisted, AiSession aiSession, Long userId) {
+        if (!replyPersisted) {
+            log.warn("Skipping completion hooks because the assistant reply was not persisted");
+            return;
+        }
 
-                    // ===== 异步刷新个性化推荐缓存 =====
-                    manualRecommendService.refreshAsync(userId);
-                });
+        if (aiSession.getRoundCount() % maxMemory == 0) {
+            memoryMessageProducer.sendConsolidate(
+                    aiSession.getId(), userId,
+                    aiSession.getRoundCount(), maxMemory
+            );
+        }
+        manualRecommendService.refreshAsync(userId);
     }
 
     /*

@@ -502,6 +502,22 @@ def _normalize_header_row(row: List[str]) -> tuple:
     return tuple(re.sub(r"\s+", "", _as_text(cell)) for cell in row)
 
 
+def _table_row_source_pages(table: Dict[str, Any], rows: List[List[str]]) -> List[Any]:
+    stored = table.get("row_source_pages") or []
+    if isinstance(stored, list) and len(stored) == len(rows):
+        return list(stored)
+    return [table.get("page") for _ in rows]
+
+
+def _ordered_table_pages(*page_groups: Iterable[Any]) -> List[int]:
+    pages: List[int] = []
+    for group in page_groups:
+        for value in group:
+            if isinstance(value, int) and value not in pages:
+                pages.append(value)
+    return pages
+
+
 def _merge_continued_tables(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """合并跨页续表：同一 section 内页码连续、列数一致、且后表首行等于前表表头
     （或后表无表头、首行即数据行）的相邻表，拼成一张逻辑表。恢复被 pdfplumber
@@ -515,13 +531,23 @@ def _merge_continued_tables(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]
             merged.append(table)
             continue
         rows = _table_rows(table)
+        current = dict(table)
+        current["row_source_pages"] = _table_row_source_pages(table, rows)
+        current["page_span"] = _ordered_table_pages(
+            table.get("page_span") or [],
+            [table.get("page")],
+        )
         if not merged or not rows:
-            merged.append(dict(table))
+            merged.append(current)
             continue
 
         prev = merged[-1]
         prev_rows = _table_rows(prev)
-        prev_page = prev.get("page")
+        prev_page_span = _ordered_table_pages(
+            prev.get("page_span") or [],
+            [prev.get("page")],
+        )
+        prev_page = prev_page_span[-1] if prev_page_span else prev.get("page")
         cur_page = table.get("page")
         # 页码必须连续（相邻页），列数一致
         page_ok = (
@@ -532,7 +558,7 @@ def _merge_continued_tables(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]
         cur_header_row = rows[0]
         cols_ok = bool(prev_headers) and len(cur_header_row) == len(prev_headers)
         if not (page_ok and cols_ok and prev_rows):
-            merged.append(dict(table))
+            merged.append(current)
             continue
 
         # 续表判据：后表首行 == 前表表头（重复表头），或后表首行是纯数据行（无表头续排）
@@ -540,21 +566,27 @@ def _merge_continued_tables(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]
         first_cell = _as_text(cur_header_row[0])
         looks_like_data = first_cell.isdigit()  # 序号列以数字开头 → 直接续排的数据行
         if not (header_repeated or looks_like_data):
-            merged.append(dict(table))
+            merged.append(current)
             continue
 
         continuation_rows = rows[1:] if header_repeated else rows
         if not continuation_rows:
-            merged.append(dict(table))
+            merged.append(current)
             continue
 
         combined = dict(prev)
         combined["rows"] = list(prev_rows) + continuation_rows
+        prev_sources = _table_row_source_pages(prev, prev_rows)
+        current_sources = _table_row_source_pages(current, rows)
+        continuation_sources = current_sources[1:] if header_repeated else current_sources
+        combined["row_source_pages"] = prev_sources + continuation_sources
+        page_span = _ordered_table_pages(prev_page_span, current.get("page_span") or [], [cur_page])
+        combined["page_span"] = page_span
         # page_range 记跨页范围；caption 若是自动生成的"第N页表格"则升级为范围，便于下游标注出处
-        combined["page_range"] = f"{prev_page}-{cur_page}"
+        combined["page_range"] = f"{page_span[0]}-{page_span[-1]}" if page_span else ""
         prev_caption = _as_text(prev.get("caption"))
-        if not prev_caption or re.fullmatch(r"第\d+页表格", prev_caption):
-            combined["caption"] = f"第{prev_page}-{cur_page}页表格"
+        if not prev_caption or re.fullmatch(r"第\d+(?:-\d+)?页表格", prev_caption):
+            combined["caption"] = f"第{page_span[0]}-{page_span[-1]}页表格"
         merged[-1] = combined
     return merged
 
@@ -563,6 +595,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
     """Build retrieval-ready child chunks for one parsed manual section."""
     chunks: List[Dict[str, Any]] = []
     step_chunk_ids: List[str] = []
+    step_chunk_ids_by_page: Dict[Any, List[str]] = {}
     text_chunk_ids: List[str] = []
     text_context_snippets: List[str] = []
     # 稳定的 section 身份：优先使用标题 hash，保证跨版本 provenance 可追踪
@@ -631,6 +664,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 if chunk:
                     emitted_primary.append(chunk)
                     step_chunk_ids.append(chunk["id"])
+                    step_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_chunk_ids.append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
         elif _looks_like_troubleshooting(text):
@@ -743,6 +777,22 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
         data_rows = _table_data_rows(rows, headers)
         caption = _as_text(table.get("caption"))
         page = table.get("page")
+        table_id = f"{sec_id}:table:{table_index:04d}"
+        page_span = _ordered_table_pages(table.get("page_span") or [], [page])
+        row_source_pages = _table_row_source_pages(table, rows)
+        data_source_pages = row_source_pages[-len(data_rows):] if data_rows else []
+        structured_rows = []
+        for row_index, row in enumerate(data_rows):
+            source_page = data_source_pages[row_index] if row_index < len(data_source_pages) else page
+            structured_rows.append({
+                "row_id": f"{table_id}:row:{row_index:04d}",
+                "source_page": source_page,
+                "source_index": row_index,
+                "fields": {
+                    header: _as_text(row[column_index]) if column_index < len(row) else ""
+                    for column_index, header in enumerate(headers)
+                },
+            })
         table_units = _extract_units(cell for row in rows for cell in row)
         table_parameter_candidate = _is_parameter_candidate(table_text, headers, [caption], table_units)
         table_parameter_type = _infer_parameter_type(table_text, table_units) if table_parameter_candidate else ""
@@ -753,6 +803,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
         )
         table_meta = {
             "table_index": table_index,
+            "table_id": table_id,
+            "continuation_id": table_id,
+            "page_span": page_span,
             "caption": caption,
             "headers": headers,
             "table_rows": len(data_rows),
@@ -761,6 +814,13 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             "parameter_type": table_parameter_type,
             "numeric_values": _extract_numeric_values(table_text, table_units),
             "answer_role": table_answer_role,
+            "table_full": {
+                "table_id": table_id,
+                "continuation_id": table_id,
+                "page_span": page_span,
+                "headers": headers,
+                "rows": structured_rows,
+            },
         }
         table_full_chunk = None
         if table_text:
@@ -782,6 +842,11 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 stable_suffix=f"{table_index:04d}",
             )
 
+        row_table_meta = {
+            key: value
+            for key, value in table_meta.items()
+            if key != "table_full"
+        }
         for row_index, row in enumerate(data_rows):
             row_text = _row_to_text(caption, headers, row)
             units = _extract_units(row + headers)
@@ -790,7 +855,28 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             parameter_query_candidate = _is_parameter_candidate(row_text, headers, row, units)
             parameter_type = _infer_parameter_type(row_text, units) if parameter_query_candidate else ""
             numeric_values = _extract_numeric_values(row_text, units)
+            parameter_values = []
+            for header, value in _row_field_map(headers, row).items():
+                field_units = _extract_units([value])
+                if not field_units:
+                    continue
+                field_parameter_type = _infer_parameter_type(f"{header} {value}", field_units) or parameter_type
+                field_name = ":".join(
+                    item
+                    for item in (part_name, _as_text(header), field_parameter_type)
+                    if item
+                )
+                for numeric_value in _extract_numeric_values(value, field_units):
+                    numeric_unit = _as_text(numeric_value.get("unit"))
+                    if field_name and numeric_unit:
+                        parameter_values.append({
+                            "field": field_name,
+                            "value": _as_text(numeric_value.get("raw")),
+                            "unit": numeric_unit,
+                        })
             answer_role = _infer_table_answer_role(row_text, headers, row, units, parameter_type, caption)
+            structured_row = structured_rows[row_index]
+            row_page = structured_row.get("source_page") or page
             _emit_chunk(
                 chunks,
                 text=row_text,
@@ -798,7 +884,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 chunk_label="table_row",
                 section=section,
                 section_index=section_index,
-                page=page,
+                page=row_page,
                 source_index=table_index,
                 parent_chunk_id=table_full_chunk["id"] if table_full_chunk else f"{sec_id}:table:{table_index:04d}",
                 extra_context=(
@@ -807,13 +893,17 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                     ("Parent table", table_full_chunk["id"] if table_full_chunk else ""),
                 ),
                 metadata={
-                    **table_meta,
+                    **row_table_meta,
                     "row_index": row_index,
+                    "row_id": structured_row["row_id"],
+                    "source_page": row_page,
+                    "fields": structured_row["fields"],
                     "units": units,
                     "part_name": part_name,
                     "parameter_names": parameter_names,
                     "parameter_type": parameter_type,
                     "numeric_values": numeric_values,
+                    "parameter_values": parameter_values,
                     "answer_role": answer_role,
                     "parameter_query_candidate": parameter_query_candidate,
                     "parent_table_chunk_id": table_full_chunk["id"] if table_full_chunk else "",
@@ -833,6 +923,8 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             ]
         )
         text = caption or f"{_as_text(section.get('section_title'))} page {page or '?'} image"
+        same_page_step_ids = list(step_chunk_ids_by_page.get(page) or [])
+        related_step_ids = same_page_step_ids or step_chunk_ids[:5]
         _emit_chunk(
             chunks,
             text=text,
@@ -854,8 +946,10 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 "caption": caption,
                 "visual_context_text": visual_context_text,
                 "answer_role": "visual_reference",
-                "related_step_chunk_ids": step_chunk_ids[:5],
+                "related_step_chunk_ids": related_step_ids,
                 "related_text_chunk_ids": text_chunk_ids[:5],
+                "binding_role": "same_page_step" if same_page_step_ids else "section_fallback",
+                "binding_confidence": 1.0 if same_page_step_ids else (0.35 if related_step_ids else 0.0),
             },
         )
 

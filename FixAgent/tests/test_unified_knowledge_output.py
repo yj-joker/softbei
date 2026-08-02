@@ -642,6 +642,37 @@ def test_non_stream_policy_direct_skips_all_manual_overrides(monkeypatch) -> Non
     assert response.metadata["response_policy"]["mode"] == "MAINTENANCE_AI_FALLBACK"
 
 
+def test_non_stream_endpoint_removes_emojis_from_final_answer(monkeypatch) -> None:
+    request = ChatRequest(session_id="emoji-non-stream", message="介绍一下检修注意事项")
+    input_data = AgentInput(user_message=request.message, session_id=request.session_id)
+    direct_output = AgentOutput(
+        agent_name="fix_agent",
+        message="🔹检查温度 80℃。⚠️ 扭矩保持 12 N·m。👨🏽‍🔧",
+        tools_used=[],
+        metadata={
+            "execution_mode": "general_ai_direct",
+            "deterministic_direct": True,
+            "response_policy": {"mode": "GENERAL_AI", "manual_citation_allowed": False},
+        },
+    )
+
+    async def _direct(*args, **kwargs):
+        return direct_output
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _async_none)
+    monkeypatch.setattr(main, "_try_response_policy_direct", _direct)
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "_collect_direct_section_images", _async_empty)
+    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", lambda *args: [])
+
+    response = asyncio.run(main.chat(request))
+
+    assert response.message == "检查温度 80℃。 扭矩保持 12 N·m。"
+
+
 def test_non_stream_endpoint_audits_after_manual_override(monkeypatch) -> None:
     output = _output("react", _manual_trace())
     output.message = "火花塞间隙标准为 0.7 到 0.9 mm。"
@@ -834,6 +865,46 @@ def test_stream_endpoint_audits_override_and_emits_metadata(monkeypatch) -> None
         "response_plan_id",
         "evidence_ledger_digest",
     )).issubset(done["data"]["metadata"])
+
+
+def test_stream_policy_direct_removes_emojis_from_every_token(monkeypatch) -> None:
+    request = ChatRequest(session_id="emoji-stream", message="介绍一下检修注意事项")
+    input_data = AgentInput(user_message=request.message, session_id=request.session_id)
+    direct_output = AgentOutput(
+        agent_name="fix_agent",
+        message="✅温度 80℃，公差 ±0.2。🇨🇳 👩🏾‍🔧",
+        tools_used=[],
+        metadata={"execution_mode": "general_ai_direct", "deterministic_direct": True},
+    )
+
+    async def _direct(*args, **kwargs):
+        return direct_output
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _async_none)
+    monkeypatch.setattr(main, "_try_response_policy_direct", _direct)
+
+    async def _consume():
+        response = await main.chat_stream(request)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    payload = asyncio.run(_consume())
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in payload.splitlines()
+        if line.startswith("data: ")
+    ]
+    token_contents = [
+        event["data"]["content"]
+        for event in events
+        if event.get("event") == "token"
+    ]
+
+    assert "".join(token_contents) == "温度 80℃，公差 ±0.2。 "
+    assert all(content not in {"✅", "🇨", "🇳", "👩", "🏾", "🔧", "\u200d", "\ufe0f"} for content in token_contents)
 
 
 def test_direct_lookup_records_are_registered_in_evidence_ledger() -> None:

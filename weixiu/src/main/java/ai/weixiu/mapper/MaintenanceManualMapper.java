@@ -2,6 +2,8 @@ package ai.weixiu.mapper;
 
 import ai.weixiu.entity.MaintenanceManual;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Select;
 
 /**
  * <p>
@@ -13,4 +15,9 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
  */
 public interface MaintenanceManualMapper extends BaseMapper<MaintenanceManual> {
 
+    /**
+     * 在当前事务内锁定手册行，串行化异步解析成功回调的 active 版本比较与切换。
+     */
+    @Select("SELECT * FROM maintenance_manual WHERE id = #{id} FOR UPDATE")
+    MaintenanceManual selectByIdForUpdate(@Param("id") Long id);
 }

@@ -911,6 +911,44 @@ class VectorService:
             logger.warning(f"list_document_chunks failed: document_id={document_id} err={e}")
             return []
 
+    def update_document_metadata(
+        self,
+        document_id: str,
+        updates: Dict[str, Any],
+    ) -> int:
+        """Merge identity/revision fields into every record for one document."""
+        if not document_id or not updates:
+            return 0
+        updated = 0
+        try:
+            for key in self.redis.scan_iter(match=f"{self.VECTOR_KEY_PREFIX}*", count=1000):
+                raw = self.redis.hgetall(key)
+                if not raw:
+                    continue
+                metadata_raw = raw.get(b"metadata") if b"metadata" in raw else raw.get("metadata")
+                if isinstance(metadata_raw, bytes):
+                    metadata_raw = metadata_raw.decode("utf-8")
+                try:
+                    metadata = json.loads(metadata_raw or "{}")
+                except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(metadata, dict) or str(metadata.get("document_id") or "") != document_id:
+                    continue
+                metadata.update(dict(updates))
+                self.redis.hset(
+                    key,
+                    mapping={"metadata": json.dumps(metadata, ensure_ascii=False)},
+                )
+                updated += 1
+            return updated
+        except Exception as exc:
+            logger.warning(
+                "update_document_metadata failed: document_id=%s err=%s",
+                document_id,
+                exc,
+            )
+            return 0
+
     def list_all_manifests(self) -> List[Dict[str, Any]]:
         """列出所有已导入文档的 manifest（供全量重抽使用）。"""
         try:

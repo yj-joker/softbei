@@ -33,6 +33,22 @@ PREPARE ai_question_message_id_statement FROM @ai_question_message_id_ddl;
 EXECUTE ai_question_message_id_statement;
 DEALLOCATE PREPARE ai_question_message_id_statement;
 
+SET @ai_question_message_index_exists = (
+    SELECT COUNT(*)
+    FROM information_schema.statistics
+    WHERE table_schema = DATABASE()
+      AND table_name = 'ai_message'
+      AND index_name = 'idx_question_message'
+);
+SET @ai_question_message_index_ddl = IF(
+    @ai_question_message_index_exists = 0,
+    'ALTER TABLE ai_message ADD INDEX idx_question_message (question_message_id)',
+    'SELECT 1'
+);
+PREPARE ai_question_message_index_statement FROM @ai_question_message_index_ddl;
+EXECUTE ai_question_message_index_statement;
+DEALLOCATE PREPARE ai_question_message_index_statement;
+
 CREATE TABLE IF NOT EXISTS `answer_feedback` (
     `id`                   BIGINT       NOT NULL COMMENT 'snowflake id',
     `user_id`              BIGINT       NOT NULL COMMENT 'reporting user id',

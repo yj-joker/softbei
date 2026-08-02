@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { ChatDotRound, CopyDocument, DataAnalysis, EditPen, Loading, Right, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { useSpeech } from '@/composables/useSpeech'
+import { normalizeClarification } from '@/utils/clarification'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -20,7 +21,7 @@ const isUser = computed(() => props.message.role === 'user')
 const diagnosisItems = computed(() =>
   Array.isArray(props.message.diagnosisItems) ? props.message.diagnosisItems : [],
 )
-const diagnosticFollowUp = computed(() => props.message.diagnosticFollowUp || null)
+const diagnosticFollowUp = computed(() => normalizeClarification(props.message.diagnosticFollowUp))
 const followUpOptions = computed(() =>
   Array.isArray(diagnosticFollowUp.value?.options) ? diagnosticFollowUp.value.options : [],
 )
@@ -36,6 +37,7 @@ const isFollowUpSubmitted = computed(() =>
 const showFollowUpCard = computed(() =>
   canAnswerFollowUp.value || isFollowUpSubmitted.value,
 )
+const isEvidenceConflict = computed(() => diagnosticFollowUp.value?.kind === 'evidence_conflict')
 
 // 诊断项（结构化）转为可读/可显示的纯文本，与正文合成同一段，确保朗读完整覆盖、各回复样式统一
 function diagnosisToText(items) {
@@ -214,8 +216,8 @@ function reportAnswer() {
 
         <div v-if="showFollowUpCard" class="follow-up-card">
           <div class="follow-up-head">
-            <b>候选根因收敛</b>
-            <span>{{ canAnswerFollowUp ? '请选择一个现场现象' : '已提交，正在收敛' }}</span>
+            <b>{{ isEvidenceConflict ? '证据参数冲突' : '候选根因收敛' }}</b>
+            <span>{{ canAnswerFollowUp ? (isEvidenceConflict ? '请选择适用值或版本' : '请选择一个现场现象') : '已提交，正在收敛' }}</span>
           </div>
           <div v-if="followUpHypotheses.length" class="follow-up-hypotheses">
             <span

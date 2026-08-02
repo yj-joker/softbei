@@ -6,6 +6,9 @@ candidates are usable as evidence for the current device and task.
 
 from __future__ import annotations
 
+import re
+import unicodedata
+from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 from services.retrieval.aspects import (
@@ -233,40 +236,145 @@ def _detect_conflicts(
     *,
     aspects: Sequence[QuestionAspect] = (),
 ) -> List[Dict[str, Any]]:
-    values: Dict[tuple[str, str], Dict[str, set[str]]] = {}
+    groups: Dict[tuple[str, str, tuple[str, ...]], Dict[str, Any]] = {}
     for item in items:
         metadata = item.get("metadata") or {}
-        names = metadata.get("parameter_names") or []
-        numbers = metadata.get("numeric_values") or []
-        units = metadata.get("units") or []
-        if not isinstance(names, list) or not isinstance(numbers, list):
-            continue
-        unit = str(units[0]) if isinstance(units, list) and units else ""
-        for name, number in zip(names, numbers):
-            if name and number is not None:
-                group = values.setdefault((str(name), unit), {})
-                group.setdefault(str(number), set()).add(str(metadata.get("evidence_id") or ""))
-    return [
-        {
-            "field": name,
-            "unit": unit,
-            "values": sorted(number_map),
-            "alternatives": [
-                {"value": value, "candidate_ids": sorted(candidate_id for candidate_id in ids if candidate_id)}
-                for value, ids in sorted(number_map.items())
-            ],
-            "candidate_ids": sorted(
-                candidate_id
-                for ids in number_map.values()
-                for candidate_id in ids
-                if candidate_id
-            ),
-            "aspect_ids": [aspect.aspect_id for aspect in aspects if _aspect_matches(aspect, name)],
-            "impact": "manual_claim_blocked",
+        evidence_id = str(metadata.get("evidence_id") or item.get("doc_id") or item.get("id") or "")
+        semantic_scope = _conflict_semantic_scope(metadata)
+        explicit_values = metadata.get("parameter_values") or []
+        measurements: List[tuple[str, str, str]] = []
+        if isinstance(explicit_values, list):
+            for measurement in explicit_values:
+                if not isinstance(measurement, dict):
+                    continue
+                field = str(measurement.get("field") or "").strip()
+                value = str(measurement.get("value") or "").strip()
+                unit = str(measurement.get("unit") or "").strip()
+                if field and value and unit:
+                    measurements.append((field, value, unit))
+
+        if not measurements:
+            names = metadata.get("parameter_names") or []
+            numbers = metadata.get("numeric_values") or []
+            parameter_type = str(metadata.get("parameter_type") or "").strip()
+            part_name = str(metadata.get("part_name") or "").strip()
+            if not part_name and isinstance(names, list) and names:
+                part_name = str(names[0] or "").strip()
+            field = (
+                f"{part_name}:{parameter_type}"
+                if part_name and parameter_type
+                else part_name or parameter_type
+            )
+            if field and isinstance(numbers, list):
+                for number in numbers:
+                    if not isinstance(number, dict):
+                        if len(numbers) == 1:
+                            units = metadata.get("units") or []
+                            unit = str(units[0]) if isinstance(units, list) and units else ""
+                            value = str(number or "").strip()
+                            if value and unit:
+                                measurements.append((field, value, unit))
+                        continue
+                    value = str(number.get("raw") or "").strip()
+                    unit = str(number.get("unit") or "").strip()
+                    if value and unit:
+                        measurements.append((field, value, unit))
+
+        for field, value, unit in measurements:
+            normalized_field = _normalize_conflict_field(field)
+            normalized_unit, display_unit = _normalize_conflict_unit(unit)
+            normalized_value = _normalize_conflict_value(value)
+            if not normalized_field or not normalized_unit or not normalized_value:
+                continue
+            group = groups.setdefault(
+                (normalized_field, normalized_unit, semantic_scope),
+                {"field": field, "unit": display_unit, "values": {}},
+            )
+            value_entry = group["values"].setdefault(
+                normalized_value,
+                {"value": value, "candidate_ids": set()},
+            )
+            if evidence_id:
+                value_entry["candidate_ids"].add(evidence_id)
+
+    conflicts: List[Dict[str, Any]] = []
+    for (_, _, semantic_scope), group in groups.items():
+        number_map = group["values"]
+        candidate_ids = {
+            candidate_id
+            for entry in number_map.values()
+            for candidate_id in entry["candidate_ids"]
+            if candidate_id
         }
-        for (name, unit), number_map in values.items()
-        if len(number_map) > 1
-    ]
+        if len(number_map) <= 1 or len(candidate_ids) <= 1:
+            continue
+        ordered = [entry for _, entry in sorted(number_map.items())]
+        field = str(group["field"])
+        conflicts.append({
+            "field": field,
+            "semantic_fields": [field],
+            "unit": str(group["unit"]),
+            "values": [str(entry["value"]) for entry in ordered],
+            "alternatives": [
+                {
+                    "value": str(entry["value"]),
+                    "candidate_ids": sorted(entry["candidate_ids"]),
+                }
+                for entry in ordered
+            ],
+            "candidate_ids": sorted(candidate_ids),
+            "aspect_ids": [aspect.aspect_id for aspect in aspects if _aspect_matches(aspect, field)],
+            "semantic_scope": list(semantic_scope),
+            "impact": "manual_claim_blocked",
+        })
+    return conflicts
+
+
+def _normalize_conflict_field(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    text = re.sub(r"\s+", "", text)
+    for synonym in ("拧紧力矩", "紧固力矩", "拧紧扭矩", "紧固扭矩", "扭力"):
+        text = text.replace(synonym, "扭矩")
+    return text.strip(":：|/")
+
+
+def _normalize_conflict_unit(value: Any) -> tuple[str, str]:
+    text = unicodedata.normalize("NFKC", str(value or "")).replace(" ", "")
+    compact = text.casefold().replace("*", "·").replace("⋅", "·").replace(".", "·")
+    aliases = {
+        "n·m": ("n·m", "N·m"),
+        "nm": ("n·m", "N·m"),
+        "mm": ("mm", "mm"),
+        "cm": ("cm", "cm"),
+        "mpa": ("mpa", "MPa"),
+        "kpa": ("kpa", "kPa"),
+    }
+    return aliases.get(compact, (compact, text))
+
+
+def _normalize_conflict_value(value: Any) -> str:
+    text = unicodedata.normalize("NFKC", str(value or ""))
+    text = re.sub(r"\s+", "", text).replace("～", "-").replace("~", "-")
+
+    def normalize_number(match: re.Match[str]) -> str:
+        try:
+            number = Decimal(match.group(0))
+        except InvalidOperation:
+            return match.group(0)
+        normalized = format(number.normalize(), "f")
+        return normalized.rstrip("0").rstrip(".") if "." in normalized else normalized
+
+    return re.sub(r"(?<![A-Za-z0-9])\d+(?:\.\d+)?", normalize_number, text).casefold()
+
+
+def _conflict_semantic_scope(metadata: Dict[str, Any]) -> tuple[str, ...]:
+    values = (
+        metadata.get("action") or metadata.get("operation_action"),
+        metadata.get("orientation") or metadata.get("direction"),
+        metadata.get("device_type") or metadata.get("device_model"),
+        metadata.get("applicable_scope") or metadata.get("model_scope"),
+    )
+    return tuple(_normalize(value) for value in values)
 
 
 def _map_aspect_support(
