@@ -33,11 +33,13 @@ logger = logging.getLogger(__name__)
 class JavaApiError(RuntimeError):
     """Java 内部回调失败，保留调用路径和 HTTP 状态但不暴露鉴权信息。"""
 
-    def __init__(self, path: str, status_code: Any = None):
+    def __init__(self, path: str, status_code: Any = None, business_code: Any = None):
         status = status_code if status_code is not None else "unavailable"
-        super().__init__(f"Java API request failed: path={path} status={status}")
+        code_suffix = f" code={business_code}" if business_code is not None else ""
+        super().__init__(f"Java API request failed: path={path} status={status}{code_suffix}")
         self.path = path
         self.status_code = status_code
+        self.business_code = business_code
 
 
 
@@ -589,6 +591,13 @@ class ManualKGExtractor:
                 if resp.status_code < 200 or resp.status_code >= 300:
                     raise JavaApiError(path, resp.status_code)
                 data = resp.json()
+                if isinstance(data, dict):
+                    business_code = data.get("code")
+                    business_success = data.get("success")
+                    if (business_code is not None and str(business_code) != "200") or business_success is False:
+                        raise JavaApiError(path, resp.status_code, business_code)
+                    if "data" in data and data.get("data") is None:
+                        raise JavaApiError(path, resp.status_code, business_code or "null-data")
                 return data.get("data") if isinstance(data, dict) and "data" in data else data
         except JavaApiError:
             raise
