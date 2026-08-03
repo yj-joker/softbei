@@ -7,7 +7,12 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from services.retrieval.image_selector import PageEvidence, select_pages_for_image_query
+from services.retrieval.image_selector import (
+    ImageSelectionContract,
+    PageEvidence,
+    select_pages_for_contract,
+    select_pages_for_image_query,
+)
 
 
 def _page(page: int, text: str, image_id: str | None = None) -> PageEvidence:
@@ -30,6 +35,38 @@ def test_single_best_prefers_disassembly_page_over_installation_neighbor() -> No
     )
 
     assert selected == [4]
+
+
+def test_evidence_pages_contract_keeps_all_three_answer_pages() -> None:
+    pages = [
+        _page(19, "安装垫片并将活塞头部插入气缸裙部"),
+        _page(20, "活塞与气缸必须使用相同组别"),
+        _page(21, "活塞环开口错开并安装活塞销和挡圈"),
+    ]
+    contract = ImageSelectionContract(
+        mode="evidence_pages",
+        target_pages=(19, 20, 21),
+    )
+
+    selected = select_pages_for_contract("如何安装气缸与活塞？", pages, contract)
+
+    assert selected == [19, 20, 21]
+
+
+def test_single_target_contract_honors_excluded_adjacent_page() -> None:
+    pages = [
+        _page(11, "拆卸凸轮轴前对齐正时标记"),
+        _page(12, "检查和安装凸轮轴"),
+    ]
+    contract = ImageSelectionContract(
+        mode="single_target",
+        target_pages=(11,),
+        excluded_pages=(12,),
+    )
+
+    selected = select_pages_for_contract("只要这一步对应的图", pages, contract)
+
+    assert selected == [11]
 
 
 def test_same_section_keeps_right_cover_sealant_pages_and_rejects_left_cover() -> None:

@@ -1,7 +1,8 @@
 <script setup>
 import { computed } from 'vue'
-import { ChatDotRound, CopyDocument, DataAnalysis, Loading, Right, VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import { ChatDotRound, CopyDocument, DataAnalysis, EditPen, Loading, Right, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { useSpeech } from '@/composables/useSpeech'
+import { normalizeClarification } from '@/utils/clarification'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -9,7 +10,7 @@ const props = defineProps({
   agentEnabled: { type: Boolean, default: true },
 })
 
-const emit = defineEmits(['open-agent', 'send-follow-up'])
+const emit = defineEmits(['open-agent', 'send-follow-up', 'report-answer'])
 
 // 语音朗读：全局单例播放器，按 message.id 标识当前是否在播/在加载本条
 const { speak, isSpeaking, isLoading } = useSpeech()
@@ -20,7 +21,7 @@ const isUser = computed(() => props.message.role === 'user')
 const diagnosisItems = computed(() =>
   Array.isArray(props.message.diagnosisItems) ? props.message.diagnosisItems : [],
 )
-const diagnosticFollowUp = computed(() => props.message.diagnosticFollowUp || null)
+const diagnosticFollowUp = computed(() => normalizeClarification(props.message.diagnosticFollowUp))
 const followUpOptions = computed(() =>
   Array.isArray(diagnosticFollowUp.value?.options) ? diagnosticFollowUp.value.options : [],
 )
@@ -36,6 +37,7 @@ const isFollowUpSubmitted = computed(() =>
 const showFollowUpCard = computed(() =>
   canAnswerFollowUp.value || isFollowUpSubmitted.value,
 )
+const isEvidenceConflict = computed(() => diagnosticFollowUp.value?.kind === 'evidence_conflict')
 
 // 诊断项（结构化）转为可读/可显示的纯文本，与正文合成同一段，确保朗读完整覆盖、各回复样式统一
 function diagnosisToText(items) {
@@ -82,6 +84,13 @@ const meaningfulAgentSteps = computed(() =>
 )
 const agentProgress = computed(() => props.message.agentProgress || { text: '', running: false })
 const isStreaming = computed(() => props.message.status === 'streaming')
+const canReportAnswer = computed(() =>
+  !isUser.value
+  && props.message.feedbackEligible !== false
+  && props.message.status === 'done'
+  && Boolean(bodyText.value)
+  && Boolean(props.message.persistedMessageId),
+)
 const agentContext = computed(() =>
   !isUser.value && props.agentEnabled && props.message.mode !== 'chat',
 )
@@ -143,6 +152,12 @@ function sendFollowUp(option) {
     followUp: diagnosticFollowUp.value,
   })
 }
+
+function reportAnswer() {
+  if (!canReportAnswer.value || props.message.feedback?.status) return
+  const message = props.message
+  emit('report-answer', message)
+}
 </script>
 
 <template>
@@ -201,8 +216,8 @@ function sendFollowUp(option) {
 
         <div v-if="showFollowUpCard" class="follow-up-card">
           <div class="follow-up-head">
-            <b>候选根因收敛</b>
-            <span>{{ canAnswerFollowUp ? '请选择一个现场现象' : '已提交，正在收敛' }}</span>
+            <b>{{ isEvidenceConflict ? '证据参数冲突' : '候选根因收敛' }}</b>
+            <span>{{ canAnswerFollowUp ? (isEvidenceConflict ? '请选择适用值或版本' : '请选择一个现场现象') : '已提交，正在收敛' }}</span>
           </div>
           <div v-if="followUpHypotheses.length" class="follow-up-hypotheses">
             <span
@@ -281,6 +296,16 @@ function sendFollowUp(option) {
             <VideoPlay v-else />
           </el-icon>
           <span>{{ loadingSpeech ? '合成中' : speaking ? '停止' : '朗读' }}</span>
+        </button>
+        <button
+          v-if="canReportAnswer"
+          type="button"
+          :disabled="Boolean(message.feedback?.status)"
+          :title="message.feedback?.status ? '已提交纠错' : '反馈此回答'"
+          @click="reportAnswer"
+        >
+          <el-icon><EditPen /></el-icon>
+          <span>{{ message.feedback?.status ? '已反馈' : '反馈' }}</span>
         </button>
       </div>
     </div>

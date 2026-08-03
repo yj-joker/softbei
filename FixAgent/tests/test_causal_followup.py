@@ -13,6 +13,9 @@ def test_build_follow_up_for_blue_smoke_candidates():
         "活塞环磨损",
     ]
     assert follow_up["options"][0]["id"] == "A"
+    assert follow_up["clarification_id"].startswith("clarification-")
+    assert follow_up["kind"] == "diagnostic_cause"
+    assert follow_up["alternatives"][0]["id"] == "A"
 
 
 def test_resolve_follow_up_reranks_by_selected_option():
@@ -28,6 +31,18 @@ def test_resolve_follow_up_reranks_by_selected_option():
     assert resolved["selectedOption"]["id"] == "B"
     assert resolved["hypotheses"][0]["rootCause"] == "活塞环磨损"
     assert resolved["diagnosisItems"][0]["rootCause"] == "活塞环磨损"
+
+
+def test_resolve_follow_up_accepts_common_pending_clarification_context():
+    follow_up = build_follow_up("发动机冒蓝烟还烧机油，怎么回事？")
+
+    resolved = resolve_follow_up(
+        {"pending_clarification": follow_up, "selected_clarification_option_id": "B"},
+        "B. 加速或负载时更明显",
+    )
+
+    assert resolved is not None
+    assert resolved["selectedOption"]["id"] == "B"
 
 
 def test_build_follow_up_ignores_unrelated_query():

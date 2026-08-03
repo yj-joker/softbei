@@ -34,6 +34,10 @@ class DomainRule:
     question: str
     options: list[str]
     evidence_refs: list[dict[str, Any]]
+    rule_version: str = ""
+    document_version: str = ""
+    applicable_components: list[str] | None = None
+    applicable_actions: list[str] | None = None
 
 
 def get_vector_service():
@@ -131,6 +135,10 @@ def _normalize_rule(payload: Mapping[str, Any], *, strict: bool = True) -> Domai
         question=_clean_text(payload.get("question")),
         options=_string_list(payload.get("options")),
         evidence_refs=_evidence_refs(payload.get("evidence_refs")),
+        rule_version=_clean_text(payload.get("rule_version")),
+        document_version=_clean_text(payload.get("document_version")),
+        applicable_components=_string_list(payload.get("applicable_components")),
+        applicable_actions=_string_list(payload.get("applicable_actions")),
     )
 
 
@@ -151,6 +159,10 @@ def _rule_metadata(rule: DomainRule) -> dict[str, Any]:
         "question": rule.question,
         "options": rule.options,
         "evidence_refs": rule.evidence_refs,
+        "rule_version": rule.rule_version,
+        "document_version": rule.document_version,
+        "applicable_components": rule.applicable_components or [],
+        "applicable_actions": rule.applicable_actions or [],
         "confidence_source": "rule",
     }
 
@@ -162,6 +174,10 @@ def _search_text(rule: DomainRule) -> str:
         f"症状关键词: {'、'.join(rule.symptom_keys)}",
         f"命中条件: {rule.condition_text}",
         f"诊断结论: {rule.conclusion}",
+        f"规则版本: {rule.rule_version}",
+        f"文档版本: {rule.document_version}",
+        f"适用部件: {'、'.join(rule.applicable_components or [])}",
+        f"适用动作: {'、'.join(rule.applicable_actions or [])}",
         f"追问问题: {rule.question}",
         f"追问选项: {'、'.join(rule.options)}",
     ]
@@ -222,10 +238,26 @@ def _metadata_to_rule(result: Mapping[str, Any]) -> DomainRule | None:
         return None
 
 
-def _compatible_device(rule_device: str, requested_device: str | None) -> bool:
+def _reference_matches_scope(ref: Mapping[str, Any], document_id: str | None, device_type: str | None) -> bool:
+    requested_document = _compact(document_id)
+    requested_device = _compact(device_type)
+    ref_document = _compact(ref.get("document_id") or ref.get("doc_id") or ref.get("manual_id"))
+    ref_device = _compact(ref.get("device_type"))
+    if requested_document and ref_document == requested_document:
+        return True
+    return bool(requested_device and ref_device == requested_device)
+
+
+def _compatible_device(
+    rule: DomainRule,
+    requested_device: str | None,
+    document_id: str | None,
+) -> bool:
     requested = _compact(requested_device)
-    rule_value = _compact(rule_device)
-    return not requested or not rule_value or requested == rule_value
+    rule_value = _compact(rule.device_type)
+    if rule_value:
+        return not requested or requested == rule_value
+    return any(_reference_matches_scope(ref, document_id, requested_device) for ref in rule.evidence_refs)
 
 
 def _relevance_score(result: Mapping[str, Any]) -> float:
@@ -261,6 +293,10 @@ def _public_rule(rule: DomainRule) -> dict[str, Any]:
         "question": rule.question,
         "options": rule.options,
         "evidence_refs": rule.evidence_refs,
+        "rule_version": rule.rule_version,
+        "document_version": rule.document_version,
+        "applicable_components": rule.applicable_components or [],
+        "applicable_actions": rule.applicable_actions or [],
     }
 
 
@@ -314,6 +350,7 @@ async def match_domain_rule(
     query: str,
     *,
     device_type: str | None = None,
+    document_id: str | None = None,
     top_k: int = 5,
 ) -> dict[str, Any] | None:
     query_text = _clean_text(query)
@@ -338,7 +375,7 @@ async def match_domain_rule(
         rule = _metadata_to_rule(result)
         if rule is None:
             continue
-        if not _compatible_device(rule.device_type, device_type):
+        if not _compatible_device(rule, device_type, document_id):
             continue
         matched = _matched_symptoms(query_text, rule.symptom_keys)
         if not matched:
@@ -353,6 +390,7 @@ async def match_domain_rule(
         best_score = combined_score
         best = {
             "matched": True,
+            "status": ACTIVE_STATUS,
             "confidence_source": "rule",
             "confidence_label": "确定",
             "score": combined_score,
@@ -361,6 +399,10 @@ async def match_domain_rule(
             "matched_symptom_keys": matched,
             "rule": _public_rule(rule),
             "evidence_sources": _evidence_sources(rule, result, matched, relevance),
+            "scope_binding": {
+                "document_id": _clean_text(document_id),
+                "device_type": _clean_text(device_type),
+            },
             "message": build_domain_rule_message(rule, matched),
         }
 

@@ -273,6 +273,7 @@ class KnowledgeImportRequest(BaseModel):
     device_type: Optional[str] = Field(default=None, description="设备类型")
     manual_type: Optional[str] = Field(default=None, description="手册类型")
     document_version: Optional[str] = Field(default=None, description="文档版本")
+    document_identity: Optional[dict] = Field(default=None, description="用户确认的结构化设备身份")
     replace_existing: bool = Field(default=False, description="同文档 ID 时先删除旧向量")
 
 

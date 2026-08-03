@@ -38,6 +38,20 @@ class GatedPageSelection:
     scores: List[PageScore]
 
 
+@dataclass(frozen=True)
+class ImageSelectionContract:
+    mode: str = "none"
+    target_pages: tuple[int, ...] = ()
+    target_evidence_ids: tuple[str, ...] = ()
+    target_step_ids: tuple[str, ...] = ()
+    document_id: str = ""
+    section_id: str = ""
+    action: str = ""
+    orientation: str = ""
+    explicit_pages: tuple[int, ...] = ()
+    excluded_pages: tuple[int, ...] = ()
+
+
 _NOISE = (
     "给我",
     "帮我",
@@ -381,6 +395,10 @@ def select_pages_for_image_query(
     max_pages: int | None = None,
 ) -> List[int]:
     """Select page numbers whose images best match the image query."""
+    if image_mode == "none":
+        return []
+    if image_mode == "single_target":
+        image_mode = "single_best"
     scored = score_pages_for_image_query(query, pages)
     if not scored:
         return []
@@ -437,6 +455,38 @@ def select_pages_for_image_query(
     if max_pages is not None:
         selected = selected[:max_pages]
     return _unique_pages(sorted(selected))
+
+
+def select_pages_for_contract(
+    query: str,
+    pages: Sequence[PageEvidence],
+    contract: ImageSelectionContract,
+) -> List[int]:
+    """Select image pages under one response-level contract.
+
+    Explicit response evidence is authoritative. Lexical scoring is only the
+    compatibility fallback for old index records that lack evidence bindings.
+    """
+    if contract.mode == "none":
+        return []
+    excluded = set(contract.excluded_pages)
+    available = {page.page for page in pages if page.images}
+    targets = _unique_pages([
+        *contract.explicit_pages,
+        *contract.target_pages,
+    ])
+    bound = [page for page in targets if page in available and page not in excluded]
+    if bound:
+        return bound[:1] if contract.mode == "single_target" else bound
+
+    fallback_mode = "single_best" if contract.mode == "single_target" else "same_section"
+    selected = select_pages_for_image_query(
+        query,
+        [page for page in pages if page.page not in excluded],
+        image_mode=fallback_mode,
+        max_pages=1 if contract.mode == "single_target" else None,
+    )
+    return [page for page in selected if page not in excluded]
 
 
 def gated_select_pages_for_image_query(

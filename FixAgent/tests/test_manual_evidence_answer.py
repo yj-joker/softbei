@@ -8,7 +8,558 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from api.main import _format_manual_evidence_answer_from_metadata, _manual_query_kind
+from api.main import (
+    _direct_manual_text_supports_aspect,
+    _format_manual_evidence_answer_from_metadata,
+    _manual_action_target,
+    _manual_answer_should_refuse_detail_query,
+    _manual_best_section_records,
+    _manual_query_action,
+    _manual_query_kind,
+    _manual_strip_next_procedure_heading,
+)
+
+
+def test_manual_query_action_recognizes_adjustment_family() -> None:
+    assert _manual_query_action("如何调整气门间隙？") == "调整"
+    assert _manual_query_action("怎样调节气门间隙？") == "调整"
+    assert _manual_query_action("校正气门间隙的步骤") == "调整"
+    assert _manual_action_target("怎样调节气门间隙？", "调整") == "气门间隙"
+    assert _manual_query_kind("怎样调节气门间隙？") == "procedure"
+
+
+def test_exact_title_matches_outrank_seed_retrieval_section_labels(monkeypatch) -> None:
+    from api import main as api_main
+
+    correct = {
+        "id": "valve-gap-adjustment",
+        "content": "调整气门间隙。",
+        "metadata": {
+            "document_id": "manual-doc",
+            "parent_section_id": "sec-valve-gap",
+            "section_title": "4.6 气门间隙",
+            "page": 15,
+        },
+    }
+    wrong = {
+        "id": "valve-removal",
+        "content": "拆卸气门组件。",
+        "metadata": {
+            "document_id": "manual-doc",
+            "parent_section_id": "sec-valve-removal",
+            "section_title": "4.8 气门",
+            "section_match_ids": ["sec-valve-removal"],
+            "page": 16,
+        },
+    }
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [wrong],
+            }],
+        }],
+    }
+
+    monkeypatch.setattr(
+        api_main,
+        "_manual_title_match_records",
+        lambda message: ([correct], {"sec-valve-gap"}),
+    )
+    monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
+    monkeypatch.setattr(
+        api_main,
+        "_manual_group_score",
+        lambda message, kind, records, bonus_ids, title_scores: (
+            (504 if records[0]["id"] == "valve-gap-adjustment" else 523)
+            + (80 if records[0]["metadata"]["parent_section_id"] in bonus_ids else 0)
+        ),
+    )
+    monkeypatch.setattr(api_main, "_manual_expand_same_section_records", lambda records, ids: records)
+    monkeypatch.setattr(api_main, "_manual_expand_page_boundary_records", lambda records, ids: records)
+
+    records = _manual_best_section_records("如何调整气门间隙？", "procedure", metadata)
+
+    assert [record["id"] for record in records] == ["valve-gap-adjustment"]
+
+
+def test_detail_query_accepts_structured_multi_part_torque_evidence() -> None:
+    query = "安装发动机时放油螺栓和放水螺栓的拧紧力矩是多少？"
+    records = [
+        {
+            "content": (
+                "安装左曲轴箱放油螺栓、车架放油螺栓、水泵盖放水螺栓。\n"
+                "拧紧力矩要求：\n"
+                "放油螺栓：25 ± 4 N·m\n"
+                "放水螺栓：12 ± 1.5 N·m"
+            )
+        }
+    ]
+
+    assert not _manual_answer_should_refuse_detail_query(query, records)
+
+
+def test_procedure_body_line_starting_with_action_is_not_treated_as_next_heading() -> None:
+    content = (
+        "3. 装上定位销和全新的右曲轴箱盖垫片：\n"
+        "安装新垫片之前，在装配平面上均匀涂抹密封胶；\n"
+        "安装新垫片之后，盖上箱盖并对角预紧螺栓。"
+    )
+    metadata = {"toc_path": "手册 > 6.4 右曲轴箱盖与离合器 > 安装右盖"}
+
+    result = _manual_strip_next_procedure_heading(content, metadata)
+
+    assert "安装新垫片之前" in result
+    assert "安装新垫片之后" in result
+
+
+def test_procedure_body_colon_label_does_not_truncate_following_diagnosis() -> None:
+    content = (
+        "4. 测量压缩压力：\n"
+        "测量步骤：\n"
+        "a. 将油门开到最大处并再次测量。\n"
+        "结果分析：\n"
+        "若压力升高，则检查活塞环。"
+    )
+    metadata = {"toc_path": "手册 > 1.4 测量压缩压力"}
+
+    result = _manual_strip_next_procedure_heading(content, metadata)
+
+    assert "测量步骤" in result
+    assert "若压力升高，则检查活塞环" in result
+
+
+def test_retrieval_expansion_after_action_uses_the_preceding_operation_target() -> None:
+    expanded_aspect = "气缸与活塞 安装步骤 要求 注意事项"
+    direct_text = "5.4 安装气缸与活塞。依次安装活塞销和活塞销挡圈。"
+
+    assert _manual_action_target(expanded_aspect, "安装") == "气缸与活塞"
+    assert _direct_manual_text_supports_aspect(direct_text, expanded_aspect)
+
+
+def test_explicit_operation_detail_keeps_the_complete_document_subflow(monkeypatch) -> None:
+    from api import main as api_main
+
+    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda message: ([], set()))
+    monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
+    monkeypatch.setattr(
+        api_main,
+        "_manual_expand_same_section_records",
+        lambda records, section_ids: records,
+    )
+    monkeypatch.setattr(
+        api_main,
+        "_manual_expand_page_boundary_records",
+        lambda records, section_ids: records,
+    )
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [
+                    {
+                        "id": "seal-step",
+                        "content": "1. 密封处理\n在气缸头盖垫片两面涂抹耐热平面密封硅胶。",
+                        "metadata": {
+                            "document_id": "manual-doc",
+                            "parent_section_id": "sec-head-cover",
+                            "section_title": "4.5 气缸头盖",
+                            "chunk_type": "step_raw",
+                            "page": 13,
+                            "source_index": 1,
+                            "toc_path": "手册 > 4.5 气缸头盖 > 安装气缸头盖",
+                        },
+                    },
+                    {
+                        "id": "tighten-step",
+                        "content": "2. 安装与拧紧\n安装气缸头盖并对角均匀拧紧至规定扭矩。",
+                        "metadata": {
+                            "document_id": "manual-doc",
+                            "parent_section_id": "sec-head-cover",
+                            "section_title": "4.5 气缸头盖",
+                            "chunk_type": "step_raw",
+                            "page": 14,
+                            "source_index": 2,
+                            "toc_path": "手册 > 4.5 气缸头盖 > 安装气缸头盖",
+                        },
+                    },
+                ],
+            }],
+        }],
+    }
+
+    records = _manual_best_section_records(
+        "安装气缸头盖时哪些地方要涂耐热平面密封硅胶？",
+        "evidence",
+        metadata,
+    )
+
+    assert [record["id"] for record in records] == ["seal-step", "tighten-step"]
+
+
+def test_title_match_lookup_rejects_opposite_direction_section(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            title = {
+                "sec-left": "7.4 左曲轴箱盖",
+                "sec-right": "6.4 右曲轴箱盖",
+            }[section_id]
+            return [{
+                "id": section_id,
+                "content": f"安装{title[4:]}垫片。",
+                "metadata": {
+                    "document_id": document_id,
+                    "parent_section_id": section_id,
+                    "section_title": title,
+                    "chunk_type": "step_raw",
+                },
+            }]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [
+                SimpleNamespace(section_id="sec-left", document_id="manual-doc"),
+                SimpleNamespace(section_id="sec-right", document_id="manual-doc"),
+            ]
+
+    from api import main as api_main
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    records, section_ids = api_main._manual_title_match_records("如何安装右曲轴箱盖")
+
+    assert section_ids == {"sec-right"}
+    assert [record["metadata"]["section_title"] for record in records] == ["6.4 右曲轴箱盖"]
+
+
+def test_title_match_lookup_stays_within_scoped_document(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return [{
+                "id": f"{document_id}:{section_id}",
+                "content": "安装右曲轴箱盖垫片。",
+                "metadata": {
+                    "document_id": document_id,
+                    "parent_section_id": section_id,
+                    "section_title": "6.4 右曲轴箱盖",
+                    "chunk_type": "step_raw",
+                },
+            }]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [
+                SimpleNamespace(section_id="sec-wrong", document_id="other-manual"),
+                SimpleNamespace(section_id="sec-right", document_id="selected-manual"),
+            ]
+
+    from api import main as api_main
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    records, section_ids = api_main._manual_title_match_records("如何安装右曲轴箱盖")
+    records = api_main._manual_records_for_scoped_document(
+        records,
+        {"scope_decision": {"status": "in_scope", "document_id": "selected-manual"}},
+    )
+    section_ids = {record["metadata"]["parent_section_id"] for record in records}
+
+    assert section_ids == {"sec-right"}
+    assert {record["metadata"]["document_id"] for record in records} == {"selected-manual"}
+
+
+def test_directional_cover_install_answer_stays_on_target_procedure_page(monkeypatch) -> None:
+    records = [
+        ("remove-cover", 25, "1. 对角松开螺栓，取下右曲轴箱盖。"),
+        ("check-seal", 26, "1. 检查曲轴油封，损坏时更换。"),
+        ("install-lever", 26, "2. 安装离合器拉杆，并使顶杆槽与右盖顶杆孔对齐。"),
+        ("install-cover", 26, "3. 装上定位销、全新的右曲轴箱盖垫片，再盖上右曲轴箱盖。"),
+        ("seal-notes", 27, "a. A孔周围3mm内不得有平面密封胶。\nb. B段密封胶需要均匀抹薄、抹平。\nc. D段范围内直接涂抹平面密封硅胶。\n拆卸离合器"),
+        ("remove-clutch", 27, "拆卸离合器\n1. 取下顶杆轴套组件。"),
+        ("install-clutch", 27, "安装离合器\n1. 检查摩擦片并依次装入离合器部件。"),
+    ]
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return [
+                {
+                    "id": record_id,
+                    "content": content,
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": "6.4 右曲轴箱盖与离合器",
+                        "chunk_type": "step_raw",
+                        "page": page,
+                        "source_index": index,
+                    },
+                }
+                for index, (record_id, page, content) in enumerate(records, start=1)
+            ]
+
+        def get_page_records(self, document_id, page, chunk_type=None, limit=120):
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [SimpleNamespace(section_id="sec-right", document_id="manual-doc")]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    answer = _format_manual_evidence_answer_from_metadata("如何安装右曲轴箱盖", {"react_trace": []})
+
+    assert answer is not None
+    assert "检查曲轴油封" in answer
+    assert "安装离合器拉杆" in answer
+    assert "全新的右曲轴箱盖垫片" in answer
+    assert "A孔周围3mm内不得有平面密封胶" in answer
+    assert "B段密封胶需要均匀抹薄、抹平" in answer
+    assert "D段范围内直接涂抹平面密封硅胶" in answer
+    assert "取下右曲轴箱盖" not in answer
+    assert "拆卸离合器" not in answer
+    assert "装入离合器部件" not in answer
+    assert "第26-27页" in answer
+
+
+def test_manual_evidence_answer_selects_only_matching_procedure_subflow(monkeypatch) -> None:
+    section_title = "6.4 右曲轴箱盖与离合器"
+    toc_root = f"摩托车发动机维修手册 > 六、右曲轴箱盖、离合器、机油泵、水泵 > {section_title}"
+    records = [
+        (
+            "cover-step-1",
+            26,
+            1,
+            "source-cover",
+            "安装右盖",
+            "1. 检查曲轴油封，损坏时更换。",
+            "procedure_step",
+        ),
+        (
+            "cover-step-2",
+            26,
+            2,
+            "source-cover",
+            "安装右盖",
+            "2. 安装离合器拉杆，并使顶杆槽与右盖顶杆孔对齐。",
+            "procedure_step",
+        ),
+        (
+            "remove-clutch",
+            27,
+            6,
+            "source-remove-clutch",
+            "拆卸离合器",
+            "1. 取下顶杆轴套组件并松开离合器螺母。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-1",
+            27,
+            7,
+            "source-install-clutch-1",
+            "安装离合器",
+            "1. 检查离合器各部件磨损情况。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-2a",
+            27,
+            8,
+            "source-install-clutch-2",
+            "安装离合器",
+            "2. 依次放入离合器衬套止推垫、离合器衬套和滚针轴承。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-2b",
+            27,
+            8,
+            "source-install-clutch-2",
+            "安装离合器",
+            "96.3×107×1 止推垫圈 19\n固定离合器，锁紧离合器螺母并校验扭力。\n"
+            "注意：安装摩擦片时，摩擦片与从动片两两相隔。",
+            "procedure_step",
+        ),
+        (
+            "install-clutch-warning",
+            27,
+            8,
+            "source-install-clutch-2",
+            "安装离合器",
+            "注意：安装摩擦片时，摩擦片与从动片两两相隔。",
+            "safety_warning",
+        ),
+    ]
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return [
+                {
+                    "id": record_id,
+                    "content": content,
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw" if answer_role == "procedure_step" else "text",
+                        "answer_role": answer_role,
+                        "page": page,
+                        "source_index": source_index,
+                        "parent_chunk_id": parent_chunk_id,
+                        "toc_path": f"{toc_root} > {procedure_heading}",
+                    },
+                }
+                for (
+                    record_id,
+                    page,
+                    source_index,
+                    parent_chunk_id,
+                    procedure_heading,
+                    content,
+                    answer_role,
+                ) in records
+            ]
+
+        def get_page_records(self, document_id, page, chunk_type=None, limit=120):
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [SimpleNamespace(
+                section_id="sec-right-cover-clutch",
+                document_id="manual-doc",
+                core_title="右曲轴箱盖与离合器",
+                full_title=section_title,
+            )]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+    metadata = {"react_trace": []}
+
+    answer = _format_manual_evidence_answer_from_metadata("如何安装离合器", metadata)
+
+    assert answer is not None
+    assert "检查离合器各部件磨损情况" in answer
+    assert "96.3×107×1 止推垫圈 19" in answer
+    assert "固定离合器，锁紧离合器螺母" in answer
+    assert answer.count("摩擦片与从动片两两相隔") == 1
+    assert "检查曲轴油封" not in answer
+    assert "安装离合器拉杆" not in answer
+    assert "取下顶杆轴套组件" not in answer
+    assert "3. 96.3×107×1" not in answer
+    assert "第27页" in answer
+    assert metadata["_deterministic_answer_evidence_pages"] == [27]
+    assert metadata["_deterministic_answer_procedure_action"] == "安装"
+    assert metadata["_deterministic_answer_procedure_target"] == "离合器"
+    assert metadata["_deterministic_answer_procedure_scope_id"].startswith("proc:")
+
+
+def test_manual_evidence_answer_cuts_off_next_subflow_heading(monkeypatch) -> None:
+    section_title = "6.4 右曲轴箱盖与离合器"
+    toc_root = f"手册 > {section_title}"
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return [
+                {
+                    "id": "remove-step-1",
+                    "content": "1. 取下顶杆轴套组件并取出离合器弹簧。",
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw",
+                        "page": 27,
+                        "source_index": 6,
+                        "parent_chunk_id": "source-remove",
+                        "toc_path": f"{toc_root} > 拆卸离合器",
+                    },
+                },
+                {
+                    "id": "remove-step-2",
+                    "content": (
+                        "2. 松开离合器螺母并依次取出从动盘、主动盘和衬套。\n"
+                        "安装离合器"
+                    ),
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw",
+                        "page": 27,
+                        "source_index": 6,
+                        "parent_chunk_id": "source-remove",
+                        "toc_path": f"{toc_root} > 拆卸离合器",
+                    },
+                },
+                {
+                    "id": "install-step-1",
+                    "content": "1. 检查离合器摩擦片。",
+                    "metadata": {
+                        "document_id": document_id,
+                        "parent_section_id": section_id,
+                        "section_title": section_title,
+                        "chunk_type": "step_raw",
+                        "page": 27,
+                        "source_index": 7,
+                        "parent_chunk_id": "source-install",
+                        "toc_path": f"{toc_root} > 安装离合器",
+                    },
+                },
+            ]
+
+        def get_page_records(self, document_id, page, chunk_type=None, limit=120):
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [SimpleNamespace(
+                section_id="sec-combined",
+                document_id="manual-doc",
+                core_title="右曲轴箱盖与离合器",
+                full_title=section_title,
+            )]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    answer = _format_manual_evidence_answer_from_metadata("如何拆卸离合器", {"react_trace": []})
+
+    assert answer is not None
+    assert answer.index("1. 取下顶杆轴套组件") < answer.index("2. 松开离合器螺母")
+    assert "\n安装离合器\n" not in answer
+    assert "检查离合器摩擦片" not in answer
 
 
 def test_manual_evidence_answer_prefers_section_title_match_for_parameter(monkeypatch) -> None:
@@ -199,7 +750,9 @@ def test_manual_evidence_answer_preserves_full_numbered_procedure_steps_and_targ
     answer = _format_manual_evidence_answer_from_metadata("如何安装涨紧器？", metadata)
 
     assert answer is not None
-    assert "根据手册第13页“4.4 涨紧器”，原文步骤如下：" in answer
+    assert answer.startswith("可以按以下顺序操作：")
+    assert not answer.startswith("根据手册")
+    assert answer.endswith("（来源：手册第13页“4.4 涨紧器”）")
     assert "1. 预压涨紧器" in answer
     assert "2. 安装本体" in answer
     assert "3. 释放自锁并锁紧" in answer
@@ -214,6 +767,65 @@ def test_manual_evidence_answer_preserves_full_numbered_procedure_steps_and_targ
 
 def test_manual_query_kind_treats_how_to_judge_fault_as_evidence_not_procedure() -> None:
     assert _manual_query_kind("压缩压力低于最小值时怎么判断是不是活塞环问题？") == "evidence"
+
+
+def test_manual_partial_answer_confirms_present_part_and_discloses_missing_parameter(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            return []
+
+        def get_page_records(self, document_id, page, chunk_type=None, limit=120):
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+    from api import main as api_main
+    monkeypatch.setattr(
+        api_main,
+        "_manual_title_section_match_scores",
+        lambda message: {"sec-water-pump": 100},
+    )
+
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [{
+                    "id": "water-pump-seal",
+                    "content": "水泵装配部件清单：水泵密封圈 1 个。",
+                    "metadata": {
+                        "qualification": "qualified",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec-water-pump",
+                        "section_match_ids": ["sec-water-pump"],
+                        "section_title": "6.8 水泵",
+                        "chunk_type": "text",
+                        "page": 25,
+                    },
+                }],
+            }],
+        }],
+    }
+
+    answer = _format_manual_evidence_answer_from_metadata(
+        "水泵装配里有水泵密封圈吗？叶轮轴向间隙是多少？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "手册列有水泵密封圈" in answer
+    assert "手册未说明叶轮轴向间隙" in answer
+    assert len(answer) <= 260
 
 
 def test_manual_evidence_answer_diagnostic_query_prefers_condition_evidence_over_target_procedure_title(monkeypatch) -> None:
@@ -605,7 +1217,7 @@ def test_manual_evidence_answer_prefers_specific_title_once_and_keeps_pre_instal
     }
 
     answer = _format_manual_evidence_answer_from_metadata(
-        "安装气缸头盖时哪些地方要涂耐热平面密封硅胶？",
+        "安装气缸头盖的密封处理在哪一步、拧紧在哪一步？完整说一下",
         metadata,
     )
 
@@ -617,7 +1229,21 @@ def test_manual_evidence_answer_prefers_specific_title_once_and_keeps_pre_instal
     assert "对角均匀拧紧至规定扭矩" in answer
 
 
-def test_manual_evidence_answer_stops_at_opposite_action_heading() -> None:
+def test_manual_evidence_answer_stops_at_opposite_action_heading(monkeypatch) -> None:
+    from api import main as api_main
+
+    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda message: ([], set()))
+    monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
+    monkeypatch.setattr(
+        api_main,
+        "_manual_expand_same_section_records",
+        lambda records, section_match_ids: records,
+    )
+    monkeypatch.setattr(
+        api_main,
+        "_manual_expand_page_boundary_records",
+        lambda records, section_match_ids: records,
+    )
     metadata = {
         "react_trace": [
             {
@@ -1053,10 +1679,90 @@ def test_manual_evidence_answer_preserves_step_source_order() -> None:
     )
 
     assert answer is not None
-    assert "根据手册第3页“1.3 安装火花塞”" in answer
+    assert answer.startswith("可以按以下顺序操作：")
+    assert not answer.startswith("根据手册")
+    assert answer.endswith("（来源：手册第3页“1.3 安装火花塞”）")
     assert answer.index("顺时针转动 3 圈预紧") < answer.index("然后再转动 1/4 圈")
     assert answer.index("然后再转动 1/4 圈") < answer.index("高压帽套进火花塞")
     assert "NGK" not in answer
+
+
+def test_manual_evidence_answer_recovers_missing_leading_step_from_section_context(monkeypatch) -> None:
+    from api import main as api_main
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    class _VectorService:
+        def get_section_records(self, *args, **kwargs):
+            return []
+
+        def get_page_records(self, *args, **kwargs):
+            return []
+
+    class _SectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: _SectionIndex()))
+    context_after = (
+        "1. 拆下凸轮轴。\n"
+        "2. 取下滑动挺柱与气门间隙调整垫片。\n"
+        "3. 更换对应厚度的调整垫片。\n"
+        "4.7 气缸头\n"
+        "拆卸气缸头"
+    )
+    records = [
+        {
+            "id": "header",
+            "content": "注意：必须测量基圆位置。调整气门间隙",
+            "metadata": {
+                "qualification": "qualified",
+                "document_id": "manual-doc",
+                "section_title": "4.6 气门间隙",
+                "parent_section_id": "sec-clearance",
+                "page": 15,
+                "source_index": 0,
+                "context_after": context_after,
+            },
+        },
+        {
+            "id": "step-2",
+            "content": "2. 取下滑动挺柱与气门间隙调整垫片。",
+            "metadata": {
+                "qualification": "qualified",
+                "document_id": "manual-doc",
+                "section_title": "4.6 气门间隙",
+                "parent_section_id": "sec-clearance",
+                "page": 15,
+                "source_index": 2,
+                "chunk_type": "step_raw",
+            },
+        },
+        {
+            "id": "step-3",
+            "content": "3. 更换对应厚度的调整垫片。",
+            "metadata": {
+                "qualification": "qualified",
+                "document_id": "manual-doc",
+                "section_title": "4.6 气门间隙",
+                "parent_section_id": "sec-clearance",
+                "page": 15,
+                "source_index": 3,
+                "chunk_type": "step_raw",
+            },
+        },
+    ]
+    metadata = {"react_trace": [{"tool_calls": [{"name": "knowledge_retrieval", "result_data": records}]}]}
+
+    answer = _format_manual_evidence_answer_from_metadata("如何调整气门间隙？", metadata)
+
+    assert answer is not None
+    assert answer.index("1. 拆下凸轮轴") < answer.index("2. 取下滑动挺柱")
+    assert answer.index("2. 取下滑动挺柱") < answer.index("3. 更换对应厚度")
     assert "冷却30分钟" not in answer
 
 
@@ -1210,6 +1916,107 @@ def test_manual_evidence_answer_prefers_tool_anchor_over_adjacent_parameter_tabl
     assert "0.13～0.20 mm" not in answer
 
 
+def test_manual_evidence_answer_rebinds_page_boundary_chunk_to_embedded_section_heading(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            if parent_section_id == "sec-valve-gap":
+                return [
+                    {
+                        "id": "gap-warning",
+                        "content": "注意：必须测量基圆位置，非凸轮升程段。",
+                        "metadata": {
+                            "chunk_type": "text",
+                            "document_id": "manual-doc",
+                            "section_title": "4.6 气门间隙",
+                            "parent_section_id": "sec-valve-gap",
+                            "page": 15,
+                        },
+                    }
+                ]
+            if parent_section_id == "sec-head-cover":
+                return [
+                    {
+                        "id": "head-cover-step",
+                        "content": "在气缸头盖垫片两面涂密封胶并安装气缸头盖。",
+                        "metadata": {
+                            "chunk_type": "text",
+                            "document_id": "manual-doc",
+                            "section_title": "4.5 气缸头盖",
+                            "parent_section_id": "sec-head-cover",
+                            "page": 14,
+                        },
+                    }
+                ]
+            return []
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return [
+                SimpleNamespace(
+                    section_id="sec-valve-gap",
+                    document_id="manual-doc",
+                    core_title="气门间隙",
+                    full_title="4.6 气门间隙",
+                )
+            ]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": [
+                            {
+                                "id": "stale-boundary-chunk",
+                                "content": (
+                                    "4.6 气门间隙\n"
+                                    "测量气门间隙\n"
+                                    "拆下气缸头盖。\n"
+                                    "将塞尺插入凸轮轴基圆与滑动挺柱之间测量间隙。"
+                                ),
+                                "metadata": {
+                                    "chunk_type": "text",
+                                    "document_id": "manual-doc",
+                                    "section_title": "4.5 气缸头盖",
+                                    "parent_section_id": "sec-head-cover",
+                                    "procedure_scope_id": "proc:stale-head-cover",
+                                    "procedure_heading": "安装气缸头盖",
+                                    "procedure_action": "安装",
+                                    "procedure_target": "气缸头盖",
+                                    "toc_path": "摩托车发动机维修手册 > 4.5 气缸头盖 > 安装气缸头盖",
+                                    "page": 14,
+                                    "source_index": 9,
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+
+    answer = _format_manual_evidence_answer_from_metadata(
+        "测量气门间隙时塞尺插在哪里？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "塞尺插入凸轮轴基圆与滑动挺柱之间" in answer
+    assert "涂密封胶" not in answer
+    assert metadata["_deterministic_answer_section_title"] == "4.6 气门间隙"
+    assert metadata["_deterministic_answer_evidence_pages"] == [14]
+
+
 def test_manual_evidence_answer_prefers_letter_mark_anchors_over_neighbor_check_section(monkeypatch) -> None:
     class FakeVectorService:
         def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
@@ -1343,7 +2150,8 @@ def test_manual_evidence_answer_refuses_missing_model_detail_from_evidence() -> 
     )
 
     assert answer is not None
-    assert "手册未提供" in answer
+    assert not answer.startswith("根据手册")
+    assert "手册未说明" in answer
     assert "扩张器型号" in answer
     assert "Snap-on" not in answer
 

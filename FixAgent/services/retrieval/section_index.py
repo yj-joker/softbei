@@ -18,6 +18,8 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
+from services.retrieval.query_constraints import extract_query_constraints
+
 logger = logging.getLogger(__name__)
 
 CHINESE_RE = re.compile(r"[一-鿿]+")
@@ -42,11 +44,24 @@ ACTION_TITLE_ALIASES = {
     "检查": ("检查", "检修", "查看", "看"),
     "测量": ("测量", "检测", "测试", "测"),
     "更换": ("更换", "替换", "换"),
+    "调整": ("调整", "调节", "校正"),
 }
+_TRAILING_ACTION_REQUEST_RE = re.compile(
+    r"(?:"
+    r"(?:怎么|如何|怎样)(?:进行)?(?:安装|装配|拆卸|拆除|检查|检修|查看|测量|检测|测试|更换|替换|调整|调节|校正)(?:一下)?"
+    r"|(?:安装|装配|拆卸|拆除|检查|检修|查看|测量|检测|测试|更换|替换|调整|调节|校正)(?:的)?(?:步骤|流程|方法|要求|注意事项)"
+    r")$"
+)
 
 
 def _compact_chinese(text: str) -> str:
     return "".join(CHINESE_RE.findall(text or ""))
+
+
+def _strip_trailing_action_request(compact_query: str) -> str:
+    """Remove request grammar from an entity-first query before stem scoring."""
+    stripped = _TRAILING_ACTION_REQUEST_RE.sub("", compact_query or "")
+    return stripped or compact_query
 
 
 def _lcs_length(left: str, right: str) -> int:
@@ -63,6 +78,15 @@ def _lcs_length(left: str, right: str) -> int:
                 current.append(max(previous[index], current[-1]))
         previous = current
     return previous[-1]
+
+
+def _query_has_action_alias(compact_query: str, obj: str, aliases: tuple[str, ...]) -> bool:
+    for alias in aliases:
+        if len(alias) > 1 and alias in compact_query:
+            return True
+        if len(alias) == 1 and alias in compact_query.replace(obj, ""):
+            return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -137,7 +161,8 @@ class SectionTitleIndex:
                 if not raw or len(raw) <= 1:
                     break
 
-                page_count = raw[0] if isinstance(raw[0], int) else 0
+                total_count = raw[0] if isinstance(raw[0], int) else 0
+                returned_count = max(0, (len(raw) - 1) // 2)
                 for i in range(1, len(raw), 2):
                     fields = raw[i + 1]
                     field_dict: Dict[str, str] = {}
@@ -176,9 +201,9 @@ class SectionTitleIndex:
                     if existing is None or len(core_title) > len(existing[0]):
                         seen_sections[key] = (core_title, section_title, doc_id)
 
-                cursor += page_count
-                total_scanned += page_count
-                if cursor >= page_count:
+                cursor += returned_count
+                total_scanned += returned_count
+                if returned_count == 0 or cursor >= total_count:
                     break
 
             # 建索引
@@ -262,6 +287,36 @@ class SectionTitleIndex:
         # "给我展示" 时不会精确命中；而 "装配/部件清单" 又容易被泛词过滤。
         # 这里先按完整标题子串收窄，命中后直接返回，避免相邻清单章节混入。
         compact_query = _compact_chinese(query)
+        stem_query = _strip_trailing_action_request(compact_query)
+        shared_entity_stems: Dict[str, tuple[SectionRef, int]] = {}
+        for core_title, refs in self._exact.items():
+            compact_core = _compact_chinese(core_title)
+            if len(compact_core) < 6 or len(stem_query) < 6:
+                continue
+            prefix_length = 0
+            for left, right in zip(compact_core, stem_query):
+                if left != right:
+                    break
+                prefix_length += 1
+            core_coverage = prefix_length / len(compact_core)
+            query_coverage = prefix_length / len(stem_query)
+            if prefix_length < 6 or min(core_coverage, query_coverage) < 0.60:
+                continue
+            score = 4000 + prefix_length * 20 + int(min(core_coverage, query_coverage) * 100)
+            for ref in refs:
+                k = _key(ref)
+                if k not in shared_entity_stems or shared_entity_stems[k][1] < score:
+                    shared_entity_stems[k] = (ref, score)
+
+        if shared_entity_stems:
+            sorted_hits = sorted(shared_entity_stems.values(), key=lambda x: x[1], reverse=True)
+            best_score = sorted_hits[0][1]
+            strong_hits = [
+                (ref, score) for ref, score in sorted_hits
+                if score >= best_score - 50
+            ]
+            return [ref for ref, _score in strong_hits[:MAX_SECTIONS_PER_QUERY]]
+
         embedded_exact: Dict[str, tuple[SectionRef, int]] = {}
         for core_title, refs in self._exact.items():
             compact_core = _compact_chinese(core_title)
@@ -277,6 +332,25 @@ class SectionTitleIndex:
             sorted_hits = sorted(embedded_exact.values(), key=lambda x: x[1], reverse=True)
             return [ref for ref, _score in sorted_hits[:MAX_SECTIONS_PER_QUERY]]
 
+        constraints = extract_query_constraints(query)
+        if constraints.required_terms:
+            entity_matches: Dict[str, tuple[SectionRef, int]] = {}
+            required_terms = tuple(_compact_chinese(term) for term in constraints.required_terms)
+            forbidden_terms = tuple(_compact_chinese(term) for term in constraints.forbidden_terms)
+            for core_title, refs in self._exact.items():
+                compact_core = _compact_chinese(core_title)
+                if not all(term and term in compact_core for term in required_terms):
+                    continue
+                if any(term and term in compact_core for term in forbidden_terms):
+                    continue
+                score = 3000 + sum(len(term) for term in required_terms) * 10
+                for ref in refs:
+                    k = _key(ref)
+                    entity_matches[k] = (ref, score)
+            if entity_matches:
+                sorted_hits = sorted(entity_matches.values(), key=lambda x: x[1], reverse=True)
+                return [ref for ref, _score in sorted_hits[:MAX_SECTIONS_PER_QUERY]]
+
         object_first_action_matches: Dict[str, tuple[SectionRef, int]] = {}
         for core_title, refs in self._exact.items():
             compact_core = _compact_chinese(core_title)
@@ -290,7 +364,7 @@ class SectionTitleIndex:
             if len(obj) < MIN_CORE_LENGTH:
                 continue
             action_aliases = ACTION_TITLE_ALIASES.get(matched_action, (matched_action,))
-            if not any(alias in compact_query for alias in action_aliases) or obj not in compact_query:
+            if not _query_has_action_alias(compact_query, obj, action_aliases) or obj not in compact_query:
                 continue
             score = 2000 + len(obj) * 3 + len(matched_action)
             for ref in refs:

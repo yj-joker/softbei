@@ -92,8 +92,8 @@ def test_chunks_keep_raw_text_and_add_contextual_retrieval_text():
     step_chunk = next(chunk for chunk in chunks if chunk["chunk_label"] == "step")
 
     assert step_chunk["metadata"]["raw_text"] == "Install the drive gear with the timing marks aligned."
-    assert step_chunk["metadata"]["parent_chunk_id"] == "sec:0007:source:0000"
-    assert step_chunk["metadata"]["source_anchor"].startswith("sec:0007|text|step|31|")
+    assert step_chunk["metadata"]["parent_chunk_id"] == "sec:c603c2673a:source:0000"
+    assert step_chunk["metadata"]["source_anchor"].startswith("sec:c603c2673a|text|step|31|")
     assert step_chunk["text"] == "Install the drive gear with the timing marks aligned."
     assert "Section: Drive system" in step_chunk["metadata"]["contextual_text"]
     assert "Page: 31" in step_chunk["metadata"]["contextual_text"]
@@ -125,10 +125,10 @@ def test_table_rows_link_to_parent_and_keep_stable_anchor():
     table_full = next(chunk for chunk in chunks if chunk["chunk_label"] == "table_full")
     table_row = next(chunk for chunk in chunks if chunk["chunk_label"] == "table_row")
 
-    assert table_full["metadata"]["source_anchor"].startswith("sec:0008|table|table_full|40|")
+    assert table_full["metadata"]["source_anchor"].startswith("sec:b00ad36126|table|table_full|40|")
     assert table_row["metadata"]["parent_chunk_id"] == table_full["id"]
     assert table_row["metadata"]["parent_table_chunk_id"] == table_full["id"]
-    assert table_row["metadata"]["source_anchor"].startswith("sec:0008|table|table_row|40|")
+    assert table_row["metadata"]["source_anchor"].startswith("sec:b00ad36126|table|table_row|40|")
     assert "Section: Torque table" in table_row["metadata"]["contextual_text"]
     assert "Caption: Fastener torque" in table_row["metadata"]["contextual_text"]
     assert "Content:" in table_row["metadata"]["contextual_text"]
@@ -168,7 +168,7 @@ def test_image_chunks_include_nearby_text_context_for_retrieval():
 
     image_chunk = next(chunk for chunk in chunks if chunk["chunk_type"] == "image")
 
-    assert image_chunk["metadata"]["source_anchor"].startswith("sec:0009|image|image|35|")
+    assert image_chunk["metadata"]["source_anchor"].startswith("sec:fd2754afd1|image|image|35|")
     assert "Transmission exploded view" in image_chunk["metadata"]["visual_context_text"]
     assert "Install the transmission gear set" in image_chunk["metadata"]["visual_context_text"]
     assert "Gear set installation order" in image_chunk["metadata"]["visual_context_text"]

@@ -32,7 +32,12 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 
 @Service
 @Slf4j
@@ -369,7 +374,11 @@ public class DomainRuleServiceImpl
             rule.setOptionsJson(writeJson(dto.getOptions()));
         }
         if (!onlyNonNull || dto.getEvidenceRefs() != null) {
-            rule.setEvidenceRefsJson(writeJson(dto.getEvidenceRefs()));
+            List<Map<String, Object>> evidenceRefs = dto.getEvidenceRefs();
+            if (onlyNonNull) {
+                evidenceRefs = preserveFeedbackEvidenceRefs(rule.getEvidenceRefsJson(), evidenceRefs);
+            }
+            rule.setEvidenceRefsJson(writeJson(evidenceRefs));
         }
         if (!onlyNonNull || dto.getReviewComment() != null) {
             rule.setReviewComment(trimToNull(dto.getReviewComment()));
@@ -412,6 +421,66 @@ public class DomainRuleServiceImpl
         } catch (JsonProcessingException e) {
             throw new IllegalArgumentException("Invalid JSON field: " + e.getMessage(), e);
         }
+    }
+
+    private List<Map<String, Object>> preserveFeedbackEvidenceRefs(
+            String existingJson,
+            List<Map<String, Object>> requestedRefs
+    ) {
+        List<Map<String, Object>> existingRefs = payloadFactory.readEvidenceRefs(existingJson);
+        Map<String, Map<String, Object>> protectedByFeedbackId = new LinkedHashMap<>();
+        List<Map<String, Object>> protectedWithoutFeedbackId = new ArrayList<>();
+        for (Map<String, Object> ref : existingRefs) {
+            if (!"answer_feedback".equals(ref.get("source"))) {
+                continue;
+            }
+            String feedbackId = evidenceFeedbackId(ref);
+            if (feedbackId == null) {
+                protectedWithoutFeedbackId.add(new LinkedHashMap<>(ref));
+            } else {
+                protectedByFeedbackId.putIfAbsent(feedbackId, new LinkedHashMap<>(ref));
+            }
+        }
+
+        List<Map<String, Object>> merged = new ArrayList<>();
+        Set<String> retainedFeedbackIds = new LinkedHashSet<>();
+        if (requestedRefs != null) {
+            for (Map<String, Object> requested : requestedRefs) {
+                if (requested == null) {
+                    continue;
+                }
+                String feedbackId = evidenceFeedbackId(requested);
+                Map<String, Object> protectedRef = feedbackId == null
+                        ? null
+                        : protectedByFeedbackId.get(feedbackId);
+                if ("answer_feedback".equals(requested.get("source")) && protectedRef == null) {
+                    continue;
+                }
+                if (protectedRef != null) {
+                    if (retainedFeedbackIds.add(feedbackId)) {
+                        merged.add(new LinkedHashMap<>(protectedRef));
+                    }
+                } else {
+                    merged.add(new LinkedHashMap<>(requested));
+                }
+            }
+        }
+        for (Map.Entry<String, Map<String, Object>> entry : protectedByFeedbackId.entrySet()) {
+            if (retainedFeedbackIds.add(entry.getKey())) {
+                merged.add(new LinkedHashMap<>(entry.getValue()));
+            }
+        }
+        merged.addAll(protectedWithoutFeedbackId);
+        return merged;
+    }
+
+    private String evidenceFeedbackId(Map<String, Object> ref) {
+        Object feedbackId = ref.get("feedback_id");
+        if (feedbackId == null) {
+            return null;
+        }
+        String value = String.valueOf(feedbackId).trim();
+        return value.isEmpty() ? null : value;
     }
 
     private String truncate(String message) {

@@ -18,6 +18,7 @@ class QueryUnderstanding:
     target_query: str
     intent: str
     image_mode: str
+    selection_mode: str
     confidence: float
 
     def to_metadata(self) -> Dict[str, object]:
@@ -71,6 +72,22 @@ _MULTI_IMAGE_HINTS = (
     "哪些",
     "在哪里",
     "有几张",
+)
+_SINGLE_TARGET_CONTRACT_HINTS = (
+    "只要这一步",
+    "只要这一页",
+    "只返回这一步",
+    "只返回这一页",
+    "这一步对应的图",
+    "那一步对应的图",
+)
+_EVIDENCE_PAGE_CONTRACT_HINTS = (
+    "完整步骤",
+    "全部步骤",
+    "整个流程",
+    "完整流程",
+    "全流程",
+    "如何",
 )
 _TARGET_NOISE_PHRASES = (
     "给我展示",
@@ -158,10 +175,16 @@ def understand_query(query: str) -> QueryUnderstanding:
             target_query=target,
             intent="general",
             image_mode="none",
+            selection_mode="none",
             confidence=0.9 if target else 0.7,
         )
 
-    has_image_signal = any(hint in normalized for hint in _IMAGE_HINTS)
+    compact_query = re.sub(r"\s+", "", normalized)
+    has_contract_image_phrase = (
+        any(hint in compact_query for hint in _SINGLE_TARGET_CONTRACT_HINTS)
+        or bool(re.search(r"(?:对应|相关|这一步|那一步)(?:的)?图", compact_query))
+    )
+    has_image_signal = any(hint in normalized for hint in _IMAGE_HINTS) or has_contract_image_phrase
     has_single_signal = any(hint in normalized for hint in _SINGLE_IMAGE_HINTS)
     has_multi_signal = any(hint in normalized for hint in _MULTI_IMAGE_HINTS)
 
@@ -172,6 +195,7 @@ def understand_query(query: str) -> QueryUnderstanding:
             target_query=target,
             intent="general",
             image_mode="none",
+            selection_mode="none",
             confidence=0.4 if target else 0.0,
         )
 
@@ -186,10 +210,18 @@ def understand_query(query: str) -> QueryUnderstanding:
         image_mode = "same_section"
         confidence = 0.65 if target else 0.45
 
+    if has_single_signal or any(hint in compact_query for hint in _SINGLE_TARGET_CONTRACT_HINTS):
+        selection_mode = "single_target"
+    elif any(hint in compact_query for hint in _EVIDENCE_PAGE_CONTRACT_HINTS):
+        selection_mode = "evidence_pages"
+    else:
+        selection_mode = "section_overview"
+
     return QueryUnderstanding(
         canonical_query=f"{target} 图片" if target else normalized,
         target_query=target,
         intent="image_lookup",
         image_mode=image_mode,
+        selection_mode=selection_mode,
         confidence=confidence,
     )

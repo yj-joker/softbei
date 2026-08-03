@@ -6,6 +6,7 @@ import AdminKnowledge from './AdminKnowledge.vue'
 import AdminKnowledgeGraph from './AdminKnowledgeGraph.vue'
 import AdminProcedures from './AdminProcedures.vue'
 import AdminDomainRules from './AdminDomainRules.vue'
+import AdminAnswerFeedback from './AdminAnswerFeedback.vue'
 import CaseReviewPanel from '@/components/case/CaseReviewPanel.vue'
 
 const route = useRoute()
@@ -29,6 +30,12 @@ const tabs = [
     label: '标准规程',
     desc: '沉淀检修任务，形成可复用的标准作业规程',
     component: AdminProcedures,
+  },
+  {
+    name: 'answer-feedback',
+    label: '回答纠错',
+    desc: '审核用户上报的 AI 回答，人工修订后转为可发布的诊断规则草稿',
+    component: AdminAnswerFeedback,
   },
   {
     name: 'domain-rules',

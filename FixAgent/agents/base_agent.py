@@ -27,6 +27,7 @@ from pydantic import BaseModel, Field
 
 from services.llm.service import LLMService
 from services.llm.react_loop import ReActLoop
+from services.llm.output_style import regenerate_user_visible_text
 from config.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -118,12 +119,12 @@ def _evidence_notice(status: str, capabilities: Dict[str, Any]) -> str:
         return "已找到与当前设备和问题匹配的资料，可作为手册依据总结，但应使用自己的语言解释。"
     if status == "reference_only":
         return (
-            "检索到的资料未能确认属于当前设备，只能作为通用参考。"
-            "不得把它写成当前设备手册依据，也不得从中输出设备专属参数、位置或拆装顺序。"
+            "检索到的资料未能确认属于当前设备，不能作为当前问题的合格依据。"
+            "不得补写通用原因、参数或操作步骤；请补充设备型号或对应手册。"
         )
     return (
-        "未找到可用于当前设备的手册依据。可以给通用原理、常见原因和初步排查建议，"
-        "但必须说明不是本设备规程，且不得编造精确参数或设备专属操作。"
+        "未找到可用于当前设备的手册依据。不得补写通用原因、参数或操作步骤；"
+        "请补充设备型号或对应手册。"
     )
 
 
@@ -160,6 +161,10 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
                         "qualification_reasons": (item.get("metadata") or {}).get("qualification_reasons") or [],
                         "section_title": (item.get("metadata") or {}).get("section_title"),
                         "device_type": (item.get("metadata") or {}).get("device_type"),
+                        "document_id": (item.get("metadata") or {}).get("document_id"),
+                        "document_version": (item.get("metadata") or {}).get("document_version"),
+                        "chunk_id": (item.get("metadata") or {}).get("chunk_id") or item.get("doc_id") or item.get("id"),
+                        "page": (item.get("metadata") or {}).get("page") or (item.get("metadata") or {}).get("page_number"),
                     },
                     "summary": "检索到同类或未确认设备的参考资料；不可作为当前设备手册依据。",
                 }
@@ -169,6 +174,13 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
                 "evidence_status": status,
                 "evidence_notice": _evidence_notice(status, capabilities),
                 "capabilities": capabilities,
+                "coverage_status": bundle.get("coverage_status"),
+                "coverage_reason": bundle.get("coverage_reason"),
+                "aspect_support": bundle.get("aspect_support") or [],
+                "supported_aspect_ids": bundle.get("supported_aspect_ids") or [],
+                "missing_aspect_ids": bundle.get("missing_aspect_ids") or [],
+                "conflict_aspect_ids": bundle.get("conflict_aspect_ids") or [],
+                "conflict_eligible": bundle.get("conflict_eligible") or [],
                 "results": qualified,
                 "reference_evidence": visible_references,
                 "excluded_evidence": bundle.get("excluded_evidence") or [],
@@ -180,10 +192,15 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
         return {
             "evidence_status": "empty",
             "evidence_notice": (
-                "⚠ 知识检索没有召回任何手册片段。本次没有可用证据。"
-                "请勿编造参数、步骤或结论；应明确告知用户知识库中暂无相关依据，"
-                "如作答请说明是基于通用常识而非本设备手册。"
+                "注意：知识检索没有召回任何手册片段。本次没有可用证据。"
+                "请明确告知用户知识库中暂无相关依据，不得补写通用原因、参数或操作步骤。"
             ),
+            "coverage_status": "unsupported",
+            "coverage_reason": "zero_qualified_evidence",
+            "aspect_support": [],
+            "missing_aspect_ids": [],
+            "conflict_eligible": [],
+            "capabilities": {"may_offer_generic_guidance": False},
             "results": [],
         }
 
@@ -209,16 +226,15 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
         return {
             "evidence_status": "low_confidence",
             "evidence_notice": (
-                "⚠ 检索到的片段与问题相关度低，多半来自其他设备（跨设备召回）。按「方法可借鉴、参数必独立」处理：\n"
-                "1. 先判断片段是不是用户所问设备的内容。若明显来自别的设备"
-                "（如问中央空调却召回制冷机组、问挖掘机却召回电机联轴器），归为「跨设备通用参考」。\n"
-                "2. 跨设备通用参考：可以借鉴其中通用的维修方法、排查思路、操作原理"
-                "（如轴承拆装、螺栓对角紧固、油泵不出油的排查顺序），但必须声明"
-                "这是X设备的做法，供思路参考。\n"
-                "3. 绝对禁止把别的设备的精确参数（扭矩、间隙、型号、专属拆装顺序）套到用户设备上——"
-                "参数是设备专属的，套错会出事。参数一律说以你的设备手册或铭牌为准，绝不猜数值。\n"
-                "4. 若片段确实就是用户所问设备的内容，才可作为直接依据引用。"
+                "注意：检索片段与当前设备或问题的匹配度不足，不能作为合格依据。"
+                "不得补写通用原因、参数或操作步骤；请补充设备型号或对应手册。"
             ),
+            "coverage_status": "unsupported",
+            "coverage_reason": "low_confidence_retrieval",
+            "aspect_support": [],
+            "missing_aspect_ids": [],
+            "conflict_eligible": [],
+            "capabilities": {"may_offer_generic_guidance": False},
             "results": _jsonable(data),
         }
 
@@ -902,6 +918,14 @@ class BaseAgent(ABC):
                 model=model_override
             )
 
+            styled_content, style_regenerated = await regenerate_user_visible_text(
+                self.llm_service,
+                response.get("content", ""),
+                model=model_override,
+            )
+            if styled_content != response.get("content", ""):
+                response = {**response, "content": styled_content}
+
             # 5. 处理响应
             intention = input_data.context.get("intention") if input_data.context else None
             react_trace = response.get("trace", [])
@@ -912,7 +936,8 @@ class BaseAgent(ABC):
                 metadata={
                     "execution_mode": "react",
                     "react_trace": react_trace,
-                    "react_iterations": len(react_trace)
+                    "react_iterations": len(react_trace),
+                    "style_regenerated": style_regenerated,
                 },
                 intention=intention
             )

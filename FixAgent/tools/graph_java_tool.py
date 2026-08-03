@@ -153,7 +153,7 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                     "context": (
                         "【图谱查询结果：无匹配数据】\n"
                         "知识图谱中没有与本次查询相关的设备/部件/故障路径。\n"
-                        "⚠ 重要：本工具这次没有提供任何可用证据。请勿把没有数据当作设备正常或故障不存在，"
+                        "重要：本工具这次没有提供任何可用证据。请勿把没有数据当作设备正常或故障不存在，"
                         "也不要基于空结果编造图谱里不存在的部件、故障或方案。\n"
                         "正确做法：明确告知用户知识图谱暂无相关记录，改用其他工具（如知识检索）或基于通用检修常识回答，"
                         "并说明这是通用建议而非图谱依据。"
@@ -253,7 +253,7 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                         verified = sol.get("verified")
                         status = sol.get("status", "active")
                         time_str = f"{est_time}分钟" if est_time else "未知"
-                        verified_str = "已验证" if verified else "⚠未验证(手册推断)"
+                        verified_str = "已验证" if verified else "未验证(手册推断)"
                         deprecated_suffix = " [已过期]" if status == "deprecated" else ""
                         lines.append(
                             f"   维修规程{j + 1}：{title}"
@@ -282,7 +282,7 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                         verified = sol.get("verified")
                         status = sol.get("status", "active")
                         time_str = f"{est_time}分钟" if est_time else "未知"
-                        verified_str = "已验证" if verified else "⚠未验证(手册推断)"
+                        verified_str = "已验证" if verified else "未验证(手册推断)"
                         deprecated_suffix = " [已过期]" if status == "deprecated" else ""
                         lines.append(
                             f"   方案{j + 1}：{title}"
@@ -294,7 +294,7 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                     est_time = path.get("estimatedTime")
                     verified = path.get("verified")
                     time_str = f"{est_time}分钟" if est_time else "未知"
-                    verified_str = "已验证" if verified else "⚠未验证(手册推断)"
+                    verified_str = "已验证" if verified else "未验证(手册推断)"
                     lines.append(f"   推荐方案：{sol_title}（{time_str}，{verified_str}）")
 
             lines.append("")

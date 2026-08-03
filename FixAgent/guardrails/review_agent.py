@@ -1053,7 +1053,7 @@ class ReviewAgent:
     def _mark_unverified_step_details(cls, message: str, trace: List[Dict]) -> str:
         """扫描步骤描述的每行，如果出现证据中不存在的工具/材料词，追加标注。
 
-        不做硬删除，只在行尾加 " ⚠ 未在手册中找到依据"，让用户自行判断。
+        不做硬删除，只在行尾加“未在手册中找到依据”，让用户自行判断。
         """
         if not message or not cls._reply_has_operational_steps(message):
             return message
@@ -1098,7 +1098,7 @@ class ReviewAgent:
                 if tool in stripped and tool not in evidence_text:
                     unverified_tools.append(tool)
             if unverified_tools:
-                marked.append(f"{line} （⚠ 以下工具/材料未在手册中找到依据：{'、'.join(unverified_tools)}）")
+                marked.append(f"{line} （以下工具/材料未在手册中找到依据：{'、'.join(unverified_tools)}）")
             else:
                 marked.append(line)
 

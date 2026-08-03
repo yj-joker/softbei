@@ -52,13 +52,16 @@ CREATE TABLE IF NOT EXISTS `ai_message` (
     `ai_session_id` BIGINT      NOT NULL COMMENT '所属会话ID',
     `user_id`       BIGINT      NOT NULL COMMENT '用户ID',
     `round_no`      INT         NOT NULL COMMENT '当前会话第几轮对话',
+    `question_message_id` BIGINT NULL COMMENT 'assistant message paired user-message id',
     `role`          VARCHAR(32) NOT NULL COMMENT '角色: system=系统提示, user=用户, assistant=AI助手, tool=工具调用',
     `content`       TEXT        NOT NULL COMMENT '消息内容',
+    `response_metadata` JSON    NULL COMMENT 'assistant done event metadata for auditable scope binding',
     `consolidated`  TINYINT(1)  DEFAULT 0 COMMENT '是否已被压缩整合: 0=未压缩, 1=已压缩',
     `created_at`    DATETIME    NOT NULL COMMENT '创建时间',
     INDEX `idx_session_round`        (`ai_session_id`, `round_no`),
     INDEX `idx_session_created`      (`ai_session_id`, `created_at`),
-    INDEX `idx_session_consolidated` (`ai_session_id`, `consolidated`)
+    INDEX `idx_session_consolidated` (`ai_session_id`, `consolidated`),
+    INDEX `idx_question_message`     (`question_message_id`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'AI消息历史表';
 
 
@@ -564,6 +567,34 @@ CREATE TABLE IF NOT EXISTS `domain_rule` (
                                              KEY `idx_domain_rule_device_type` (`device_type`),
                                              KEY `idx_domain_rule_created_at` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='domain diagnostic rule';
+
+CREATE TABLE IF NOT EXISTS `answer_feedback` (
+    `id`                   BIGINT       NOT NULL COMMENT 'snowflake id',
+    `user_id`              BIGINT       NOT NULL COMMENT 'reporting user id',
+    `session_id`           BIGINT       NOT NULL COMMENT 'AI session id',
+    `assistant_message_id` BIGINT       NOT NULL COMMENT 'persisted assistant message id',
+    `question_message_id`  BIGINT       NOT NULL COMMENT 'paired user message id',
+    `original_question`    TEXT         NOT NULL COMMENT 'paired user question',
+    `original_answer`      MEDIUMTEXT   NOT NULL COMMENT 'reported assistant answer',
+    `reason_code`          VARCHAR(32)  NOT NULL DEFAULT 'incorrect' COMMENT 'incorrect/incomplete/source_error/order_error/other',
+    `user_comment`         TEXT         NULL COMMENT 'reporter explanation',
+    `device_type`          VARCHAR(100) NULL COMMENT 'device scope captured from answer metadata',
+    `document_id`          VARCHAR(128) NULL COMMENT 'manual scope captured from answer metadata',
+    `status`               VARCHAR(20)  NOT NULL DEFAULT 'pending' COMMENT 'pending/converted/dismissed',
+    `corrected_answer`     MEDIUMTEXT   NULL COMMENT 'human correction used for the rule draft',
+    `domain_rule_id`       BIGINT       NULL COMMENT 'created domain-rule draft id',
+    `process_comment`      TEXT         NULL COMMENT 'admin processing note',
+    `processed_by_id`      BIGINT       NULL COMMENT 'admin user id',
+    `processed_at`         DATETIME     NULL COMMENT 'processed time',
+    `created_at`           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'created time',
+    `updated_at`           DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT 'updated time',
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_answer_feedback_message` (`assistant_message_id`),
+    KEY `idx_answer_feedback_status` (`status`),
+    KEY `idx_answer_feedback_user` (`user_id`),
+    KEY `idx_answer_feedback_device` (`device_type`),
+    KEY `idx_answer_feedback_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='AI answer correction feedback';
 
 -- =============================================
 -- 演示初始化账号

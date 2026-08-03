@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 from config.settings import get_settings
+from services.retrieval.device_identity import QueryContract
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,18 @@ class IntentDecision(BaseModel):
     operation_intent: bool = False
     allow_visual_answer_without_manual: bool = False
     answer_style: str = "plain_conversational"
+    chat_subtype: str = ""
+    raw_device_span: str = ""
+    device_name: str = ""
+    device_category: str = ""
+    carrier_or_application: str = ""
+    manufacturer: str = ""
+    model: str = ""
+    component: str = ""
+    action: str = ""
+    orientation: str = ""
+    risk_level: str = ""
+    identity_resolution: str = ""
     allowed_tools: List[str] = Field(default_factory=list)
     preferred_tools: List[str] = Field(default_factory=list)
     forbidden_tools: List[str] = Field(default_factory=list)
@@ -101,13 +114,20 @@ class IntentRouter:
         r"(查找|查询|检索|搜索|查|找|返回|展示|给我|提供).{0,20}"
         r"(图片|照片|示例图|示例图片|结构图|示意图|外观图|图示|配图))"
     )
+    _MANUAL_STEP_IMAGE_RE = re.compile(
+        r"(这一步|该步骤|对应|只要).{0,12}(图|图片|图示|配图)|"
+        r"(图|图片|图示|配图).{0,12}(对应|这一步|该步骤)"
+    )
     _INVENTORY_RE = re.compile(r"(知识库.*(文件|文档|手册)|有什么知识文件|导入了.*文件|有哪些.*手册)")
     _INVENTORY_META_ACTION_RE = re.compile(r"(有哪些|有什么|哪些|列出|查看|查询|显示|看看|清单|目录)")
     _INVENTORY_META_OBJECT_RE = re.compile(r"(知识库|知识文件|知识文档|已上传|上传|已导入|导入|入库|收录|文件|文档|资料|PDF|pdf)")
     _DOCUMENT_CONTENT_OBJECT_RE = re.compile(r"(部件|零件|配件|总成|参数|步骤|装配|拆卸|安装|表格|图片|章节|第.{0,8}页|故障|原因|结构|组成)")
     _DOCUMENT_RE = re.compile(r"(这页|这张表|这个截图|文档.*讲|手册.*讲|表格.*意思|OCR|解析)")
     _PROCEDURE_RE = re.compile(r"(工单|作业单|标准作业|SOP|检修流程|维修流程|生成流程|作业指导书)")
-    _CHAT_RE = re.compile(r"(你好|您好|早上好|晚上好|我是|最近|转行|学习|入门|聊聊|谢谢|辛苦)")
+    _CHAT_RE = re.compile(r"(你好|您好|早上好|晚上好|我是|最近|转行|学习|入门|聊聊|谢谢|辛苦|你是谁|你能做什么|底层.*模型|什么模型|高等数学|级数|微积分)")
+    _IDENTITY_RE = re.compile(r"(你是谁|你能做什么|你能提供什么帮助|介绍一下你自己)")
+    _MODEL_INFO_RE = re.compile(r"(底层.*模型|什么模型|基于什么模型|模型版本|大模型)")
+    _GENERAL_KNOWLEDGE_RE = re.compile(r"(高等数学|级数|微积分|导数|积分|概率|历史|物理|化学|编程|算法|英语语法)")
     # 长期记忆管理（删除/忘掉某条记忆）：要求带记忆类名词，避免误伤"删除检修任务/文件"等。
     # 命中后走中性 chat_social，让 LLM 依记忆使用规则调用 delete_memory（记忆工具恒可用），
     # 不被 knowledge_inventory 等强提示意图劫持。
@@ -254,6 +274,16 @@ class IntentRouter:
             decision = fallback
 
         decision = self._apply_deterministic_overrides(decision, text)
+        if (
+            text
+            and decision.target_layer in {"document_content", "operation_task"}
+            and not decision.raw_device_span
+        ):
+            try:
+                contract = await self._extract_query_contract_with_llm(text)
+                decision = self._merge_query_contract(decision, contract)
+            except Exception as exc:
+                logger.warning("[intent_router] focused query contract extraction failed: %s", exc)
         decision = self._apply_strategy(decision)
         decision = self._apply_safety_override(decision, text)
         return decision
@@ -274,6 +304,10 @@ class IntentRouter:
             "task_action 必须从 general_answer, find_cause, repair_guidance, formal_procedure, "
             "parameter_lookup, visual_compare, document_explain, inventory_list 中选择。"
             "confidence 为 0 到 1。不要生成用户回答，只判断用户当前想做什么。"
+            "同一次 JSON 中还要提取当前轮查询契约：raw_device_span 必须逐字复制用户消息中连续出现的设备短语，"
+            "没有明确设备时必须为空；device_name、device_category、carrier_or_application、manufacturer、model、"
+            "component、action、orientation、risk_level 分别表示设备名、设备类别、载体或应用、制造商、型号、"
+            "部件、动作、左右方向和风险等级。不得从历史或常识补写用户本轮未提到的设备。"
             "knowledge_inventory 仅用于用户明确询问知识库本身的文件、文档、上传、导入或入库状态。"
             "如果用户要求从知识库、手册或资料中查找、返回、展示图片、照片、示例图、结构图、示意图，"
             "这属于 document_content 的 knowledge_query，不属于 knowledge_inventory。"
@@ -295,7 +329,7 @@ class IntentRouter:
                 {"role": "user", "content": json.dumps(user, ensure_ascii=False)},
             ],
             temperature=0,
-            max_tokens=120,
+            max_tokens=280,
             response_format={"type": "json_object"},
             model=self.settings.intent_router_model,
         )
@@ -306,6 +340,7 @@ class IntentRouter:
         target_layer = str(data.get("target_layer") or "").strip()
         if target_layer not in TARGET_LAYERS:
             target_layer = self._infer_target_layer(text, has_images)
+        query_contract = QueryContract.from_mapping(data, raw_query=text)
         return IntentDecision(
             target_layer=target_layer,
             target_object=str(data.get("target_object") or ""),
@@ -314,7 +349,67 @@ class IntentRouter:
             task_action=str(data.get("task_action") or "general_answer"),
             confidence=float(data.get("confidence", 0.0)),
             source="llm",
+            raw_device_span=query_contract.raw_device_span,
+            device_name=query_contract.device_name,
+            device_category=query_contract.device_category,
+            carrier_or_application=query_contract.carrier_or_application,
+            manufacturer=query_contract.manufacturer,
+            model=query_contract.model,
+            component=query_contract.component,
+            action=query_contract.action,
+            orientation=query_contract.orientation,
+            risk_level=query_contract.risk_level,
         )
+
+    async def _extract_query_contract_with_llm(self, text: str) -> QueryContract:
+        prompt = (
+            "你是当前问题的设备身份抽取器，只输出 JSON，并且必须输出全部指定字段。"
+            "raw_device_span 必须逐字复制当前问题中连续出现的、能区分设备身份的最长设备短语；"
+            "短语应包含用户明确说出的载体或应用与设备类别。"
+            "如果当前问题只说部件、故障或操作，没有明确设备身份，raw_device_span 必须为空字符串。"
+            "不得从常识、对话历史、候选文档或知识库补写用户本轮没有说出的身份。"
+            "返回字段 raw_device_span、device_name、device_category、carrier_or_application、"
+            "manufacturer、model、component、action、orientation、risk_level；未知字段使用空字符串。"
+        )
+        response = await self.llm_service.chat(
+            [
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": text},
+            ],
+            temperature=0,
+            max_tokens=240,
+            response_format={"type": "json_object"},
+            model=self.settings.intent_router_model,
+        )
+        data = json.loads(response.get("content") or "{}")
+        return QueryContract.from_mapping(data, raw_query=text)
+
+    async def refine_query_contract(self, text: str) -> QueryContract:
+        """Re-check an ambiguous generic identity span with the focused extractor."""
+        return await self._extract_query_contract_with_llm(text)
+
+    @staticmethod
+    def _merge_query_contract(
+        decision: IntentDecision,
+        contract: QueryContract,
+    ) -> IntentDecision:
+        data = decision.model_dump()
+        for field in (
+            "raw_device_span",
+            "device_name",
+            "device_category",
+            "carrier_or_application",
+            "manufacturer",
+            "model",
+            "component",
+            "action",
+            "orientation",
+            "risk_level",
+        ):
+            value = getattr(contract, field)
+            if value:
+                data[field] = value
+        return IntentDecision(**data)
 
     def _classify_by_rules(self, text: str, images: List[str]) -> IntentDecision:
         task_action = self._infer_task_action(text, images)
@@ -345,7 +440,17 @@ class IntentRouter:
             intent = "chat_social"
         else:
             intent = "knowledge_query"
-        return IntentDecision(target_layer=target_layer, intent=intent, task_action=task_action, confidence=0.7, source="rules")
+        subtype = self._chat_subtype(text) if intent == "chat_social" else ""
+        return IntentDecision(target_layer=target_layer, intent=intent, task_action=task_action, confidence=0.7, source="rules", chat_subtype=subtype)
+
+    def _chat_subtype(self, text: str) -> str:
+        if self._IDENTITY_RE.search(text or ""):
+            return "assistant_identity"
+        if self._MODEL_INFO_RE.search(text or ""):
+            return "model_information"
+        if self._GENERAL_KNOWLEDGE_RE.search(text or ""):
+            return "general_knowledge"
+        return "social_chat"
 
     def _infer_task_action(self, text: str, images: List[str]) -> str:
         if images:
@@ -386,6 +491,8 @@ class IntentRouter:
             return "chat"
         if self._FORMAL_PROCEDURE_ACTION_RE.search(text) or self._REPAIR_ACTION_RE.search(text):
             return "operation_task"
+        if not any((self._DOCUMENT_CONTENT_OBJECT_RE.search(text), self._FAULT_RE.search(text), self._PARAMETER_RE.search(text), self._OPERATION_RE.search(text), self._DOCUMENT_RE.search(text))):
+            return "chat"
         return "document_content"
 
     def _apply_target_layer_consistency(self, decision: IntentDecision, text: str) -> IntentDecision:
@@ -433,13 +540,39 @@ class IntentRouter:
         )
 
     def _is_manual_image_query(self, text: str) -> bool:
-        return bool(text and self._MANUAL_IMAGE_QUERY_RE.search(text))
+        return bool(
+            text
+            and (
+                self._MANUAL_IMAGE_QUERY_RE.search(text)
+                or self._MANUAL_STEP_IMAGE_RE.search(text)
+            )
+        )
 
     def _apply_deterministic_overrides(self, decision: IntentDecision, text: str) -> IntentDecision:
         if not text:
             return decision
+        if (
+            not self._is_manual_image_query(text)
+            and not self._is_explicit_knowledge_inventory_request(text)
+            and self._CHAT_RE.search(text)
+            and not self._OPERATION_RE.search(text)
+            and not self._FAULT_RE.search(text)
+            and not self._PARAMETER_RE.search(text)
+            and not self._DOCUMENT_CONTENT_OBJECT_RE.search(text)
+        ):
+            decision.target_layer = "chat"
+            decision.intent = "chat_social"
+            decision.task_action = "general_answer"
+            decision.chat_subtype = self._chat_subtype(text)
+            decision.confidence = max(decision.confidence, 0.95)
+            decision.source = "rules"
+            return self._apply_strategy(decision)
         inferred_action = self._infer_task_action(text, [])
-        if decision.task_action in {"general_answer", ""} and inferred_action != "general_answer":
+        # A recognized action in the current utterance is a deterministic
+        # authorization boundary.  The LLM may fill an otherwise unknown
+        # action, but it must not override explicit cause/repair/procedure
+        # semantics and accidentally broaden document scope.
+        if inferred_action != "general_answer":
             decision.task_action = inferred_action
 
         decision = self._apply_target_layer_consistency(decision, text)

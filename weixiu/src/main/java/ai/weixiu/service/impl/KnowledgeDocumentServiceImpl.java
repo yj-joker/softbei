@@ -2,6 +2,7 @@ package ai.weixiu.service.impl;
 
 import ai.weixiu.entity.KnowledgeDocument;
 import ai.weixiu.entity.MaintenanceManual;
+import ai.weixiu.entity.ManualDevice;
 import ai.weixiu.enumerate.BucketEnum;
 import ai.weixiu.exception.FormatErrorException;
 import ai.weixiu.exception.NotFoundException;
@@ -27,6 +28,9 @@ import org.springframework.transaction.support.TransactionSynchronizationManager
 import org.springframework.web.multipart.MultipartFile;
 
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -140,10 +144,14 @@ public class KnowledgeDocumentServiceImpl
 
         // 生成文件预签名 URL 给 Python 下载
         String fileUrl = mioIOUpLoadService.getPresignedUrl(objectName, BucketEnum.PRIVATE, 120);
+        String oldDocumentId = resolveActiveDocumentId(manual);
+        Map<String, Object> documentIdentity = resolveDocumentIdentity(manualId);
+        String deviceName = Objects.toString(documentIdentity.get("device_name"), null);
 
         log.info("上传新版本: manualId={}, version={}, documentId={}", manualId, newVersion, documentId);
 
-        // 事务提交后再发送 MQ 消息（不携带 oldDocumentId，旧向量由 onParseSuccess 成功后再删）
+        // 事务提交后再发送 MQ 消息。oldDocumentId 只用于 revision 继承与差异分析，
+        // 旧向量仍由 onParseSuccess 在新版本成功切换后删除。
         final Long currentUserId = BaseContext.getCurrentId();
         TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
             @Override
@@ -155,10 +163,11 @@ public class KnowledgeDocumentServiceImpl
                         null,
                         currentUserId,
                         "v" + newVersion,
+                        deviceName,
                         null,
-                        null,
-                        null,
-                        manualId
+                        oldDocumentId,
+                        manualId,
+                        documentIdentity
                 );
             }
         });
@@ -178,8 +187,10 @@ public class KnowledgeDocumentServiceImpl
         doc.setUpdatedAt(LocalDateTime.now());
         updateById(doc);
 
-        // 切换 maintenance_manual 的 active 版本（仅当回调版本 >= 当前 active 版本时才切换）
-        MaintenanceManual manual = manualMapper.selectById(doc.getManualId());
+        // 切换 maintenance_manual 的 active 版本（仅当回调文档严格新于当前 active 时才切换）
+        // 行锁一直持有到 @Transactional 方法提交，避免 v2/v3 并发回调读取同一旧 active
+        // 后由较旧回调覆盖较新 active，并误清理新版本资源。
+        MaintenanceManual manual = manualMapper.selectByIdForUpdate(doc.getManualId());
         if (manual != null) {
             boolean shouldActivate = true;
             String oldDocumentId = null;
@@ -188,10 +199,16 @@ public class KnowledgeDocumentServiceImpl
             if (manual.getActiveDocumentId() != null) {
                 KnowledgeDocument activeDoc = getById(manual.getActiveDocumentId());
                 if (activeDoc != null) {
-                    if (activeDoc.getVersion() > doc.getVersion()) {
-                        // 当前 active 版本比回调的版本更新，不切换
+                    boolean sameDocument = Objects.equals(activeDoc.getId(), doc.getId())
+                            || Objects.equals(activeDoc.getDocumentId(), doc.getDocumentId());
+                    if (sameDocument) {
+                        // 成功回调可能重复投递；当前文档已 active 时不得把自己当旧版本删除。
                         shouldActivate = false;
-                        log.info("跳过 active 切换: 当前 active v{} > 回调 v{}, documentId={}",
+                        log.info("跳过重复成功回调: documentId={} 已是当前 active", documentId);
+                    } else if (activeDoc.getVersion() >= doc.getVersion()) {
+                        // 当前 active 版本不旧于回调版本，不切换也不清理。
+                        shouldActivate = false;
+                        log.info("跳过 active 切换: 当前 active v{} >= 回调 v{}, documentId={}",
                                 activeDoc.getVersion(), doc.getVersion(), documentId);
                     } else {
                         // 记录旧版本信息，成功切换后再清理
@@ -279,20 +296,52 @@ public class KnowledgeDocumentServiceImpl
      * 未关联任何设备 → 返回空串，抽取回退到 LLM 自行识别设备名。
      */
     private String resolveDeviceHint(Long manualId) {
-        if (manualId == null) return "";
+        return Objects.toString(resolveDocumentIdentity(manualId).get("device_name"), "");
+    }
+
+    /**
+     * 将用户在 manual_device 中确认的适用设备构造成开放词汇文档身份。
+     * 第一项为主设备名，其余去重后仅作为当前文档 aliases。
+     */
+    private Map<String, Object> resolveDocumentIdentity(Long manualId) {
+        if (manualId == null) return Map.of();
         try {
-            java.util.List<ai.weixiu.entity.ManualDevice> links = manualDeviceMapper.selectList(
-                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<ai.weixiu.entity.ManualDevice>()
-                            .eq(ai.weixiu.entity.ManualDevice::getManualId, manualId));
-            for (ai.weixiu.entity.ManualDevice link : links) {
+            List<ManualDevice> links = manualDeviceMapper.selectList(
+                    new LambdaQueryWrapper<ManualDevice>()
+                            .eq(ManualDevice::getManualId, manualId)
+                            .orderByAsc(ManualDevice::getId));
+            LinkedHashSet<String> names = new LinkedHashSet<>();
+            for (ManualDevice link : links) {
                 if (link.getDeviceName() != null && !link.getDeviceName().isBlank()) {
-                    return link.getDeviceName().trim();
+                    names.add(link.getDeviceName().trim());
                 }
             }
+            if (names.isEmpty()) return Map.of();
+
+            List<String> orderedNames = new ArrayList<>(names);
+            Map<String, Object> identity = new LinkedHashMap<>();
+            identity.put("device_name", orderedNames.getFirst());
+            identity.put("aliases", List.copyOf(orderedNames.subList(1, orderedNames.size())));
+            identity.put("confidence", 1.0);
+            identity.put("identity_source", "user_metadata");
+            return Map.copyOf(identity);
         } catch (Exception e) {
             log.warn("查询手册关联设备失败（回退LLM识别）: manualId={}, err={}", manualId, e.getMessage());
         }
-        return "";
+        return Map.of();
+    }
+
+    /** 获取上传开始时仍在使用的 active 文档业务 ID。 */
+    private String resolveActiveDocumentId(MaintenanceManual manual) {
+        if (manual == null || manual.getActiveDocumentId() == null) return null;
+        KnowledgeDocument activeDocument = getById(manual.getActiveDocumentId());
+        if (activeDocument == null || activeDocument.getDocumentId() == null
+                || activeDocument.getDocumentId().isBlank()) {
+            log.warn("手册 active 文档记录缺失: manualId={}, activeDocumentId={}",
+                    manual.getId(), manual.getActiveDocumentId());
+            return null;
+        }
+        return activeDocument.getDocumentId().trim();
     }
 
     @Override

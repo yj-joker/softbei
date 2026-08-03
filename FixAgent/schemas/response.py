@@ -52,6 +52,11 @@ class EvidenceImage(BaseModel):
     document_id: str = Field(default="", serialization_alias="documentId")
     source_chunk_id: str = Field(default="", serialization_alias="sourceChunkId")
     context_role: str = Field(default="", serialization_alias="contextRole")
+    step_id: str = Field(default="", serialization_alias="stepId")
+    step_ids: List[str] = Field(default_factory=list, serialization_alias="stepIds")
+    aspect_id: str = Field(default="", serialization_alias="aspectId")
+    role: str = ""
+    binding_confidence: float = Field(default=0.0, serialization_alias="bindingConfidence")
 
 
 class ChatStreamEvent(BaseModel):

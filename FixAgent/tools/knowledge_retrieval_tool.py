@@ -12,15 +12,22 @@ from embeddings.multimodal_embedding import get_multimodal_embedding
 from embeddings.text_embedding import get_text_embedding
 from schemas.models import VectorSearchResult
 from services.retrieval.planner import build_retrieval_plan, confidence_intent
+from services.retrieval.provenance import dedupe_and_sort_manual_records
 from services.retrieval.ranker import rank_candidates
 from services.retrieval.context_expander import expand_retrieval_context
 from services.retrieval.fusion import DEFAULT_RRF_CONSTANT, reciprocal_rank_fusion
-from services.retrieval.quality import evaluate_retrieval_quality, required_types_for_plan, supplemental_routes_for_plan
+from services.retrieval.quality import evaluate_retrieval_quality
 from services.retrieval.policy import (
     diversify_candidates,
     summarize_confidence,
 )
 from services.retrieval.qualification import qualify_candidates
+from services.retrieval.aspects import split_question_aspects
+from services.retrieval.supplement import (
+    CandidateRequestCache,
+    decide_supplemental_retrieval,
+    run_supplemental_stage,
+)
 from services.retrieval.image_selector import PageEvidence, gated_select_pages_for_image_query
 from services.retrieval.query_understanding import has_negative_image_request, understand_query
 from services.retrieval.section_index import SectionTitleIndex
@@ -312,18 +319,8 @@ class KnowledgeRetrievalTool(BaseTool):
             reverse=True,
         )[:max_sections]
 
-        have_ids: set = set()
-        have_text: set = set()
-        for it in selected:
-            meta = it.get("metadata") or {}
-            have_ids.add(str(it.get("doc_id") or it.get("id") or ""))
-            if meta.get("source_chunk_id"):
-                have_ids.add(str(meta["source_chunk_id"]))
-            rt = (meta.get("raw_text") or it.get("content") or it.get("text") or "").strip()
-            if rt:
-                have_text.add(rt)
-
-        new_steps: List[Dict] = []
+        snapshots: List[Dict] = []
+        completed_sections: set[tuple[str, str]] = set()
         for document_id, parent_section_id in target_sections:
             try:
                 records = vector_service.get_section_records(
@@ -332,27 +329,52 @@ class KnowledgeRetrievalTool(BaseTool):
             except Exception as exc:
                 logger.warning("[ensure_section_steps] 取节步骤失败: %s", exc)
                 continue
-            section_new: List[Dict] = []
+            section_records: List[Dict] = []
             for rec in records or []:
                 rec = rec.model_dump() if hasattr(rec, "model_dump") else dict(rec)
                 meta = dict(rec.get("metadata") or {})
                 rid = str(rec.get("doc_id") or rec.get("id") or "")
-                src = str(meta.get("source_chunk_id") or "")
                 text = (rec.get("text") or rec.get("content") or meta.get("raw_text") or "").strip()
                 if not text:
                     continue
-                if rid in have_ids or (src and src in have_ids) or text in have_text:
-                    continue
                 meta["context_role"] = "section_step" if plan.intent == "procedure" else "section_param"
-                section_new.append({"doc_id": rid, "id": rid, "text": text, "content": text, "metadata": meta})
-                have_text.add(text)
-                have_ids.add(rid)
-            section_new.sort(key=cls._source_order)
-            new_steps.extend(section_new)
+                section_records.append({
+                    "doc_id": rid,
+                    "id": rid,
+                    "text": text,
+                    "content": text,
+                    "metadata": meta,
+                })
+            ordered = dedupe_and_sort_manual_records(section_records)
+            if not ordered:
+                continue
+            remaining = max_steps - len(snapshots)
+            if remaining <= 0:
+                break
+            snapshots.extend(ordered[:remaining])
+            completed_sections.add((document_id, parent_section_id))
 
-        if not new_steps:
+        if not snapshots:
             return selected
-        return selected + new_steps[:max_steps]
+
+        def is_replaced_section_item(item: Dict) -> bool:
+            meta = item.get("metadata") or {}
+            key = (
+                str(meta.get("document_id") or ""),
+                str(meta.get("parent_section_id") or ""),
+            )
+            if key not in completed_sections:
+                return False
+            if plan.intent == "procedure":
+                return (
+                    meta.get("chunk_type") == "step_raw"
+                    or meta.get("chunk_label") in {"step", "step_raw"}
+                    or meta.get("answer_role") == "procedure_step"
+                )
+            return meta.get("chunk_type") == "table"
+
+        retained = [item for item in selected if not is_replaced_section_item(item)]
+        return snapshots + retained
 
     @staticmethod
     def _mark_route(doc: Dict, route: str) -> Dict:
@@ -775,8 +797,11 @@ class KnowledgeRetrievalTool(BaseTool):
             return selected
 
         image_mode = str(getattr(query_understanding, "image_mode", "") or "same_section")
-        high_confidence_single_best = image_mode == "single_best" and query_understanding_confidence >= 0.85
-        max_pages = 1 if image_mode == "single_best" else 2
+        selection_mode = str(getattr(query_understanding, "selection_mode", "") or "")
+        high_confidence_single_best = (
+            image_mode == "single_best" or selection_mode == "single_target"
+        ) and query_understanding_confidence >= 0.85
+        max_pages = 1 if image_mode == "single_best" or selection_mode == "single_target" else None
         doc_ids = cls._document_ids_for_page_selector(ranked, selected, document_id)
         if not doc_ids:
             return selected
@@ -842,7 +867,7 @@ class KnowledgeRetrievalTool(BaseTool):
             and any(term in query for term in ("O型圈", "定位销", "垫圈", "齿轮", "链轮", "水泵轴"))
             and any(word in query for word in ("清单", "零件", "部件", "装配"))
         )
-        too_many_image_pages = len(unique_selected_image_pages) > max_pages
+        too_many_image_pages = max_pages is not None and len(unique_selected_image_pages) > max_pages
         sparse_image_page_gap = (
             len(unique_selected_image_pages) >= 2
             and (max(unique_selected_image_pages) - min(unique_selected_image_pages)) >= 3
@@ -1331,13 +1356,57 @@ class KnowledgeRetrievalTool(BaseTool):
 
         text_vector = query_vectors.get("text_vector")
         image_vector = query_vectors.get("image_vector") or text_vector
+        route_cache = CandidateRequestCache()
 
         async def run_route(route: str, relaxed: bool = False, limit: int = None) -> List[Dict]:
             route_filter = filter_for_route(route, relaxed=relaxed)
             route_name = self._route_name(route, relaxed=relaxed)
             route_top_k = limit or recall_k
-            if route in {"keyword", "table_keyword", "image_summary_keyword"}:
-                if not hasattr(vector_service, "keyword_search"):
+            cache_key = (route, relaxed, route_filter, route_top_k)
+
+            async def fetch_route() -> List[Dict]:
+                if route in {"keyword", "table_keyword", "image_summary_keyword"}:
+                    if not hasattr(vector_service, "keyword_search"):
+                        await _emit_retrieval_event(
+                            _event_sink,
+                            "retrieval_route",
+                            {
+                                "route": route_name,
+                                "sourceRoute": route,
+                                "candidateCount": 0,
+                                "limit": route_top_k,
+                                "relaxed": relaxed,
+                                "skipped": True,
+                            },
+                        )
+                        return []
+                    docs = await asyncio.to_thread(
+                        vector_service.keyword_search,
+                        query,
+                        top_k=route_top_k,
+                        include_metadata=True,
+                        filter=route_filter,
+                    )
+                    marked = [self._mark_route(doc, route_name) for doc in docs]
+                    await _emit_retrieval_event(
+                        _event_sink,
+                        "retrieval_route",
+                        {
+                            "route": route_name,
+                            "sourceRoute": route,
+                            "candidateCount": len(marked),
+                            "limit": route_top_k,
+                            "relaxed": relaxed,
+                        },
+                    )
+                    return marked
+
+                route_vector = text_vector
+                if route == "image_vector":
+                    route_vector = image_vector
+                elif route == "image_summary":
+                    route_vector = text_vector or image_vector
+                if not route_vector:
                     await _emit_retrieval_event(
                         _event_sink,
                         "retrieval_route",
@@ -1352,8 +1421,8 @@ class KnowledgeRetrievalTool(BaseTool):
                     )
                     return []
                 docs = await asyncio.to_thread(
-                    vector_service.keyword_search,
-                    query,
+                    vector_service.search,
+                    route_vector,
                     top_k=route_top_k,
                     include_metadata=True,
                     filter=route_filter,
@@ -1372,45 +1441,7 @@ class KnowledgeRetrievalTool(BaseTool):
                 )
                 return marked
 
-            route_vector = text_vector
-            if route == "image_vector":
-                route_vector = image_vector
-            elif route == "image_summary":
-                route_vector = text_vector or image_vector
-            if not route_vector:
-                await _emit_retrieval_event(
-                    _event_sink,
-                    "retrieval_route",
-                    {
-                        "route": route_name,
-                        "sourceRoute": route,
-                        "candidateCount": 0,
-                        "limit": route_top_k,
-                        "relaxed": relaxed,
-                        "skipped": True,
-                    },
-                )
-                return []
-            docs = await asyncio.to_thread(
-                vector_service.search,
-                route_vector,
-                top_k=route_top_k,
-                include_metadata=True,
-                filter=route_filter,
-            )
-            marked = [self._mark_route(doc, route_name) for doc in docs]
-            await _emit_retrieval_event(
-                _event_sink,
-                "retrieval_route",
-                {
-                    "route": route_name,
-                    "sourceRoute": route,
-                    "candidateCount": len(marked),
-                    "limit": route_top_k,
-                    "relaxed": relaxed,
-                },
-            )
-            return marked
+            return await route_cache.get_or_fetch(cache_key, fetch_route)
 
         try:
             # vector_service / section_index 已在上面 build 过了，直接复用
@@ -1489,8 +1520,25 @@ class KnowledgeRetrievalTool(BaseTool):
         merged, ranked = apply_image_locator(merged, ranked)
         selected = diversify_candidates(ranked, top_k=final_top_k, intent=confidence_type)
 
-        # 质量评估 → 取补充路由（不做二值分岔，每次都会补召 + RRF 融合）
+        # 首轮质量与证据覆盖共同决定是否执行唯一一次补召。
         first_quality = evaluate_retrieval_quality(plan, ranked, selected, top_k=final_top_k)
+        question_aspects = split_question_aspects(query)
+        first_qualification = qualify_candidates(
+            query,
+            selected,
+            document_id=document_id,
+            device_type=device_type,
+            document_version=document_version,
+            manual_type=manual_type,
+            requires_strict_evidence=plan.requires_strict_evidence,
+            aspects=question_aspects,
+        )
+        supplemental_decision = decide_supplemental_retrieval(
+            plan,
+            first_quality,
+            coverage_status=first_qualification["coverage_status"],
+            missing_aspect_ids=first_qualification["missing_aspect_ids"],
+        )
         candidate_count_before = len(merged)
         supplemental_search_used = False
         supplemental_routes: List[str] = []
@@ -1506,17 +1554,15 @@ class KnowledgeRetrievalTool(BaseTool):
                 "matchedTypes": first_quality.matched_types,
                 "requiredTypes": first_quality.required_types,
                 "reasons": first_quality.reasons,
-                "shouldSupplement": True,
-                "supplementalRoutes": first_quality.supplemental_routes,
+                "coverageStatus": first_qualification["coverage_status"],
+                "missingAspectIds": first_qualification["missing_aspect_ids"],
+                "shouldSupplement": supplemental_decision.should_supplement,
+                "supplementalRoutes": list(supplemental_decision.routes),
             },
         )
 
-        # 固定补召 + RRF 融合（消除质量门控二值分岔）：always run
-        supplemental_routes = first_quality.supplemental_routes or supplemental_routes_for_plan(
-            plan, required_types_for_plan(plan), weak_recall=True
-        )
-        if supplemental_routes:
-            supplemental_search_used = True
+        supplemental_routes = list(supplemental_decision.routes)
+        if supplemental_decision.should_supplement:
             supplemental_limit = max(recall_k * 2, top_k * 6, 6)
             await _emit_retrieval_event(
                 _event_sink,
@@ -1524,26 +1570,32 @@ class KnowledgeRetrievalTool(BaseTool):
                 {
                     "routes": supplemental_routes,
                     "limit": supplemental_limit,
-                    "reasons": first_quality.reasons + ["always_run"],
+                    "reasons": first_quality.reasons + [supplemental_decision.reason],
                 },
             )
-            try:
-                supplemental_results = await asyncio.gather(
-                    *(run_route(route, limit=supplemental_limit) for route in supplemental_routes)
-                )
-            except Exception as e:
-                raise ToolException(code="SEARCH_FAILED", message=f"supplemental retrieval failed: {e}")
-            candidate_lists.extend(list(docs) for docs in supplemental_results)
-            fused = reciprocal_rank_fusion(
+            supplemental_stage = await run_supplemental_stage(
                 candidate_lists,
-                key_fn=self._canonical_id,
-                top_k=max(recall_k, supplemental_limit),
-                rrf_constant=DEFAULT_RRF_CONSTANT,
+                supplemental_decision,
+                lambda route: run_route(route, limit=supplemental_limit),
             )
-            merged = self._filter_candidates_for_plan(self._merge_candidates(fused), plan)
-            ranked = rank_candidates(query, merged, plan)
-            merged, ranked = apply_image_locator(merged, ranked)
-            selected = diversify_candidates(ranked, top_k=final_top_k, intent=confidence_type)
+            candidate_lists = supplemental_stage.candidate_lists
+            supplemental_search_used = supplemental_stage.used
+            if supplemental_stage.failed_routes:
+                logger.warning(
+                    "Supplemental retrieval routes failed; preserving base results: %s",
+                    list(supplemental_stage.failed_routes),
+                )
+            if supplemental_stage.used:
+                fused = reciprocal_rank_fusion(
+                    candidate_lists,
+                    key_fn=self._canonical_id,
+                    top_k=max(recall_k, supplemental_limit),
+                    rrf_constant=DEFAULT_RRF_CONSTANT,
+                )
+                merged = self._filter_candidates_for_plan(self._merge_candidates(fused), plan)
+                ranked = rank_candidates(query, merged, plan)
+                merged, ranked = apply_image_locator(merged, ranked)
+                selected = diversify_candidates(ranked, top_k=final_top_k, intent=confidence_type)
 
         selected = self._promote_section_siblings(ranked, selected, final_top_k)
         selected = self._ensure_section_image(ranked, selected, final_top_k, plan)
@@ -1620,6 +1672,7 @@ class KnowledgeRetrievalTool(BaseTool):
             document_version=document_version,
             manual_type=manual_type,
             requires_strict_evidence=plan.requires_strict_evidence,
+            aspects=question_aspects,
         )
         qualified_docs = qualification["qualified_evidence"]
         reference_docs = qualification["reference_evidence"]
@@ -1650,6 +1703,7 @@ class KnowledgeRetrievalTool(BaseTool):
             metadata["query_understanding"] = query_understanding.to_metadata()
             metadata["query_understanding_intent"] = query_understanding.intent
             metadata["query_understanding_image_mode"] = query_understanding.image_mode
+            metadata["query_understanding_selection_mode"] = query_understanding.selection_mode
             metadata["query_understanding_confidence"] = query_understanding.confidence
             # 透传 section_match_ids 给下游（api/main.py 直取通道 + review_agent 步骤校验依赖此信号）
             metadata["section_match_ids"] = sm_ids

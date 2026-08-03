@@ -16,7 +16,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.time.LocalDateTime;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -78,7 +78,7 @@ private  GraphQueryService graphQueryService;
          user.setGender(i % 2);
          user.setType(i % 10 == 0 ? 1 : 0);
          user.setPhone("138" + String.format("%08d", i % 100000000));
-         user.setHireDate(LocalDateTime.now().minusDays(i % 365));
+         user.setHireDate(LocalDate.now().minusDays(i % 365));
          list.add(user);
      }
 

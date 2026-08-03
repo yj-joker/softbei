@@ -1,0 +1,63 @@
+{
+  "fixture_name": "rag-quality-v2-conflict",
+  "description": "Two deliberately contradictory source pairs. This file is consumed offline and must never be loaded into a production store.",
+  "react_trace": [
+    {
+      "tool_calls": [
+        {
+          "name": "knowledge_retrieval",
+          "result_data": {
+            "qualified_evidence": [
+              {
+                "content": "第9页规定M8螺栓拧紧扭矩为20±2 N·m。",
+                "metadata": {
+                  "qualification": "qualified",
+                  "document_id": "kdoc_2083453722632753154",
+                  "page": 9,
+                  "chunk_id": "rag-eval-fixture-manual-m8"
+                }
+              },
+              {
+                "content": "第15页规定气缸头M10螺母第三次最终扭矩为60 N·m。",
+                "metadata": {
+                  "qualification": "qualified",
+                  "document_id": "kdoc_2083453722632753154",
+                  "page": 15,
+                  "chunk_id": "rag-eval-fixture-manual-head-m10"
+                }
+              }
+            ]
+          }
+        },
+        {
+          "name": "domain_rule_engine",
+          "result_data": {
+            "message": "隔离测试规则声称M8螺栓扭矩为25±2 N·m。",
+            "rule": {
+              "rule_id": "rag-eval-conflict-m8",
+              "status": "active"
+            },
+            "evidence_sources": [
+              {
+                "doc_id": "rag-eval-fixture-rule-source"
+              }
+            ]
+          }
+        },
+        {
+          "name": "java_graph_diagnosis_path",
+          "result_data": {
+            "raw_records": [
+              {
+                "pathId": "rag-eval-conflict-head-torque",
+                "nodeIds": ["fixture-head-m10", "fixture-torque-65"],
+                "relationshipTypes": ["HAS_TORQUE"],
+                "content": "隔离测试图谱声称气缸头M10螺母最终扭矩为65 N·m。"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

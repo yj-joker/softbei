@@ -671,6 +671,59 @@ def test_page_selector_uses_authoritative_page_records_instead_of_selected_conte
     ]
 
 
+def test_ensure_section_steps_replaces_shuffled_selected_steps_with_ordered_snapshot() -> None:
+    def step(step_number: int, *, record_id: str) -> dict:
+        return {
+            "doc_id": record_id,
+            "text": f"{step_number}. 执行第{step_number}步。",
+            "metadata": {
+                "document_id": "manual-doc",
+                "parent_section_id": "sec-tensioner",
+                "section_title": "4.4 涨紧器",
+                "section_index": 4,
+                "page": 13,
+                "source_index": step_number,
+                "child_index": step_number - 1,
+                "chunk_type": "step_raw",
+                "chunk_label": "step_raw",
+                "source_chunk_id": f"source-{step_number}",
+            },
+        }
+
+    selected = [step(4, record_id="selected-4"), step(2, record_id="selected-2")]
+    records = [
+        step(3, record_id="redis-3"),
+        step(1, record_id="redis-1"),
+        step(4, record_id="redis-4"),
+        step(2, record_id="redis-2"),
+    ]
+
+    class _VectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=30, chunk_type=None):
+            assert (document_id, parent_section_id, chunk_type) == (
+                "manual-doc",
+                "sec-tensioner",
+                "step_raw",
+            )
+            return records
+
+    plan = SimpleNamespace(intent="procedure", section_match_ids=["sec-tensioner"])
+
+    rebuilt = KnowledgeRetrievalTool._ensure_section_steps(
+        selected,
+        plan,
+        _VectorService(),
+    )
+
+    assert [item["metadata"]["source_index"] for item in rebuilt] == [1, 2, 3, 4]
+    assert [item["metadata"]["source_chunk_id"] for item in rebuilt] == [
+        "source-1",
+        "source-2",
+        "source-3",
+        "source-4",
+    ]
+
+
 if __name__ == "__main__":
     test_outline_filter_keeps_only_section_matched_tables_and_images()
     test_image_filter_keeps_text_order_and_drops_foreign_section_images()

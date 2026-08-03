@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   Aim,
@@ -24,6 +25,12 @@ import {
   submitDomainRule,
   updateDomainRule,
 } from '@/api/domainRule'
+import {
+  mergeEvidenceRefsForSave,
+  splitEvidenceRefsForEditing,
+} from '@/utils/domainRuleEvidenceRefs'
+
+const route = useRoute()
 
 const STATUS = {
   draft: { label: '草稿', type: 'info', color: 'var(--plaza-text-muted)', bar: 'var(--plaza-text-muted)' },
@@ -61,6 +68,7 @@ const filters = reactive({
 })
 
 const formRef = ref(null)
+const preservedEvidenceRefs = ref([])
 const dialog = reactive({
   show: false,
   mode: 'create',
@@ -175,6 +183,7 @@ function resetForm() {
   form.question = ''
   form.options = []
   form.evidenceRefsText = '[]'
+  preservedEvidenceRefs.value = []
   form.reviewComment = ''
   tagInput.value = ''
   optionInput.value = ''
@@ -191,7 +200,9 @@ function fillForm(rule) {
   form.conclusion = rule.conclusion || ''
   form.question = rule.question || ''
   form.options = [...(rule.options || [])]
-  form.evidenceRefsText = formatEvidenceRefs(rule.evidenceRefs || [])
+  const evidenceRefs = splitEvidenceRefsForEditing(rule.evidenceRefs || [])
+  form.evidenceRefsText = evidenceRefs.text
+  preservedEvidenceRefs.value = evidenceRefs.preserved
   form.reviewComment = rule.reviewComment || ''
 }
 
@@ -260,48 +271,10 @@ function normalizeSymptomKeys() {
   ])
 }
 
-function formatEvidenceRefs(refs) {
-  if (!Array.isArray(refs) || refs.length === 0) return ''
-  return refs.map((ref) => {
-    if (ref?.text) return ref.text
-    return [ref?.source, ref?.section, ref?.page ? `第${ref.page}页` : '']
-      .map((item) => String(item || '').trim())
-      .filter(Boolean)
-      .join(' ｜ ')
-  }).filter(Boolean).join('\n')
-}
-
-function parseEvidenceRefs(value) {
-  const text = String(value || '').trim()
-  if (!text) return []
-  if (text.startsWith('[')) {
-    const parsed = JSON.parse(text)
-    if (!Array.isArray(parsed)) {
-      throw new Error('evidence refs must be an array')
-    }
-    return parsed
-  }
-  return text.split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const parts = line.split(/[|｜]/).map((part) => part.trim()).filter(Boolean)
-      if (parts.length >= 2) {
-        const pageMatch = parts[2]?.match(/\d+/)
-        return {
-          source: parts[0],
-          section: parts[1],
-          ...(pageMatch ? { page: Number(pageMatch[0]) } : {}),
-        }
-      }
-      return { text: line }
-    })
-}
-
 function buildPayload() {
   let evidenceRefs = []
   try {
-    evidenceRefs = parseEvidenceRefs(form.evidenceRefsText)
+    evidenceRefs = mergeEvidenceRefsForSave(form.evidenceRefsText, preservedEvidenceRefs.value)
   } catch {
     ElMessage.warning('证据引用格式不正确')
     return null
@@ -487,7 +460,12 @@ function formatDate(value) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
 }
 
-onMounted(() => loadList(1))
+onMounted(async () => {
+  await loadList(1)
+  if (route.query.ruleId) {
+    await openDetail({ id: route.query.ruleId })
+  }
+})
 </script>
 
 <template>

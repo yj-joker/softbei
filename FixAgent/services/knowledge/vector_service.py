@@ -11,6 +11,7 @@ import time
 import redis
 from typing import List, Dict, Any, Optional
 from config.settings import get_settings
+from services.retrieval.provenance import dedupe_and_sort_manual_records
 
 logger = logging.getLogger(__name__)
 
@@ -646,9 +647,7 @@ class VectorService:
             if chunk_type and metadata.get("chunk_type") != chunk_type:
                 continue
             records.append(record)
-            if len(records) >= limit:
-                break
-        return records
+        return dedupe_and_sort_manual_records(records)[:limit]
 
     def get_section_records(self, document_id: str, parent_section_id: str, limit: int = 6, chunk_type: Optional[str] = None) -> List[Dict[str, Any]]:
         """Read same-section vector records for parent/child context expansion."""
@@ -726,9 +725,7 @@ class VectorService:
             if self._metadata_page_value(metadata) != page:
                 continue
             records.append(record)
-            if len(records) >= limit:
-                break
-        return records
+        return dedupe_and_sort_manual_records(records)[:limit]
 
     def get_page_records(
         self,
@@ -911,10 +908,48 @@ class VectorService:
                 offset += page_size
                 if offset >= 100000:  # 安全上限，防止异常死循环
                     break
-            return records
+            return dedupe_and_sort_manual_records(records)
         except Exception as e:
             logger.warning(f"list_document_chunks failed: document_id={document_id} err={e}")
             return []
+
+    def update_document_metadata(
+        self,
+        document_id: str,
+        updates: Dict[str, Any],
+    ) -> int:
+        """Merge identity/revision fields into every record for one document."""
+        if not document_id or not updates:
+            return 0
+        updated = 0
+        try:
+            for key in self.redis.scan_iter(match=f"{self.VECTOR_KEY_PREFIX}*", count=1000):
+                raw = self.redis.hgetall(key)
+                if not raw:
+                    continue
+                metadata_raw = raw.get(b"metadata") if b"metadata" in raw else raw.get("metadata")
+                if isinstance(metadata_raw, bytes):
+                    metadata_raw = metadata_raw.decode("utf-8")
+                try:
+                    metadata = json.loads(metadata_raw or "{}")
+                except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(metadata, dict) or str(metadata.get("document_id") or "") != document_id:
+                    continue
+                metadata.update(dict(updates))
+                self.redis.hset(
+                    key,
+                    mapping={"metadata": json.dumps(metadata, ensure_ascii=False)},
+                )
+                updated += 1
+            return updated
+        except Exception as exc:
+            logger.warning(
+                "update_document_metadata failed: document_id=%s err=%s",
+                document_id,
+                exc,
+            )
+            return 0
 
     def list_all_manifests(self) -> List[Dict[str, Any]]:
         """列出所有已导入文档的 manifest（供全量重抽使用）。"""

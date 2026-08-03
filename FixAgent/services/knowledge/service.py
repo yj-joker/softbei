@@ -19,7 +19,7 @@ import os
 import time
 import hashlib
 import logging
-from typing import List, Optional
+from typing import Any, List, Mapping, Optional
 
 from tools.document_tool import get_document_parser
 from embeddings.text_embedding import get_text_embedding
@@ -28,6 +28,10 @@ from services.file_storage import get_file_storage
 from services.knowledge.image_summary_service import get_image_summary_service
 from services.knowledge.chunking_policy import build_section_index_chunks
 from services.knowledge.vector_service import get_vector_service
+from services.retrieval.device_identity import (
+    DocumentIdentity,
+    extract_document_identity_payload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -110,7 +114,8 @@ class KnowledgeService:
         replace_existing: bool = False,
         old_document_id: Optional[str] = None,
         manual_id: Optional[int] = None,
-        progress_cb=None
+        progress_cb=None,
+        document_identity: Optional[Mapping[str, Any]] = None,
     ) -> dict:
         try:
             return await self._import_document_impl(
@@ -125,6 +130,7 @@ class KnowledgeService:
                 replace_existing=replace_existing,
                 old_document_id=old_document_id,
                 manual_id=manual_id,
+                document_identity=document_identity,
                 progress_cb=progress_cb,
             )
         except Exception as exc:
@@ -175,7 +181,8 @@ class KnowledgeService:
         replace_existing: bool = False,
         old_document_id: Optional[str] = None,
         manual_id: Optional[int] = None,
-        progress_cb=None
+        progress_cb=None,
+        document_identity: Optional[Mapping[str, Any]] = None,
     ) -> dict:
         """
         导入文档：解析 → 向量化 → 入库
@@ -193,6 +200,17 @@ class KnowledgeService:
             }
         """
         t0 = time.time()
+        requested_document_id = document_id
+        previous_manifest = (
+            self.vector_svc.get_document_manifest(document_id) or {}
+            if document_id
+            else {}
+        )
+        if old_document_id:
+            old_manifest = self.vector_svc.get_document_manifest(old_document_id) or {}
+            if self._manifest_revision(old_manifest) > self._manifest_revision(previous_manifest):
+                previous_manifest = old_manifest
+        index_revision = self._next_index_revision(previous_manifest)
 
         async def emit_progress(stage: str, percent: int):
             # 进度上报「尽力而为」：失败绝不能影响导入主流程
@@ -204,12 +222,13 @@ class KnowledgeService:
                 logger.warning("[知识导入] 进度上报失败(已忽略), stage=%s, error=%s", stage, exc)
 
         if document_id:
-            self.vector_svc.put_document_manifest(document_id, {
+            self._put_document_manifest_or_raise(document_id, {
                 "document_id": document_id,
                 "source_file_url": file_url,
                 "device_type": device_type,
                 "manual_type": manual_type,
                 "document_version": document_version,
+                "index_revision": index_revision,
                 "status": "parsing",
                 "category": category,
                 "tags": tags or [],
@@ -224,6 +243,27 @@ class KnowledgeService:
         source_file_url = self.file_storage.ensure_document_url(file_url)
 
         document_id = document_id or hashlib.md5(f"{file_name}|{file_url}".encode()).hexdigest()[:12]
+        if not requested_document_id:
+            previous_manifest = self.vector_svc.get_document_manifest(document_id) or {}
+            index_revision = self._next_index_revision(previous_manifest)
+
+        identity_payload = await self._resolve_import_document_identity(
+            file_name=file_name,
+            device_type=device_type,
+            manual_type=manual_type,
+            document_version=document_version,
+            sections=sections,
+            explicit_identity=document_identity,
+        )
+        authorized_identity = None
+        if identity_payload is not None:
+            identity_candidate = DocumentIdentity.from_manifest({
+                "document_id": document_id,
+                "document_identity": identity_payload,
+            })
+            if identity_candidate is not None:
+                authorized_identity = identity_payload
+
         doc_prefix = hashlib.md5(document_id.encode()).hexdigest()[:12]  # [:8]→[:12]：48bit，碰撞窗口推到数百万文档
         common_metadata = {
             "record_type": "manual",
@@ -234,16 +274,24 @@ class KnowledgeService:
             "device_type": device_type,
             "manual_type": manual_type,
             "document_version": document_version,
+            "device_name": (identity_payload or {}).get("device_name", ""),
+            "device_category": (identity_payload or {}).get("device_category", ""),
+            "carrier_or_application": (identity_payload or {}).get("carrier_or_application", ""),
+            "manufacturer": (identity_payload or {}).get("manufacturer", ""),
+            "model": (identity_payload or {}).get("model", ""),
+            "identity_confidence": float((identity_payload or {}).get("confidence") or 0.0),
+            "index_revision": index_revision,
         }
         if replace_existing and old_document_id:
             # 注意：不在这里立即删除旧向量，保留旧版本以便 chunk diff 可以比较两版本差异。
             # 旧向量的最终清理由 Java 端 MQ 任务（sendDeleteTask）在导入完成后异步处理。
             logger.info("replace_existing=True，旧版本向量保留至 KG 同步完成: old_document_id=%s", old_document_id)
-        self.vector_svc.put_document_manifest(document_id, {
+        self._put_document_manifest_or_raise(document_id, {
             **common_metadata,
             "status": "indexing",
             "category": category,
             "tags": tags or [],
+            **({"document_identity": authorized_identity} if authorized_identity else {}),
             **({"prev_document_id": old_document_id} if old_document_id else {}),
         })
 
@@ -891,7 +939,7 @@ class KnowledgeService:
             image_success_count, image_failed_count, image_embedding_failed_count,
             image_summary_count, image_summary_failed_count, stage_timings_ms,
         )
-        manifest_written = self.vector_svc.put_document_manifest(document_id, {
+        self._put_document_manifest_or_raise(document_id, {
             **common_metadata,
             "status": "ready",
             "category": category,
@@ -913,16 +961,14 @@ class KnowledgeService:
             "stage_timings_ms": stage_timings_ms,
             "kg_status": "pending",
             "manual_id": manual_id,
+            **({"document_identity": authorized_identity} if authorized_identity else {}),
         })
-        if not manifest_written:
-            raise RuntimeError(
-                f"failed to persist ready manifest for document {document_id}"
-            )
-
         return {
             "file_name": file_name,
             "document_id": document_id,
             "document_version": document_version,
+            "document_identity": authorized_identity,
+            "index_revision": index_revision,
             "source_file_url": source_file_url,
             "total_pages": total_pages,
             "text_count": text_count,
@@ -992,6 +1038,111 @@ class KnowledgeService:
                 "image persistence incomplete: "
                 f"{failed_count} of {expected_count} image(s) failed"
             )
+
+    async def _resolve_import_document_identity(
+        self,
+        *,
+        file_name: str,
+        device_type: Optional[str],
+        manual_type: Optional[str],
+        document_version: Optional[str],
+        sections: List[Mapping[str, Any]],
+        explicit_identity: Optional[Mapping[str, Any]],
+    ) -> Optional[dict]:
+        explicit = dict(explicit_identity or {})
+        explicit_name = str(explicit.get("device_name") or "").strip()
+        if explicit_name:
+            raw_confidence = explicit.get("identity_confidence", explicit.get("confidence"))
+            try:
+                confidence = 1.0 if raw_confidence is None else float(raw_confidence)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            payload = {
+                "device_name": explicit_name,
+                "device_type": str(device_type or explicit.get("device_type") or "").strip(),
+                "device_category": str(explicit.get("device_category") or "").strip(),
+                "carrier_or_application": str(explicit.get("carrier_or_application") or "").strip(),
+                "manufacturer": str(explicit.get("manufacturer") or "").strip(),
+                "model": str(explicit.get("model") or "").strip(),
+                "confidence": confidence,
+                "identity_source": "user_metadata",
+            }
+            aliases = [
+                str(item).strip()
+                for item in explicit.get("aliases") or []
+                if str(item).strip() and str(item).strip() != explicit_name
+            ]
+            if aliases:
+                payload["aliases"] = list(dict.fromkeys(aliases))
+            return payload
+
+        llm_service = getattr(self, "llm_svc", None)
+        if llm_service is None:
+            from services.llm.service import get_llm_service
+
+            llm_service = get_llm_service()
+        return await extract_document_identity_payload(
+            manifest={
+                "file_name": file_name,
+                "device_type": device_type,
+                "manual_type": manual_type,
+                "document_version": document_version,
+            },
+            source_items=self._document_identity_source_items(sections),
+            llm_service=llm_service,
+        )
+
+    @staticmethod
+    def _document_identity_source_items(
+        sections: List[Mapping[str, Any]],
+    ) -> List[dict]:
+        source_items = []
+        for section in sections:
+            section_title = str(section.get("section_title") or "").strip()
+            if section_title:
+                source_items.append({
+                    "text": section_title,
+                    "metadata": {"section_title": section_title},
+                })
+            for chunk in section.get("text_chunks") or []:
+                if isinstance(chunk, Mapping):
+                    source_items.append({
+                        "text": str(chunk.get("text") or ""),
+                        "metadata": {
+                            **dict(chunk.get("metadata") or {}),
+                            "section_title": section_title,
+                            "page": chunk.get("page"),
+                        },
+                    })
+                else:
+                    source_items.append({
+                        "text": str(chunk or ""),
+                        "metadata": {"section_title": section_title},
+                    })
+        return source_items
+
+    @staticmethod
+    def _next_index_revision(manifest: Mapping[str, Any]) -> int:
+        try:
+            previous_revision = int(manifest.get("index_revision") or 0)
+        except (TypeError, ValueError):
+            previous_revision = 0
+        return max(1, previous_revision + 1)
+
+    @staticmethod
+    def _manifest_revision(manifest: Mapping[str, Any]) -> int:
+        try:
+            return max(0, int(manifest.get("index_revision") or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _put_document_manifest_or_raise(
+        self,
+        document_id: str,
+        manifest: Mapping[str, Any],
+    ) -> None:
+        if not self.vector_svc.put_document_manifest(document_id, dict(manifest)):
+            raise RuntimeError(f"document manifest write failed: {document_id}")
 
     @staticmethod
     def _embed_text_for_chunk(chunk: dict) -> str:

@@ -3,6 +3,11 @@ import { aiChatStream } from '@/api/aiChat'
 import { flushSseEvents, readSseEvents } from '@/utils/sse'
 import { AI_FALLBACK_MESSAGE, isTechnicalErrorText, sanitizeAiContent, sanitizeAiErrorMessage } from '@/utils/aiErrorFallback'
 import {
+  INCOMPLETE_STREAM_ERROR_NAME,
+  INCOMPLETE_STREAM_MESSAGE,
+  ensureTerminalStreamEvent,
+} from '@/utils/chatStreamTerminal'
+import {
   createAgentTimelineStep,
   createInitialAgentProgress,
   createProgressSummary,
@@ -45,6 +50,7 @@ function createWelcomeMessage(content) {
     status: 'done',
     agentSteps: [],
     agentProgress: { text: '', running: false },
+    feedbackEligible: false,
   }
 }
 
@@ -326,6 +332,10 @@ export const aiChatStore = {
         agentSteps: [],
         agentProgress: createInitialAgentProgress(),
         latencyMs: 0,
+        responseMetadata: null,
+        persistedMessageId: null,
+        feedbackEligible: true,
+        feedback: null,
       })
       session.messages.push(assistant)
       touchSession(state, session)
@@ -345,6 +355,7 @@ export const aiChatStore = {
       const decoder = new TextDecoder()
       let buffer = ''
       let streamCompleted = false
+      let streamErrorReceived = false
       const handleEvent = (event) => {
         const data = event?.data || {}
 
@@ -393,8 +404,14 @@ export const aiChatStore = {
         if (event.event === 'done') {
           assistant.evidenceImages = Array.isArray(data.evidenceImages) ? data.evidenceImages : []
           assistant.diagnosisItems = Array.isArray(data.diagnosisItems) ? data.diagnosisItems : []
-          assistant.diagnosticFollowUp = data.diagnosticFollowUp || data.metadata?.diagnostic_follow_up || null
+          assistant.diagnosticFollowUp = data.metadata?.pending_clarification
+            || data.diagnosticFollowUp
+            || data.metadata?.diagnostic_follow_up
+            || null
           assistant.latencyMs = data.latency_ms || data.latencyMs || 0
+          assistant.responseMetadata = data.metadata || null
+          assistant.persistedMessageId = data.assistantMessageId || null
+          if (data.sessionId) session.backendSessionId = data.sessionId
           assistant.agentProgress = createProgressSummary({ ...assistant, status: 'done' }, data)
           streamCompleted = true
           return
@@ -408,6 +425,7 @@ export const aiChatStore = {
         }
 
         if (event.event === 'error') {
+          streamErrorReceived = true
           const message = sanitizeAiErrorMessage(data.message)
           fullContent = sanitizeAiContent(fullContent)
           fullContent += fullContent ? `\n\n${message}` : message
@@ -428,6 +446,10 @@ export const aiChatStore = {
         try { await reader.cancel() } catch {}
       }
       flushSseEvents(buffer, handleEvent)
+      ensureTerminalStreamEvent({
+        doneReceived: streamCompleted,
+        errorReceived: streamErrorReceived,
+      })
 
       if (!fullContent.trim() && !assistant.evidenceImages.length) fullContent = '(空响应)'
       fullContent = sanitizeAiContent(fullContent)
@@ -447,6 +469,17 @@ export const aiChatStore = {
         assistant.content = sanitizeAiContent(fullContent || assistant.content)
         assistant.status = 'stopped'
         if (!assistant.content.trim()) assistant.content = '已停止生成。'
+      } else if (error.name === INCOMPLETE_STREAM_ERROR_NAME) {
+        if (typeTimer) {
+          clearInterval(typeTimer)
+          typeTimer = null
+        }
+        assistant.status = 'error'
+        assistant.content = sanitizeAiContent(fullContent || assistant.content)
+        assistant.content = assistant.content
+          ? `${assistant.content}\n\n${INCOMPLETE_STREAM_MESSAGE}`
+          : INCOMPLETE_STREAM_MESSAGE
+        assistant.agentProgress = createProgressSummary(assistant)
       } else {
         if (typeTimer) {
           clearInterval(typeTimer)
@@ -469,5 +502,23 @@ export const aiChatStore = {
   stop(storageKey, sessionId) {
     const controller = controllers[sessionId]
     if (controller) controller.abort()
+  },
+
+  backendSessionId(storageKey, mode = 'maintenance') {
+    const state = ensure(storageKey)
+    const session = ensureModeSession(state, mode)
+    return numericSessionId(session?.backendSessionId || session?.id)
+  },
+
+  markFeedbackSubmitted(storageKey, mode, messageId, feedback) {
+    const state = ensure(storageKey)
+    const session = ensureModeSession(state, mode)
+    const message = session?.messages?.find((item) => item.id === messageId)
+    if (!message) return
+    message.feedback = {
+      id: feedback?.id || '',
+      status: feedback?.status || 'pending',
+    }
+    touchSession(state, session)
   },
 }
