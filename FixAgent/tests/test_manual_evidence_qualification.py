@@ -37,6 +37,23 @@ def test_excluded_evidence_does_not_trigger_manual_template() -> None:
     assert _format_manual_evidence_answer_from_metadata("如何更换轮胎？", _metadata("excluded")) is None
 
 
+def test_unqualified_evidence_envelope_does_not_trigger_manual_template() -> None:
+    for evidence_status in ("reference_only", "excluded"):
+        metadata = {
+            "react_trace": [{
+                "tool_calls": [{
+                    "name": "knowledge_retrieval",
+                    "result_data": {
+                        "evidence_status": evidence_status,
+                        "results": [],
+                    },
+                }],
+            }],
+        }
+
+        assert _format_manual_evidence_answer_from_metadata("如何更换轮胎？", metadata) is None
+
+
 def test_exact_section_title_can_promote_reference_record_to_direct_answer() -> None:
     metadata = {
         "react_trace": [{

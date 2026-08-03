@@ -21,6 +21,7 @@ import org.mockito.ArgumentCaptor;
 import org.redisson.api.RLock;
 import org.redisson.api.RedissonClient;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.test.util.ReflectionTestUtils;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
@@ -67,7 +68,10 @@ class KnowledgeDocumentImportIdentityTest {
         RedissonClient redisson = mock(RedissonClient.class);
         RLock lock = mock(RLock.class);
         RabbitTemplate rabbitTemplate = mock(RabbitTemplate.class);
-        KnowledgeImportProducer producer = new KnowledgeImportProducer(rabbitTemplate);
+        KnowledgeImportProducer producer = new KnowledgeImportProducer(
+                rabbitTemplate,
+                mock(StringRedisTemplate.class)
+        );
 
         KnowledgeDocumentServiceImpl service = new KnowledgeDocumentServiceImpl(
                 manualMapper,

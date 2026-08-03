@@ -60,6 +60,15 @@ def test_reference_only_envelope_has_no_grounding_evidence() -> None:
     assert build_evidence_items("knowledge_retrieval", payload) == []
 
 
+def test_reference_envelope_preserves_exact_title_provenance() -> None:
+    item = _result("reference_only")
+    item["metadata"]["original_title_match"] = True
+
+    payload = wrap_evidence_quality("knowledge_retrieval", [item])
+
+    assert payload["reference_evidence"][0]["metadata"]["original_title_match"] is True
+
+
 def test_tool_envelope_preserves_v2_coverage_without_excluded_body() -> None:
     payload = wrap_evidence_quality("knowledge_retrieval", [_result("qualified")])
 

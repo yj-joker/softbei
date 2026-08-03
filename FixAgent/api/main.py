@@ -1569,7 +1569,7 @@ def _plain_dict(value) -> dict:
     return dict(value) if isinstance(value, dict) else {}
 
 
-def _iter_trace_result_items(metadata: dict):
+def _iter_trace_tool_payloads(metadata: dict):
     trace = (metadata or {}).get("react_trace") or []
     for step in trace:
         step_data = _plain_dict(step)
@@ -1581,15 +1581,25 @@ def _iter_trace_result_items(metadata: dict):
             if result_data is None:
                 result_data = call_data.get("result")
             result_data = _plain_dict(result_data) if hasattr(result_data, "model_dump") else result_data
-            if isinstance(result_data, dict) and isinstance(result_data.get("data"), list):
-                result_data = result_data["data"]
-            elif isinstance(result_data, dict) and isinstance(result_data.get("results"), list):
-                result_data = result_data["results"]
-            if isinstance(result_data, list):
-                for item in result_data:
-                    item_data = _plain_dict(item)
-                    if item_data:
-                        yield item_data
+            yield call_data, result_data
+
+
+def _iter_payload_result_items(result_data):
+    result_data = _plain_dict(result_data) if hasattr(result_data, "model_dump") else result_data
+    if isinstance(result_data, dict) and isinstance(result_data.get("data"), list):
+        result_data = result_data["data"]
+    elif isinstance(result_data, dict) and isinstance(result_data.get("results"), list):
+        result_data = result_data["results"]
+    if isinstance(result_data, list):
+        for item in result_data:
+            item_data = _plain_dict(item)
+            if item_data:
+                yield item_data
+
+
+def _iter_trace_result_items(metadata: dict):
+    for _, result_data in _iter_trace_tool_payloads(metadata):
+        yield from _iter_payload_result_items(result_data)
 
 
 _INVENTORY_QUERY_KEYWORDS = (
@@ -3937,14 +3947,45 @@ def _has_qualified_manual_evidence(metadata: dict) -> bool:
     `qualification` field and therefore must satisfy it.
     """
     saw_qualification = False
-    for item in _iter_trace_result_items(metadata):
-        item_meta = item.get("metadata") or {}
-        qualification = item_meta.get("qualification")
-        if qualification is not None:
+    for call_data, payload in _iter_trace_tool_payloads(metadata):
+        if str(call_data.get("name") or "") not in {"", "knowledge_retrieval"}:
+            continue
+        arguments = call_data.get("arguments") or {}
+        if isinstance(arguments, dict) and arguments.get("source") == "section_text_lookup":
+            continue
+        payload_data = _plain_dict(payload)
+        evidence_status = payload_data.get("evidence_status") if payload_data else None
+        if evidence_status is not None:
             saw_qualification = True
-            if qualification == "qualified":
+            if evidence_status == "qualified":
                 return True
+            continue
+        for item in _iter_payload_result_items(payload):
+            item_meta = item.get("metadata") or {}
+            qualification = item_meta.get("qualification")
+            if qualification is not None:
+                saw_qualification = True
+                if qualification == "qualified":
+                    return True
     return not saw_qualification
+
+
+def _has_original_title_match_in_source_trace(metadata: dict) -> bool:
+    for call_data, payload in _iter_trace_tool_payloads(metadata):
+        if str(call_data.get("name") or "") not in {"", "knowledge_retrieval"}:
+            continue
+        arguments = call_data.get("arguments") or {}
+        if isinstance(arguments, dict) and arguments.get("source") == "section_text_lookup":
+            continue
+        for item in _iter_payload_result_items(payload):
+            if bool((item.get("metadata") or {}).get("original_title_match")):
+                return True
+        payload_data = _plain_dict(payload)
+        for item in payload_data.get("reference_evidence") or []:
+            item_data = _plain_dict(item)
+            if bool((item_data.get("metadata") or {}).get("original_title_match")):
+                return True
+    return False
 
 
 def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -> str | None:
@@ -3956,6 +3997,12 @@ def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -
     """
     kind = _manual_query_kind(message)
     if not kind:
+        return None
+    # Evaluate authorization before section lookup mutates the trace.  Records
+    # discovered by the fallback lookup may enrich an already-authorized
+    # answer, but must not promote excluded/reference-only source evidence.
+    source_has_exact_section_match = _has_original_title_match_in_source_trace(metadata)
+    if not _has_qualified_manual_evidence(metadata) and not source_has_exact_section_match:
         return None
     records = _manual_best_section_records(message, kind, metadata)
     if not records:

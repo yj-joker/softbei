@@ -165,6 +165,11 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
                         "document_version": (item.get("metadata") or {}).get("document_version"),
                         "chunk_id": (item.get("metadata") or {}).get("chunk_id") or item.get("doc_id") or item.get("id"),
                         "page": (item.get("metadata") or {}).get("page") or (item.get("metadata") or {}).get("page_number"),
+                        **(
+                            {"original_title_match": True}
+                            if (item.get("metadata") or {}).get("original_title_match")
+                            else {}
+                        ),
                     },
                     "summary": "检索到同类或未确认设备的参考资料；不可作为当前设备手册依据。",
                 }
