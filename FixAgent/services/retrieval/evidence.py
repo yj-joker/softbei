@@ -63,6 +63,12 @@ def determine_coverage(
         status, reason = "conflict", "unresolved_conflict"
     elif not bundle.get("qualified_evidence"):
         status, reason = "unsupported", "zero_qualified_evidence"
+    elif not supported:
+        # A record can be trustworthy for the selected document while still
+        # being irrelevant to every obligation in the user's question.
+        # "partial" is reserved for a real mixture of supported and missing
+        # aspects; zero supported aspects must fail closed.
+        status, reason = "unsupported", "zero_supported_aspects"
     elif not missing:
         status, reason = "complete", "all_aspects_supported"
     else:

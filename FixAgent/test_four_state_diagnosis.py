@@ -12,6 +12,10 @@ import asyncio
 import sys
 import httpx
 
+# 这是依赖已启动 Java/Python 服务和真实图谱数据的手工诊断脚本，
+# 不属于 pytest 单元测试集合；保留 main 入口供人工执行。
+__test__ = False
+
 sys.path.insert(0, '.')
 
 from tools.component_reverse_device_tool import get_component_reverse_device_tool

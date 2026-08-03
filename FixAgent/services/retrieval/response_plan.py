@@ -244,16 +244,24 @@ def build_response_plan(
     )
     if not missing_labels:
         missing_labels = tuple(sorted(missing_ids))
-    original_aspects = split_question_aspects(query)
+    non_user_obligation_ids = {
+        str(row.get("aspect_id"))
+        for row in support_rows
+        if row.get("aspect_id")
+        and (
+            row.get("user_obligation") is False
+            or str(row.get("aspect_origin") or "") == "retrieval_expansion"
+        )
+    }
     if (
         coverage_status == "partial"
-        and len(original_aspects) == 1
         and qualified
-        and not _has_explicit_multi_part_request(query)
-        and not any(_is_explicit_user_missing_aspect(query, label) for label in missing_labels)
+        and missing_ids
+        and missing_ids.issubset(non_user_obligation_ids)
     ):
-        # Retrieval queries may add recall-only terms such as device family or
-        # "manual text". They cannot create new user-visible answer obligations.
+        # Retrieval-only expansions may be hidden only when their provenance is
+        # explicit. Lexical differences between the user query and an expanded
+        # retrieval query are not sufficient proof that an aspect is optional.
         coverage_status = "complete"
         missing_labels = ()
     conflicts = tuple(

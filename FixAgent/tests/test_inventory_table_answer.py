@@ -17,6 +17,15 @@ from api.main import (
 )
 
 
+def _component_route(document_id: str, component: str, action: str = "查询") -> dict:
+    return {
+        "action": "grounded_retrieval",
+        "entity_role": "document_component",
+        "selected_document_id": document_id,
+        "query_contract": {"component": component, "action": action},
+    }
+
+
 def test_inventory_table_answer_uses_table_full_from_react_trace() -> None:
     metadata = {
         "react_trace": [
@@ -448,6 +457,7 @@ def test_direct_section_table_items_prefers_title_index_inventory_match(monkeypa
     monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
 
     metadata = {
+        "route_plan": _component_route("manual-doc", "气缸头"),
         "react_trace": [
             {
                 "tool_calls": [

@@ -139,10 +139,13 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                 resp.raise_for_status()
                 result = resp.json()
 
-            data = result.get("data", {})
-            records = data.get("records", [])
+            data = result.get("data") if isinstance(result, dict) else None
+            data = data if isinstance(data, dict) else {}
+            records = data.get("records") or []
+            records = records if isinstance(records, list) else []
             total = data.get("total", 0)
-            cases = data.get("cases", []) or []
+            cases = data.get("cases") or []
+            cases = cases if isinstance(cases, list) else []
 
             if not records and not cases:
                 logger.info("[graph_java_tool] 未找到匹配的诊断路径或案例")
@@ -382,7 +385,8 @@ class JavaGraphDeviceSearchTool(BaseTool):
                 resp.raise_for_status()
                 result = resp.json()
 
-            devices = result.get("data", [])
+            devices = result.get("data") if isinstance(result, dict) else None
+            devices = devices if isinstance(devices, list) else []
             formatted = []
             for device in devices:
                 formatted.append({

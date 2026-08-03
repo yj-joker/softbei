@@ -69,6 +69,30 @@ def test_reference_envelope_preserves_exact_title_provenance() -> None:
     assert payload["reference_evidence"][0]["metadata"]["original_title_match"] is True
 
 
+def test_reference_envelope_preserves_only_safe_structural_locator_fields() -> None:
+    item = _result("reference_only", "不得进入结构恢复评分的参考正文")
+    item["metadata"].update({
+        "document_id": "manual-structural",
+        "parent_section_id": "section-structural",
+        "section_match_ids": ["section-structural"],
+        "retrieval_plan_intent": "procedure",
+        "chunk_type": "step_raw",
+        "table_full": [{"name": "不得泄露的表格"}],
+        "image_url": "http://invalid/reference.png",
+    })
+
+    payload = wrap_evidence_quality("knowledge_retrieval", [item])
+
+    reference = payload["reference_evidence"][0]
+    assert reference["metadata"]["qualification"] == "reference_only"
+    assert reference["metadata"]["parent_section_id"] == "section-structural"
+    assert reference["metadata"]["section_match_ids"] == ["section-structural"]
+    assert reference["metadata"]["retrieval_plan_intent"] == "procedure"
+    assert "不得进入结构恢复评分的参考正文" not in str(reference)
+    assert "table_full" not in str(reference)
+    assert "image_url" not in str(reference)
+
+
 def test_tool_envelope_preserves_v2_coverage_without_excluded_body() -> None:
     payload = wrap_evidence_quality("knowledge_retrieval", [_result("qualified")])
 

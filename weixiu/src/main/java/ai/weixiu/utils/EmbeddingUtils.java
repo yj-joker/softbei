@@ -15,6 +15,8 @@ import java.util.Map;
 
 @Component
 public class EmbeddingUtils {
+    static final int TEXT_EMBEDDING_DIMENSIONS = 1536;
+
     private final ObjectMapper objectMapper;
     @Value("${apikey}")
     private String apiKey;
@@ -33,7 +35,7 @@ public class EmbeddingUtils {
                     .bodyValue(objectMapper.writeValueAsString(Map.of(
                             "model", "text-embedding-v4",
                             "input", text,
-                            "dimensions", 1024,
+                            "dimensions", TEXT_EMBEDDING_DIMENSIONS,
                             "encoding_format", "float"
                     )))
                     .retrieve()
@@ -61,8 +63,10 @@ public class EmbeddingUtils {
         for (JsonNode node : embeddingArray) {
             embedding.add(node.asDouble());
         }
-        if (embedding.size() != 1024) {
-            throw new EmbeddingException("文本向量维度异常，期望1024实际" + embedding.size());
+        if (embedding.size() != TEXT_EMBEDDING_DIMENSIONS) {
+            throw new EmbeddingException(
+                    "文本向量维度异常，期望" + TEXT_EMBEDDING_DIMENSIONS + "实际" + embedding.size()
+            );
         }
         return embedding;
     }

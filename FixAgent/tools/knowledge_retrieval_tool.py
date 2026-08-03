@@ -29,6 +29,10 @@ from services.retrieval.supplement import (
     run_supplemental_stage,
 )
 from services.retrieval.image_selector import PageEvidence, gated_select_pages_for_image_query
+from services.retrieval.query_constraints import (
+    candidate_constraint_conflicts,
+    extract_query_constraints,
+)
 from services.retrieval.query_understanding import has_negative_image_request, understand_query
 from services.retrieval.section_index import SectionTitleIndex
 from services.knowledge.vector_service import build_redis_filter, escape_redis_tag_value, get_vector_service
@@ -847,9 +851,12 @@ class KnowledgeRetrievalTool(BaseTool):
                 limit=PAGE_SELECTOR_LOOKUP_LIMIT,
             )
             current_image_text += " " + " ".join(cls._record_text_for_page_selector(record) for record in page_records)
-        orientation_conflict = (
-            ("右曲轴箱盖" in query and "左曲轴箱盖" in current_image_text and "右曲轴箱盖" not in current_image_text)
-            or ("左曲轴箱盖" in query and "右曲轴箱盖" in current_image_text and "左曲轴箱盖" not in current_image_text)
+        orientation_conflict = any(
+            reason.startswith("direction:")
+            for reason in candidate_constraint_conflicts(
+                extract_query_constraints(query),
+                {"content": current_image_text, "metadata": {}},
+            )
         )
         selected_has_images = any(cls._is_image_record(item) for item in selected)
         action_missing = False

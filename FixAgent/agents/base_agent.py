@@ -165,6 +165,13 @@ def wrap_evidence_quality(tool_name: str, data: Any) -> Any:
                         "document_version": (item.get("metadata") or {}).get("document_version"),
                         "chunk_id": (item.get("metadata") or {}).get("chunk_id") or item.get("doc_id") or item.get("id"),
                         "page": (item.get("metadata") or {}).get("page") or (item.get("metadata") or {}).get("page_number"),
+                        "parent_section_id": (item.get("metadata") or {}).get("parent_section_id"),
+                        "section_match_ids": list(
+                            (item.get("metadata") or {}).get("section_match_ids") or []
+                        ),
+                        "retrieval_plan_intent": (item.get("metadata") or {}).get("retrieval_plan_intent"),
+                        "chunk_type": (item.get("metadata") or {}).get("chunk_type")
+                        or (item.get("metadata") or {}).get("source_chunk_type"),
                         **(
                             {"original_title_match": True}
                             if (item.get("metadata") or {}).get("original_title_match")
