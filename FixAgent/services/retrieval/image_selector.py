@@ -12,6 +12,11 @@ import math
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Sequence
 
+from services.retrieval.query_constraints import (
+    candidate_constraint_conflicts,
+    extract_query_constraints,
+)
+
 
 @dataclass(frozen=True)
 class PageEvidence:
@@ -154,11 +159,11 @@ def _query_actions(query: str) -> List[str]:
 
 
 def _orientation_penalty(query: str, text: str) -> float:
-    if "右曲轴箱盖" in query and "左曲轴箱盖" in text and "右曲轴箱盖" not in text:
-        return -8.0
-    if "左曲轴箱盖" in query and "右曲轴箱盖" in text and "左曲轴箱盖" not in text:
-        return -8.0
-    return 0.0
+    conflicts = candidate_constraint_conflicts(
+        extract_query_constraints(query),
+        {"content": text, "metadata": {}},
+    )
+    return -1000.0 if any(reason.startswith("direction:") for reason in conflicts) else 0.0
 
 
 def _inventory_bonus(query: str, text: str) -> float:

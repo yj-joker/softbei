@@ -143,6 +143,11 @@ def test_direct_section_images_follow_answer_procedure_scope(monkeypatch) -> Non
     monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
     metadata = {
         "original_user_message": "如何安装离合器",
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+        },
         "_deterministic_answer_procedure_scope_id": "proc:install-clutch",
         "react_trace": [{
             "tool_calls": [{
@@ -419,6 +424,44 @@ def test_collect_direct_evidence_page_images_renders_page_when_indexed_image_is_
     )
 
     assert [image.source_chunk_id for image in images] == ["rendered-page:manual-doc:21"]
+
+
+def test_collect_direct_evidence_page_images_rebinds_misbound_image_from_page_local_visual_context() -> None:
+    class FakeVectorService:
+        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
+            assert document_id == "manual-doc"
+            assert page == 28
+            assert chunk_type == "image"
+            return [{
+                "id": "image-misbound-to-adjacent-section",
+                "content": "7.9 安装星门护罩 第28页插图",
+                "metadata": {
+                    "chunk_type": "image",
+                    "document_id": "manual-doc",
+                    "page": 28,
+                    "section_title": "7.9 安装星门护罩",
+                    "image_url": "http://example.test/page28.png",
+                    "visual_context_text": (
+                        "7.8 拆卸星门护罩。依次松开护罩紧固件，取下星门护罩。"
+                    ),
+                },
+            }]
+
+    metadata = {
+        "original_user_message": "如何拆卸星门护罩？",
+        "_deterministic_answer_evidence_pages": [28],
+        "_deterministic_answer_document_ids": ["manual-doc"],
+        "_deterministic_answer_section_title": "7.8 拆卸星门护罩",
+    }
+
+    images = _collect_direct_evidence_page_images(
+        metadata,
+        vector_service=FakeVectorService(),
+    )
+
+    assert [image.source_chunk_id for image in images] == [
+        "image-misbound-to-adjacent-section"
+    ]
 
 
 def test_collect_direct_evidence_page_images_renders_page_when_indexed_images_do_not_match_query(monkeypatch) -> None:
@@ -953,6 +996,114 @@ def test_query_target_page_narrowing_drops_neighbor_substeps_from_expanded_text_
     assert [image.page for image in narrowed] == [19]
 
 
+def test_query_target_page_narrowing_uses_dynamic_route_component_over_misleading_image_context() -> None:
+    class FakeVectorService:
+        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
+            contexts = {
+                41: "章节总览误带星门耦联簧字样",
+                42: "目标部件作业位置图",
+            }
+            return [
+                {
+                    "id": f"img-{page}",
+                    "metadata": {
+                        "chunk_type": "image",
+                        "document_id": document_id,
+                        "page": page,
+                        "image_url": f"http://example.test/p{page}.png",
+                        "visual_context_text": contexts[page],
+                    },
+                }
+            ]
+
+    metadata = {
+        "original_user_message": "苍穹装置作业时星门耦联簧如何处理？",
+        "route_plan": {
+            "query_contract": {
+                "component": "星门耦联簧",
+                "action": "处理",
+                "orientation": "",
+            }
+        },
+        "_deterministic_answer_evidence_pages": [41, 42],
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": [
+                            {
+                                "content": "准备苍穹装置并检查通用连接。",
+                                "metadata": {"chunk_type": "text", "page": 41},
+                            },
+                            {
+                                "content": "处理星门耦联簧并确认固定状态。",
+                                "metadata": {"chunk_type": "text", "page": 42},
+                            },
+                        ],
+                    }
+                ]
+            }
+        ],
+    }
+    images = [
+        EvidenceImage(
+            image_url="http://example.test/p41.png",
+            page=41,
+            document_id="manual-doc",
+            source_chunk_id="img-41",
+        ),
+        EvidenceImage(
+            image_url="http://example.test/p42.png",
+            page=42,
+            document_id="manual-doc",
+            source_chunk_id="img-42",
+        ),
+    ]
+
+    narrowed = _narrow_evidence_images_to_query_target_pages(
+        images,
+        metadata,
+        vector_service=FakeVectorService(),
+    )
+
+    assert [image.page for image in narrowed] == [42]
+
+
+def test_query_target_page_narrowing_prefers_specific_labels_over_coarse_component() -> None:
+    metadata = {
+        "original_user_message": "安装星门护罩时K口、M区和Q槽的防护剂分别有什么要求？",
+        "route_plan": {
+            "query_contract": {
+                "component": "星门护罩",
+                "action": "安装",
+                "orientation": "",
+            }
+        },
+        "_deterministic_answer_evidence_pages": [41, 42],
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [
+                    {
+                        "content": "安装星门护罩并紧固连接件。",
+                        "metadata": {"chunk_type": "step_raw", "page": 41},
+                    },
+                    {
+                        "content": "K口不得涂防护剂；M区薄涂；Q槽均匀涂抹。",
+                        "metadata": {"chunk_type": "parameter", "page": 42},
+                    },
+                ],
+            }],
+        }],
+    }
+    images = [_img(41), _img(42)]
+
+    narrowed = _narrow_evidence_images_to_query_target_pages(images, metadata)
+
+    assert [image.page for image in narrowed] == [42]
+
+
 def test_query_target_page_narrowing_drops_adjacent_same_section_substep() -> None:
     metadata = {
         "original_user_message": "拆卸发动机时排放机油要拆哪两个放油螺栓？",
@@ -1114,6 +1265,13 @@ def test_section_overview_uses_visual_context_to_choose_cross_page_inventory_ima
         "original_user_message": (
             "离合器、机油泵装配零件清单里φ10×14空心定位销和O型圈数量是多少？"
         ),
+        "route_plan": {
+            "query_contract": {
+                "component": "φ10×14空心定位销,O型圈",
+                "action": "",
+                "orientation": "",
+            }
+        },
         "_deterministic_answer_evidence_pages": [23],
         "_deterministic_answer_section_title": title,
         "query_understanding_selection_mode": "section_overview",
@@ -1148,9 +1306,174 @@ def test_section_overview_uses_visual_context_to_choose_cross_page_inventory_ima
     assert [image.page for image in selected] == [24]
 
 
+def test_image_context_prefers_page_local_visual_text_over_cross_page_record_content() -> None:
+    class FakeVectorService:
+        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
+            return [
+                {
+                    "id": "image-41",
+                    "content": "跨页检索正文误带下一页的星门耦联簧",
+                    "metadata": {
+                        "chunk_type": "image",
+                        "document_id": document_id,
+                        "page": page,
+                        "image_url": "http://example.test/p41.png",
+                        "visual_context_text": "本页只展示苍穹装置总览",
+                    },
+                }
+            ]
+
+    image = EvidenceImage(
+        image_url="http://example.test/p41.png",
+        page=41,
+        document_id="manual-doc",
+        source_chunk_id="image-41",
+    )
+
+    context = api_main._image_context_for_action_filter(
+        image,
+        vector_service=FakeVectorService(),
+    )
+
+    assert "本页只展示苍穹装置总览" in context
+    assert "星门耦联簧" not in context
+
+
 def test_inventory_image_anchor_stops_at_first_requested_part_suffix() -> None:
     anchors = _image_specific_anchor_terms(
         "零件清单里φ10×14空心定位销和O型圈数量是多少？"
     )
 
     assert "φ10×14空心定位销" in anchors
+
+
+def test_image_anchor_extraction_is_not_limited_to_known_component_terms() -> None:
+    anchors = _image_specific_anchor_terms(
+        "安装星门护罩时K口、M区和Q槽的防护剂分别有什么要求？"
+    )
+
+    assert {"k口", "m区", "q槽"}.issubset(set(anchors))
+
+
+def test_complete_cross_page_inventory_keeps_rendered_missing_page() -> None:
+    """完整跨页清单缺少内嵌图时，页面截图仍属于必要证据图。"""
+    title = "5.1 某总成装配部件清单"
+    images = [
+        EvidenceImage(
+            image_url="http://example.test/p17.png",
+            caption=f"{title} 第17页插图",
+            page=17,
+            section_title=title,
+            document_id="manual-doc",
+            source_chunk_id="image-p17",
+        ),
+        EvidenceImage(
+            image_url="http://example.test/rendered-p18.png",
+            caption="第18页页面截图",
+            page=18,
+            section_title=title,
+            document_id="manual-doc",
+            source_chunk_id="rendered-page:manual-doc:18",
+            context_role="page_render",
+        ),
+    ]
+    metadata = {
+        "original_user_message": "查询某总成装配部件清单",
+        "deterministic_table_answer": True,
+        "_deterministic_answer_table_complete": True,
+        "_deterministic_answer_evidence_pages": [17, 18],
+        "_deterministic_answer_section_title": title,
+        "allowed_document_ids": ["manual-doc"],
+        "query_understanding_selection_mode": "evidence_pages",
+        "response_policy": {"images_allowed": True},
+    }
+
+    selected = _select_evidence_images_for_response(images, metadata)
+
+    assert [image.page for image in selected] == [17, 18]
+
+
+def test_direct_section_images_read_qualified_results_from_evidence_envelope(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=20, chunk_type=None):
+            assert document_id == "manual-doc"
+            assert section_id == "section-target"
+            assert chunk_type == "image"
+            return [{
+                "id": "image-target",
+                "metadata": {
+                    "chunk_type": "image",
+                    "document_id": document_id,
+                    "parent_section_id": section_id,
+                    "page": 18,
+                    "image_url": "http://example.test/target.png",
+                },
+            }]
+
+    from services.knowledge import vector_service as vector_service_module
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    metadata = {
+        "original_user_message": "查询某总成装配部件清单",
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+        },
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": {
+                    "evidence_status": "qualified",
+                    "results": [{
+                        "id": "table-target",
+                        "content": "某总成装配部件清单",
+                        "metadata": {
+                            "qualification": "qualified",
+                            "retrieval_plan_intent": "outline",
+                            "document_id": "manual-doc",
+                            "parent_section_id": "section-target",
+                            "section_match_ids": ["section-target"],
+                            "chunk_type": "table",
+                            "context_role": "primary",
+                        },
+                    }],
+                    "reference_evidence": [],
+                },
+            }],
+        }],
+    }
+
+    images = asyncio.run(api_main._collect_direct_section_images(metadata))
+
+    assert [(image.page, image.source_chunk_id) for image in images] == [(18, "image-target")]
+
+
+def test_direct_section_images_do_not_lookup_without_resolved_route(monkeypatch) -> None:
+    class UnexpectedVectorService:
+        def get_section_records(self, *args, **kwargs):
+            raise AssertionError("未解析路由时不得执行章节图片补查")
+
+    from services.knowledge import vector_service as vector_service_module
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: UnexpectedVectorService())
+    metadata = {
+        "original_user_message": "查询某总成装配部件清单",
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [{
+                    "content": "某总成装配部件清单",
+                    "metadata": {
+                        "retrieval_plan_intent": "outline",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "section-target",
+                        "section_match_ids": ["section-target"],
+                        "chunk_type": "table",
+                    },
+                }],
+            }],
+        }],
+    }
+
+    assert asyncio.run(api_main._collect_direct_section_images(metadata)) == []

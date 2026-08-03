@@ -8,6 +8,7 @@ import ai.weixiu.service.GraphQueryService;
 import ai.weixiu.utils.BuildStringUtils;
 import ai.weixiu.utils.ExcelUtils;
 import com.alibaba.excel.EasyExcel;
+import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -21,6 +22,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 @SpringBootTest
+@Disabled("手工集成脚本：依赖本地完整服务与 D:/test_users.xlsx，不纳入默认单元测试")
 class WeixiuApplicationTests {
 private final BuildStringUtils buildStringUtils=new BuildStringUtils();
 @Autowired

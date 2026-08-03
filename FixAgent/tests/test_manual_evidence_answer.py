@@ -9,6 +9,7 @@ from types import SimpleNamespace
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.main import (
+    _direct_manual_text_supports_query,
     _direct_manual_text_supports_aspect,
     _format_manual_evidence_answer_from_metadata,
     _manual_action_target,
@@ -20,12 +21,100 @@ from api.main import (
 )
 
 
+def _component_route(document_id: str, component: str, action: str) -> dict:
+    return {
+        "action": "grounded_retrieval",
+        "entity_role": "document_component",
+        "selected_document_id": document_id,
+        "query_contract": {"component": component, "action": action},
+    }
+
+
 def test_manual_query_action_recognizes_adjustment_family() -> None:
     assert _manual_query_action("如何调整气门间隙？") == "调整"
     assert _manual_query_action("怎样调节气门间隙？") == "调整"
     assert _manual_query_action("校正气门间隙的步骤") == "调整"
     assert _manual_action_target("怎样调节气门间隙？", "调整") == "气门间隙"
     assert _manual_query_kind("怎样调节气门间隙？") == "procedure"
+
+
+def test_authorized_structural_lookup_initializes_vector_service_lazily(monkeypatch) -> None:
+    """章节恢复不能依赖此前是否碰巧执行过其他检索工具。"""
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=80, chunk_type=None):
+            assert document_id == "manual-doc"
+            assert parent_section_id == "sec-actuator"
+            return [
+                {
+                    "doc_id": "step-1",
+                    "text": "1. 先释放执行机构中的残余压力。",
+                    "metadata": {
+                        "chunk_type": "step_raw",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec-actuator",
+                        "section_title": "4.2 拆卸执行机构",
+                        "page": 8,
+                    },
+                },
+                {
+                    "doc_id": "step-2",
+                    "text": "2. 再对角松开固定螺栓。",
+                    "metadata": {
+                        "chunk_type": "step_raw",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec-actuator",
+                        "section_title": "4.2 拆卸执行机构",
+                        "page": 8,
+                    },
+                },
+            ]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            assert isinstance(vector_service, FakeVectorService)
+
+        def find(self, query):
+            return [
+                SimpleNamespace(
+                    document_id="manual-doc",
+                    section_id="sec-actuator",
+                )
+            ]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    fake_service = FakeVectorService()
+
+    def get_vector_service():
+        return fake_service
+
+    monkeypatch.setattr(vector_service_module, "_vector_service", None)
+    monkeypatch.setattr(vector_service_module, "get_vector_service", get_vector_service)
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "route_plan": _component_route("manual-doc", "执行机构", "拆卸"),
+        "scope_decision": {"document_id": "manual-doc"},
+    }
+
+    answer = _format_manual_evidence_answer_from_metadata("如何拆卸执行机构？", metadata)
+
+    assert answer is not None
+    assert answer.index("先释放执行机构中的残余压力") < answer.index("再对角松开固定螺栓")
+
+
+def test_direct_manual_support_allows_source_modifiers_inside_query_anchor() -> None:
+    direct_text = (
+        "4.2 拆卸执行机构\n"
+        "2. 松开执行机构所有固定螺栓：先松下部，再对角松上部。"
+    )
+
+    assert _direct_manual_text_supports_query(
+        direct_text,
+        "拆卸执行机构时松开固定螺栓，是先松上部还是下部？",
+    )
 
 
 def test_exact_title_matches_outrank_seed_retrieval_section_labels(monkeypatch) -> None:
@@ -53,6 +142,7 @@ def test_exact_title_matches_outrank_seed_retrieval_section_labels(monkeypatch) 
         },
     }
     metadata = {
+        "route_plan": _component_route("manual-doc", "气门间隙", "调整"),
         "react_trace": [{
             "tool_calls": [{
                 "name": "knowledge_retrieval",
@@ -64,7 +154,7 @@ def test_exact_title_matches_outrank_seed_retrieval_section_labels(monkeypatch) 
     monkeypatch.setattr(
         api_main,
         "_manual_title_match_records",
-        lambda message: ([correct], {"sec-valve-gap"}),
+        lambda message, document_id="": ([correct], {"sec-valve-gap"}),
     )
     monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
     monkeypatch.setattr(
@@ -75,8 +165,8 @@ def test_exact_title_matches_outrank_seed_retrieval_section_labels(monkeypatch) 
             + (80 if records[0]["metadata"]["parent_section_id"] in bonus_ids else 0)
         ),
     )
-    monkeypatch.setattr(api_main, "_manual_expand_same_section_records", lambda records, ids: records)
-    monkeypatch.setattr(api_main, "_manual_expand_page_boundary_records", lambda records, ids: records)
+    monkeypatch.setattr(api_main, "_manual_expand_same_section_records", lambda records, ids, **kwargs: records)
+    monkeypatch.setattr(api_main, "_manual_expand_page_boundary_records", lambda records, ids, **kwargs: records)
 
     records = _manual_best_section_records("如何调整气门间隙？", "procedure", metadata)
 
@@ -140,17 +230,17 @@ def test_retrieval_expansion_after_action_uses_the_preceding_operation_target() 
 def test_explicit_operation_detail_keeps_the_complete_document_subflow(monkeypatch) -> None:
     from api import main as api_main
 
-    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda message: ([], set()))
+    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda message, document_id="": ([], set()))
     monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
     monkeypatch.setattr(
         api_main,
         "_manual_expand_same_section_records",
-        lambda records, section_ids: records,
+        lambda records, section_ids, **kwargs: records,
     )
     monkeypatch.setattr(
         api_main,
         "_manual_expand_page_boundary_records",
-        lambda records, section_ids: records,
+        lambda records, section_ids, **kwargs: records,
     )
     metadata = {
         "react_trace": [{
@@ -325,7 +415,13 @@ def test_directional_cover_install_answer_stays_on_target_procedure_page(monkeyp
     monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
     monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
 
-    answer = _format_manual_evidence_answer_from_metadata("如何安装右曲轴箱盖", {"react_trace": []})
+    answer = _format_manual_evidence_answer_from_metadata(
+        "如何安装右曲轴箱盖",
+        {
+            "route_plan": _component_route("manual-doc", "右曲轴箱盖", "安装"),
+            "react_trace": [],
+        },
+    )
 
     assert answer is not None
     assert "检查曲轴油封" in answer
@@ -459,7 +555,10 @@ def test_manual_evidence_answer_selects_only_matching_procedure_subflow(monkeypa
 
     monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
     monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
-    metadata = {"react_trace": []}
+    metadata = {
+        "route_plan": _component_route("manual-doc", "离合器", "安装"),
+        "react_trace": [],
+    }
 
     answer = _format_manual_evidence_answer_from_metadata("如何安装离合器", metadata)
 
@@ -554,7 +653,13 @@ def test_manual_evidence_answer_cuts_off_next_subflow_heading(monkeypatch) -> No
     monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
     monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
 
-    answer = _format_manual_evidence_answer_from_metadata("如何拆卸离合器", {"react_trace": []})
+    answer = _format_manual_evidence_answer_from_metadata(
+        "如何拆卸离合器",
+        {
+            "route_plan": _component_route("manual-doc", "离合器", "拆卸"),
+            "react_trace": [],
+        },
+    )
 
     assert answer is not None
     assert answer.index("1. 取下顶杆轴套组件") < answer.index("2. 松开离合器螺母")
@@ -1080,6 +1185,7 @@ def test_manual_evidence_answer_expands_same_section_steps(monkeypatch) -> None:
     monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
 
     metadata = {
+        "route_plan": _component_route("manual-doc", "起动电机", "安装"),
         "react_trace": [
             {
                 "tool_calls": [
@@ -1232,17 +1338,17 @@ def test_manual_evidence_answer_prefers_specific_title_once_and_keeps_pre_instal
 def test_manual_evidence_answer_stops_at_opposite_action_heading(monkeypatch) -> None:
     from api import main as api_main
 
-    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda message: ([], set()))
+    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda message, document_id="": ([], set()))
     monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
     monkeypatch.setattr(
         api_main,
         "_manual_expand_same_section_records",
-        lambda records, section_match_ids: records,
+        lambda records, section_match_ids, **kwargs: records,
     )
     monkeypatch.setattr(
         api_main,
         "_manual_expand_page_boundary_records",
-        lambda records, section_match_ids: records,
+        lambda records, section_match_ids, **kwargs: records,
     )
     metadata = {
         "react_trace": [
@@ -1351,6 +1457,7 @@ def test_manual_evidence_answer_rescues_original_title_match_when_tool_query_dri
     monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
 
     metadata = {
+        "route_plan": _component_route("manual-doc", "气门", "安装"),
         "react_trace": [
             {
                 "tool_calls": [
@@ -1552,7 +1659,10 @@ def test_manual_evidence_answer_uses_entities_after_action_clause(monkeypatch) -
 
     answer = _format_manual_evidence_answer_from_metadata(
         "安装右盖时曲轴油封和离合器拉杆要注意什么？",
-        {"react_trace": []},
+        {
+            "route_plan": _component_route("manual-doc", "右盖", "安装"),
+            "react_trace": [],
+        },
     )
 
     assert answer is not None
@@ -2599,6 +2709,7 @@ def test_manual_evidence_answer_includes_page_boundary_records_with_target_title
     monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
 
     metadata = {
+        "route_plan": _component_route("manual-doc", "曲轴与平衡轴", "检查"),
         "react_trace": [
             {
                 "tool_calls": [

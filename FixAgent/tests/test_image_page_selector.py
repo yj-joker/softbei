@@ -83,6 +83,19 @@ def test_same_section_keeps_right_cover_sealant_pages_and_rejects_left_cover() -
     assert selected == [26, 27]
 
 
+def test_directional_penalty_is_component_agnostic() -> None:
+    selected = select_pages_for_image_query(
+        "安装右侧液压护罩密封胶涂抹图示",
+        [
+            _page(41, "安装右侧液压护罩"),
+            _page(42, "安装左侧液压护罩 密封胶涂抹图示"),
+        ],
+        image_mode="single_best",
+    )
+
+    assert selected == [41]
+
+
 def test_single_best_can_choose_second_page_of_cross_page_parts_list() -> None:
     selected = select_pages_for_image_query(
         "右曲轴箱盖装配清单中O型圈和定位销图片是哪张",

@@ -159,6 +159,46 @@ def test_in_scope_maintenance_waits_for_retrieval_before_deciding_evidence_statu
     assert policy.allow_knowledge_retrieval is True
 
 
+def test_in_scope_unsupported_fault_cause_allows_safe_ai_fallback_after_retrieval() -> None:
+    decision = IntentDecision(
+        target_layer="document_content",
+        intent="fault_diagnosis",
+        task_action="find_cause",
+        requires_knowledge_retrieval=True,
+        requires_manual_evidence=True,
+    )
+    policy = derive_response_policy(
+        decision,
+        {"status": "in_scope", "reason": "document_confirmed"},
+        {"coverage_status": "unsupported"},
+        query="摩托车发动机异响是什么原因？",
+    )
+
+    assert policy.mode == MAINTENANCE_AI_FALLBACK
+    assert policy.allow_ai_fallback is True
+    assert policy.manual_citation_allowed is False
+    assert policy.images_allowed is False
+
+
+def test_in_scope_unsupported_installation_still_blocks_ai_operation_steps() -> None:
+    decision = IntentDecision(
+        target_layer="operation_task",
+        intent="maintenance_guidance",
+        task_action="repair_guidance",
+        requires_knowledge_retrieval=True,
+        requires_manual_evidence=True,
+    )
+    policy = derive_response_policy(
+        decision,
+        {"status": "in_scope", "reason": "document_confirmed"},
+        {"coverage_status": "unsupported"},
+        query="如何安装未知型号的制动总泵？",
+    )
+
+    assert policy.mode == INSUFFICIENT_EVIDENCE
+    assert policy.allow_ai_fallback is False
+
+
 def test_unknown_explicit_document_is_blocked_instead_of_full_library_fallback() -> None:
     decision = IntentDecision(
         target_layer="document_content",

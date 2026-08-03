@@ -400,11 +400,109 @@ def _map_aspect_support(
 def _aspect_matches(aspect: QuestionAspect, text: str) -> bool:
     aspect_text = canonical_aspect_text(aspect.text)
     candidate_text = _normalize_compact(text)
-    return bool(
-        aspect_text
-        and candidate_text
-        and (aspect_text in candidate_text or candidate_text in aspect_text)
-    )
+    if not aspect_text or not candidate_text:
+        return False
+    if aspect_text in candidate_text or candidate_text in aspect_text:
+        return True
+
+    raw_terms = [
+        _normalize_compact(term)
+        for term in re.split(r"[\s,，、/|;；]+", str(aspect.text or ""))
+        if _normalize_compact(term)
+    ]
+    if len(raw_terms) <= 1:
+        aspect_bigrams = {
+            aspect_text[index:index + 2]
+            for index in range(len(aspect_text) - 1)
+        }
+        matched_bigrams = sum(
+            1 for gram in aspect_bigrams if gram in candidate_text
+        )
+        return bool(
+            len(aspect_bigrams) >= 4
+            and matched_bigrams >= 4
+            and matched_bigrams / len(aspect_bigrams) >= 0.6
+        )
+
+    required_slots = {
+        slot
+        for slot, markers in _ASPECT_SLOT_QUERY_MARKERS.items()
+        if any(marker in aspect_text for marker in markers)
+    }
+    if any(not _candidate_supports_slot(slot, candidate_text, text) for slot in required_slots):
+        return False
+
+    entity_terms = [
+        term for term in raw_terms
+        if not _is_aspect_operator_term(term)
+    ]
+    if not entity_terms:
+        return False
+    matched_terms = [
+        term for term in entity_terms
+        if _semantic_term_matches_candidate(term, candidate_text)
+    ]
+    required_matches = 1 if len(entity_terms) == 1 else 2
+    return len(matched_terms) >= required_matches
+
+
+_ASPECT_SLOT_QUERY_MARKERS = {
+    "quantity": ("数量", "几件", "几个", "几只", "几颗"),
+    "torque": ("扭矩", "力矩", "扭力", "校正力", "预紧力"),
+    "orientation": (
+        "方向", "朝向", "朝哪", "朝上", "朝下", "朝内", "朝外",
+        "密距端", "疏距端", "顺时针", "逆时针", "对齐", "对正", "标记",
+    ),
+    "location": ("位置", "哪里", "何处", "哪边", "插入位置"),
+}
+
+_ASPECT_OPERATOR_TERMS = {
+    "装配", "安装", "拆卸", "拆下", "检查", "测量", "调整", "更换",
+    "零件清单", "部件清单", "装配清单", "操作方法", "操作步骤", "步骤",
+    "数量", "扭矩", "力矩", "扭力", "校正力", "预紧力", "标准值", "要求",
+    "安装方向", "方向", "朝向", "密距端", "疏距端", "位置", "插入位置",
+    "顺时针", "逆时针", "对齐", "对正", "标记",
+}
+
+
+def _is_aspect_operator_term(term: str) -> bool:
+    return term in _ASPECT_OPERATOR_TERMS
+
+
+def _candidate_supports_slot(slot: str, candidate_text: str, raw_text: str) -> bool:
+    if slot == "quantity":
+        return bool(re.search(r"(?:数量|共|合计)[=:：]?\d+", candidate_text))
+    if slot == "torque":
+        return bool(
+            any(marker in candidate_text for marker in ("扭矩", "力矩", "扭力", "校正力", "预紧力"))
+            or re.search(r"\d(?:\.\d+)?(?:±\d(?:\.\d+)?)?n[·.]?m", candidate_text, flags=re.IGNORECASE)
+        )
+    if slot == "orientation":
+        return any(
+            marker in candidate_text
+            for marker in (
+                "朝上", "朝下", "朝内", "朝外", "朝前", "朝后", "方向",
+                "顺时针", "逆时针", "对齐", "对正", "平齐", "标记",
+            )
+        )
+    if slot == "location":
+        return any(
+            marker in candidate_text
+            for marker in ("插入", "位于", "之间", "位置", "孔", "槽", "处", "上", "下", "侧", "端")
+        )
+    return False
+
+
+def _semantic_term_matches_candidate(term: str, candidate_text: str) -> bool:
+    if term in candidate_text:
+        return True
+    if len(term) < 4:
+        return False
+    term_bigrams = {term[index:index + 2] for index in range(len(term) - 1)}
+    if not term_bigrams:
+        return False
+    matched = sum(1 for gram in term_bigrams if gram in candidate_text)
+    return matched / len(term_bigrams) >= 0.6
 
 
 def _candidate_text(item: Dict[str, Any]) -> str:

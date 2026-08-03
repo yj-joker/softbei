@@ -15,11 +15,9 @@ class QueryConstraints:
     forbidden_actions: tuple[str, ...] = ()
 
 
-_DIRECTION_PAIRS = (
-    ("右曲轴箱盖", "左曲轴箱盖"),
-    ("左曲轴箱盖", "右曲轴箱盖"),
-    ("右盖", "左盖"),
-    ("左盖", "右盖"),
+_DIRECTION_MARKER_PAIRS = (
+    ("右", "左"),
+    ("左", "右"),
 )
 
 _ACTION_PAIRS = (
@@ -34,7 +32,7 @@ def extract_query_constraints(query: str) -> QueryConstraints:
     compact = _compact(query)
     required: list[str] = []
     forbidden: list[str] = []
-    for expected, opposite in _DIRECTION_PAIRS:
+    for expected, opposite in _DIRECTION_MARKER_PAIRS:
         expected_present = _compact(expected) in compact
         opposite_present = _compact(opposite) in compact
         if expected_present and opposite_present:

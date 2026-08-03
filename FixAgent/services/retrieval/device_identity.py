@@ -30,7 +30,6 @@ _HARD_CONFLICT_FIELDS = (
     "manufacturer",
     "model",
 )
-_COMPONENT_CATEGORY_SUFFIXES = ("部件", "组件", "零件", "总成")
 
 
 def _text(value: Any) -> str:
@@ -105,42 +104,21 @@ class QueryContract:
             if value
         }
         normalized_span = _normalized(raw_span)
-        normalized_component = _normalized(component)
-        normalized_category = _normalized(data.get("device_category"))
-        category_is_component_like = any(
-            normalized_category.endswith(_normalized(suffix))
-            for suffix in _COMPONENT_CATEGORY_SUFFIXES
-        )
-        component_remainder_length = len(normalized_span) - len(normalized_component)
-        component_with_short_modifier = bool(
-            normalized_span
-            and normalized_component
-            and category_is_component_like
-            and 0 < component_remainder_length <= 2
-            and (
-                normalized_span.startswith(normalized_component)
-                or normalized_span.endswith(normalized_component)
-            )
-        )
         has_identity_qualifier = bool(
             _text(data.get("carrier_or_application"))
             or _text(data.get("manufacturer"))
             or _text(data.get("model"))
         )
-        operation_target_is_component = bool(
-            category_is_component_like
-            and _is_grounded_operation_target(query, data.get("action"), raw_span)
-        )
         if (
             span_is_grounded
+            and not has_identity_qualifier
             and (
                 normalized_span in component_forms
-                or component_with_short_modifier
-                or operation_target_is_component
+                or _is_grounded_operation_target(query, data.get("action"), raw_span)
             )
-            and not has_identity_qualifier
         ):
             span_is_grounded = False
+            data["identity_resolution"] = "confirmed_absent"
         if not span_is_grounded:
             raw_span = ""
             for field in ("device_name", *_IDENTITY_FIELDS):

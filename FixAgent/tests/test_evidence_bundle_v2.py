@@ -126,6 +126,96 @@ def test_interrogative_suffix_does_not_hide_supported_single_aspect() -> None:
     assert bundle["missing_aspect_ids"] == []
 
 
+def test_spaced_semantic_aspect_is_supported_by_matching_manual_fact() -> None:
+    aspects = [_aspect("starter-nut", "起动电机 装配 正极线 螺母 数量 扭矩")]
+    bundle = _bundle(
+        [_candidate(
+            "starter-nut-row",
+            content="零件名称=正极线螺母；数量=1；工具/扭矩要求=10#套筒 / 5±1.5 N·m",
+        )],
+        aspects,
+    )
+
+    assert bundle["coverage_status"] == "complete"
+    assert bundle["supported_aspect_ids"] == ["starter-nut"]
+
+
+def test_semantic_aspect_does_not_accept_unrelated_same_section_row() -> None:
+    aspects = [_aspect("starter-nut", "起动电机 装配 正极线 螺母 数量 扭矩")]
+    bundle = _bundle(
+        [_candidate(
+            "starter-motor-row",
+            content="零件名称=起动电机；数量=1",
+        )],
+        aspects,
+    )
+
+    assert bundle["coverage_status"] == "unsupported"
+    assert bundle["supported_aspect_ids"] == []
+
+
+def test_direction_aspect_accepts_equivalent_manual_wording() -> None:
+    aspects = [_aspect("spring-direction", "气门弹簧 安装方向 密距端 疏距端")]
+    bundle = _bundle(
+        [_candidate(
+            "spring-direction-step",
+            content="气门弹簧间距较密的一端必须朝下安装。",
+        )],
+        aspects,
+    )
+
+    assert bundle["coverage_status"] == "complete"
+    assert bundle["supported_aspect_ids"] == ["spring-direction"]
+
+
+def test_location_aspect_accepts_named_mounting_location() -> None:
+    aspects = [_aspect(
+        "coolant-location",
+        "发动机 拆卸 冷却液 排放 位置 右水箱盖 打开时机",
+    )]
+    bundle = _bundle(
+        [_candidate(
+            "coolant-drain-step",
+            content=(
+                "排放冷却液：拆下水泵盖上的放水螺栓。"
+                "当水流变小时，打开右水箱盖，使发动机内剩余冷却液完全排出。"
+            ),
+        )],
+        aspects,
+    )
+
+    assert bundle["coverage_status"] == "complete"
+
+
+def test_entity_qualified_marker_terms_remain_evidence_anchors() -> None:
+    aspects = [_aspect("timing-marks", "曲柄C标记 平衡轴D标记 对齐 正时")]
+    bundle = _bundle(
+        [_candidate(
+            "timing-mark-step",
+            content="曲柄上的C标记应与平衡轴配重块上的D标记对齐。",
+        )],
+        aspects,
+    )
+
+    assert bundle["coverage_status"] == "complete"
+
+
+def test_compact_semantic_aspect_matches_manual_fact_without_exact_suffix() -> None:
+    aspects = [_aspect("cylinder-group", "气缸与活塞组别匹配要求")]
+    bundle = _bundle(
+        [_candidate(
+            "cylinder-group-rule",
+            content=(
+                "气缸与活塞组别：活塞与气缸均分为A、B、C、D四组，"
+                "组装时必须使用相同组别的活塞与气缸。"
+            ),
+        )],
+        aspects,
+    )
+
+    assert bundle["coverage_status"] == "complete"
+
+
 def test_conflict_retains_candidate_ids_and_values_after_demotion() -> None:
     aspects = [_aspect("gap", "火花塞间隙标准")]
     bundle = _bundle(

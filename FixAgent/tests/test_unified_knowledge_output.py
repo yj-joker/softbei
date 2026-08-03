@@ -124,6 +124,437 @@ def _isolate_manual_formatter_from_vector_store(monkeypatch) -> None:
     monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: _SectionIndex()))
 
 
+def _reference_only_trace(*, original_title_match: bool = False) -> list[dict]:
+    return [{
+        "tool_calls": [{
+            "name": "knowledge_retrieval",
+            "arguments": {"query": "如何拆卸联接组件"},
+            "result_data": {
+                "evidence_status": "reference_only",
+                "coverage_status": "unsupported",
+                "aspect_support": [{
+                    "aspect_id": "procedure",
+                    "aspect_text": "拆卸联接组件",
+                    "supported": False,
+                    "evidence_ids": [],
+                }],
+                "missing_aspect_ids": ["procedure"],
+                "capabilities": {"may_cite_manual": False},
+                "reference_evidence": [{
+                    "id": "reference-anchor",
+                    "content": "联接组件章节定位信息",
+                    "metadata": {
+                        "qualification": "reference_only",
+                        "document_id": "manual-reference",
+                        "chunk_id": "reference-anchor",
+                        "section_title": "联接组件",
+                        "parent_section_id": "section-component",
+                        "section_match_ids": ["section-component"],
+                        "retrieval_plan_intent": "procedure",
+                        "chunk_type": "text",
+                        "original_title_match": original_title_match,
+                    },
+                }],
+            },
+        }],
+    }]
+
+
+def test_reference_evidence_is_only_visible_to_structural_recovery_candidates() -> None:
+    trace = _reference_only_trace()
+    trace[0]["tool_calls"][0]["result_data"]["qualified_evidence"] = [{
+        "id": "qualified-anchor",
+        "content": "已合格的章节定位信息",
+        "metadata": {
+            "qualification": "qualified",
+            "document_id": "manual-reference",
+            "parent_section_id": "qualified-section",
+        },
+    }]
+    metadata = {"react_trace": trace}
+
+    candidates = list(main._iter_structural_recovery_candidate_items(metadata))
+
+    assert [item["id"] for item in candidates] == ["qualified-anchor", "reference-anchor"]
+    assert candidates[0]["metadata"]["qualification"] == "qualified"
+    assert candidates[1]["metadata"]["qualification"] == "reference_only"
+    assert list(main._iter_trace_result_items(metadata)) == []
+
+
+def test_wrapped_reference_locator_recovers_section_without_reference_body(monkeypatch) -> None:
+    from agents.base_agent import wrap_evidence_quality
+
+    query = "如何拆卸联接组件"
+    raw = _reference_only_trace()[0]["tool_calls"][0]["result_data"]["reference_evidence"][0]
+    raw["content"] = "不得成为答案证据的参考正文"
+    raw["metadata"]["evidence_bundle"] = {
+        "overall_status": "reference_only",
+        "coverage_status": "unsupported",
+        "coverage_reason": "zero_qualified_evidence",
+        "aspect_support": [],
+        "missing_aspect_ids": ["procedure"],
+        "capabilities": {"may_cite_manual": False},
+        "excluded_evidence": [],
+        "conflicts": [],
+    }
+    wrapped = wrap_evidence_quality("knowledge_retrieval", [raw])
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-reference",
+            "query_contract": {"component": "联接组件", "action": "拆卸"},
+        },
+        "react_trace": [{"tool_calls": [{
+            "name": "knowledge_retrieval",
+            "arguments": {"query": query},
+            "result_data": wrapped,
+        }]}],
+    }
+
+    class _VectorService:
+        def get_section_records(self, document_id, section_id, *, limit, chunk_type):
+            assert (document_id, section_id, chunk_type) == (
+                "manual-reference", "section-component", None,
+            )
+            return [{
+                "id": "wrapped-recovered-step",
+                "content": "1. 拆下联接组件固定件，再取下联接组件。",
+                "metadata": {
+                    "document_id": document_id,
+                    "parent_section_id": section_id,
+                    "section_title": "联接组件",
+                    "chunk_type": "step_raw",
+                    "page": 9,
+                },
+            }]
+
+        def get_page_records(self, *args, **kwargs):
+            return []
+
+    monkeypatch.setattr(main, "_initialized_or_injected_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(main, "_manual_title_match_records", lambda _query, _document_id="": ([], set()))
+    monkeypatch.setattr(main, "_manual_title_section_match_scores", lambda _query: {})
+
+    answer = main._format_manual_evidence_answer_from_metadata(query, metadata)
+
+    assert answer is not None
+    assert "拆下联接组件" in answer
+    assert "不得成为答案证据的参考正文" not in answer
+
+
+def test_component_route_recovers_text_from_reference_section_before_qualification(monkeypatch) -> None:
+    query = "如何拆卸联接组件"
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-reference",
+            "query_contract": {"component": "联接组件", "action": "拆卸"},
+        },
+        "react_trace": _reference_only_trace(),
+    }
+    section_calls: list[tuple[str, str, str | None]] = []
+
+    class _VectorService:
+        def get_section_records(self, document_id, section_id, *, limit, chunk_type):
+            section_calls.append((document_id, section_id, chunk_type))
+            return [{
+                "id": "recovered-step",
+                "content": "1. 拆下联接组件的固定件，再取下联接组件。",
+                "metadata": {
+                    "document_id": document_id,
+                    "chunk_id": "recovered-step",
+                    "section_title": "联接组件",
+                    "parent_section_id": section_id,
+                    "chunk_type": "step_raw",
+                    "source_index": 1,
+                    "page": 9,
+                },
+            }]
+
+        def get_page_records(self, *args, **kwargs):
+            return []
+
+    monkeypatch.setattr(main, "_initialized_or_injected_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(main, "_manual_title_match_records", lambda _query, _document_id="": ([], set()))
+    monkeypatch.setattr(main, "_manual_title_section_match_scores", lambda _query: {})
+
+    answer = main._format_manual_evidence_answer_from_metadata(query, metadata)
+
+    assert answer is not None
+    assert "拆下联接组件" in answer
+    assert section_calls == [("manual-reference", "section-component", None)]
+    lookup_call = metadata["react_trace"][-1]["tool_calls"][0]
+    assert lookup_call["arguments"] == {"source": "section_text_lookup"}
+    assert lookup_call["result_data"][0]["id"] == "recovered-step"
+    assert lookup_call["result_data"][0]["metadata"]["qualification"] == "qualified"
+    source_reference = metadata["react_trace"][0]["tool_calls"][0]["result_data"]["reference_evidence"][0]
+    assert source_reference["metadata"]["qualification"] == "reference_only"
+
+
+def test_inventory_route_uses_reference_section_id_to_fetch_complete_table(monkeypatch) -> None:
+    query = "查询联接组件部件清单"
+    trace = _reference_only_trace()
+    reference_meta = trace[0]["tool_calls"][0]["result_data"]["reference_evidence"][0]["metadata"]
+    reference_meta["retrieval_plan_intent"] = "outline"
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-reference",
+            "query_contract": {"component": "联接组件", "action": "查询"},
+        },
+        "react_trace": trace,
+    }
+    calls: list[tuple[str, str, str | None]] = []
+
+    class _VectorService:
+        def get_section_records(self, document_id, section_id, *, limit, chunk_type):
+            calls.append((document_id, section_id, chunk_type))
+            return [{
+                "id": "complete-table",
+                "content": "固定件；数量：2\n联接件；数量：1",
+                "metadata": {
+                    "document_id": document_id,
+                    "chunk_id": "complete-table",
+                    "parent_section_id": section_id,
+                    "chunk_type": "table",
+                },
+            }]
+
+    class _SectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: _SectionIndex()))
+
+    records = asyncio.run(main._collect_direct_section_table_items(query, metadata))
+
+    assert [record["id"] for record in records] == ["complete-table"]
+    assert calls == [("manual-reference", "section-component", "table")]
+    lookup_call = metadata["react_trace"][-1]["tool_calls"][0]
+    assert lookup_call["arguments"] == {"source": "section_table_lookup"}
+    assert lookup_call["result_data"][0]["metadata"]["qualification"] == "qualified"
+
+
+def test_device_identity_route_cannot_recover_or_upgrade_reference_evidence(monkeypatch) -> None:
+    query = "如何拆卸联接组件"
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "device_identity",
+            "selected_document_id": "manual-reference",
+        },
+        "react_trace": _reference_only_trace(original_title_match=True),
+    }
+
+    def _unexpected_lookup(*args, **kwargs):
+        pytest.fail("device_identity route must not enter structural recovery")
+
+    monkeypatch.setattr(main, "_manual_best_section_records", _unexpected_lookup)
+
+    answer = main._format_manual_evidence_answer_from_metadata(query, metadata)
+
+    assert answer is None
+    assert len(metadata["react_trace"]) == 1
+
+
+def test_structural_recovery_requires_one_scalar_selected_document_id() -> None:
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": ["manual-a", "manual-b"],
+        },
+    }
+
+    assert main._route_plan_authorizes_structural_lookup(metadata) is False
+
+
+def test_section_text_expansion_does_not_query_without_authorized_route(monkeypatch) -> None:
+    records = [{
+        "id": "qualified-anchor",
+        "content": "拆卸联接组件。",
+        "metadata": {
+            "qualification": "qualified",
+            "document_id": "manual-reference",
+            "parent_section_id": "section-component",
+            "section_title": "联接组件",
+        },
+    }]
+
+    def _unexpected_vector_service():
+        pytest.fail("缺少合格 RoutePlan 时不得执行章节正文补查")
+
+    monkeypatch.setattr(main, "_initialized_or_injected_vector_service", _unexpected_vector_service)
+
+    expanded = main._manual_expand_same_section_records(
+        records,
+        {"section-component"},
+        metadata={},
+    )
+
+    assert expanded == records
+
+
+def test_device_identity_route_cannot_use_reference_section_for_table_lookup(monkeypatch) -> None:
+    query = "查询联接组件部件清单"
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "device_identity",
+            "selected_document_id": "manual-reference",
+        },
+        "react_trace": _reference_only_trace(),
+    }
+
+    class _VectorService:
+        def get_section_records(self, *args, **kwargs):
+            pytest.fail("device_identity route must not query a reference section")
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(
+        SectionTitleIndex,
+        "get_instance",
+        classmethod(lambda cls: pytest.fail("device_identity route must not enter title lookup")),
+    )
+
+    records = asyncio.run(main._collect_direct_section_table_items(query, metadata))
+
+    assert records == []
+    assert len(metadata["react_trace"]) == 1
+
+
+def test_table_structural_lookup_rejects_foreign_title_index_document(monkeypatch) -> None:
+    query = "查询目标组件部件清单"
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-selected",
+            "query_contract": {"component": "目标组件", "action": "查询"},
+        },
+        "react_trace": [],
+    }
+
+    class _ForeignRef:
+        core_title = "目标组件部件清单"
+        full_title = "目标组件部件清单"
+        section_id = "foreign-section"
+        document_id = "manual-foreign"
+
+    class _SectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query_value):
+            return [_ForeignRef()]
+
+    class _VectorService:
+        def get_section_records(self, *args, **kwargs):
+            pytest.fail("其他文档的章节 ID 不得用于选中文档补查")
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: _SectionIndex()))
+
+    records = asyncio.run(main._collect_direct_section_table_items(query, metadata))
+
+    assert records == []
+    assert len(metadata["react_trace"]) == 0
+
+
+def test_unrelated_section_table_is_not_registered_as_qualified(monkeypatch) -> None:
+    query = "查询目标组件部件清单"
+    trace = _reference_only_trace()
+    locator = trace[0]["tool_calls"][0]["result_data"]["reference_evidence"][0]
+    locator["metadata"].update({
+        "document_id": "manual-reference",
+        "parent_section_id": "section-unrelated",
+        "section_match_ids": ["section-unrelated"],
+        "section_title": "其他系统清单",
+        "retrieval_plan_intent": "outline",
+    })
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-reference",
+            "query_contract": {"component": "目标组件", "action": "查询"},
+        },
+        "react_trace": trace,
+    }
+
+    class _VectorService:
+        def get_section_records(self, document_id, section_id, *, limit, chunk_type):
+            return [{
+                "id": "unrelated-table",
+                "content": "无关固定件；数量：2\n无关垫片；数量：1",
+                "metadata": {
+                    "document_id": document_id,
+                    "parent_section_id": section_id,
+                    "section_title": "其他系统清单",
+                    "chunk_type": "table",
+                },
+            }]
+
+    class _SectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query_value):
+            return []
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: _SectionIndex()))
+
+    records = asyncio.run(main._collect_direct_section_table_items(query, metadata))
+
+    assert records == []
+    assert all(
+        (call.get("arguments") or {}).get("source") != "section_table_lookup"
+        for step in metadata["react_trace"]
+        for call in step.get("tool_calls") or []
+    )
+
+
+def test_specific_inventory_row_query_does_not_fallback_to_unrelated_rows() -> None:
+    rows = [
+        {"name": "密封圈", "quantity": "1", "remark": ""},
+        {"name": "定位销", "quantity": "2", "remark": ""},
+    ]
+
+    filtered = main._filter_inventory_rows_for_query(
+        "目标清单中专用螺母的扭矩是多少",
+        rows,
+    )
+
+    assert filtered == []
+
+
 def _rule_trace() -> list[dict]:
     return [{
         "iteration": 0,
@@ -245,6 +676,8 @@ def test_direct_manual_answer_requalifies_stale_unsupported_bundle(monkeypatch) 
     }
     for record in trace[0]["tool_calls"][0]["result_data"]:
         record["metadata"]["evidence_bundle"] = stale_bundle
+        if record["metadata"].get("source_index") == 1:
+            record["content"] = "安装涨紧器。\n" + record["content"]
     output = _output("manual_section_direct", trace)
 
     formatted = main._format_manual_evidence_answer_from_metadata(
@@ -506,6 +939,54 @@ def test_direct_exact_section_bundle_upgrades_stale_partial_for_complete_procedu
     assert bundle["missing_aspect_ids"] == []
 
 
+def test_route_scoped_structural_bundle_replaces_stale_reference_only_coverage() -> None:
+    metadata = {
+        "scope_decision": {
+            "status": "in_scope",
+            "document_id": "manual-1",
+        },
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-1",
+        },
+        "original_user_message": "拆卸执行机构时松开固定螺栓，是先松上部还是下部？",
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"source": "section_text_lookup"},
+                "result_data": [{
+                    "id": "actuator-remove-step",
+                    "content": "松开执行机构所有固定螺栓：先松下部，再对角松上部。",
+                    "metadata": {
+                        "chunk_id": "actuator-remove-step",
+                        "document_id": "manual-1",
+                        "section_title": "4.2 拆卸执行机构",
+                        "_structural_recovery_lookup_source": "section_text_lookup",
+                    },
+                }],
+            }],
+        }],
+    }
+    original = {
+        "coverage_status": "unsupported",
+        "aspect_support": [{
+            "aspect_id": "stale-reference-aspect",
+            "aspect_text": "拆卸执行机构 松开固定螺栓 顺序",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        "missing_aspect_ids": ["stale-reference-aspect"],
+        "capabilities": {"may_cite_manual": False},
+    }
+
+    bundle = main._direct_answer_evidence_bundle(metadata, original)
+
+    assert bundle is not None
+    assert bundle["coverage_status"] == "complete"
+    assert bundle["missing_aspect_ids"] == []
+
+
 def test_direct_exact_section_bundle_ignores_retrieval_only_device_context() -> None:
     metadata = {
         "scope_decision": {"status": "in_scope"},
@@ -593,6 +1074,310 @@ def test_direct_exact_section_bundle_keeps_non_parameter_missing_aspect_partial(
     assert bundle["missing_aspect_ids"] == ["seal-check"]
 
 
+def test_title_recall_cannot_render_when_no_user_aspect_is_supported(monkeypatch) -> None:
+    _isolate_manual_formatter_from_vector_store(monkeypatch)
+    query = "摩托车发动机异响是什么原因"
+    off_topic_record = {
+        "id": "engine-removal",
+        "content": "1. 拆下放油螺栓，将发动机内部机油全部放出。",
+        "metadata": {
+            "qualification": "qualified",
+            "document_id": "manual-1",
+            "chunk_id": "engine-removal",
+            "section_title": "3.2 拆卸发动机",
+            "parent_section_id": "sec-engine-removal",
+            "page": 6,
+            "original_title_match": True,
+        },
+    }
+    monkeypatch.setattr(
+        main,
+        "_manual_title_match_records",
+        lambda _query, _document_id="": ([off_topic_record], {"sec-engine-removal"}),
+    )
+    bundle = {
+        "coverage_status": "partial",
+        "aspect_support": [{
+            "aspect_id": "fault-cause",
+            "aspect_text": "摩托车发动机异响原因",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        "missing_aspect_ids": ["fault-cause"],
+        "conflict_eligible": [],
+        "capabilities": {"may_cite_manual": True},
+    }
+    metadata = {
+        "scope_decision": {"status": "in_scope", "document_id": "manual-1"},
+        "original_user_message": query,
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": {
+                    "evidence_status": "qualified",
+                    **bundle,
+                    "results": [off_topic_record],
+                },
+            }],
+        }],
+    }
+
+    answer = main._format_manual_evidence_answer_from_metadata(query, metadata)
+
+    assert answer is None
+
+
+def test_direct_lookup_cannot_upgrade_an_unrelated_missing_aspect() -> None:
+    query = "摩托车发动机异响是什么原因"
+    metadata = {
+        "scope_decision": {"status": "in_scope"},
+        "original_user_message": query,
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"source": "section_text_lookup"},
+                "result_data": [{
+                    "id": "engine-removal",
+                    "content": "拆下放油螺栓，将发动机内部机油全部放出。",
+                    "metadata": {
+                        "chunk_id": "engine-removal",
+                        "section_title": "3.2 拆卸发动机",
+                        "original_title_match": True,
+                    },
+                }],
+            }],
+        }],
+    }
+    original = {
+        "coverage_status": "unsupported",
+        "aspect_support": [{
+            "aspect_id": "fault-cause",
+            "aspect_text": "摩托车发动机异响原因",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        "missing_aspect_ids": ["fault-cause"],
+        "capabilities": {"may_cite_manual": False},
+    }
+
+    bundle = main._direct_answer_evidence_bundle(metadata, original)
+
+    assert bundle is None
+
+
+def test_empty_current_retrieval_is_not_treated_as_legacy_qualified_evidence() -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"query": "任意开放词表查询"},
+                "result_data": [],
+            }],
+        }],
+    }
+
+    assert main._has_qualified_manual_evidence(metadata) is False
+
+
+def test_empty_source_retrieval_cannot_authorize_section_lookup(monkeypatch) -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"query": "某设备出现某种故障现象的原因"},
+                "result_data": [],
+            }],
+        }],
+    }
+
+    def _unexpected_lookup(*args, **kwargs):
+        pytest.fail("empty source retrieval must not authorize a structural section lookup")
+
+    monkeypatch.setattr(main, "_manual_best_section_records", _unexpected_lookup)
+
+    answer = main._format_manual_evidence_answer_from_metadata(
+        "某设备出现某种故障现象的原因",
+        metadata,
+    )
+
+    assert answer is None
+
+
+def test_image_only_enrichment_cannot_mark_text_answer_as_supported() -> None:
+    output = AgentOutput(
+        agent_name="fix_agent",
+        message="当前资料不足。",
+        tools_used=["knowledge_retrieval"],
+        metadata={
+            "react_trace": [{
+                "tool_calls": [{
+                    "name": "knowledge_retrieval",
+                    "arguments": {"source": "section_image_lookup"},
+                    "result_data": [{
+                        "id": "image-only-1",
+                        "content": "某章节插图",
+                        "metadata": {
+                            "document_id": "manual-1",
+                            "chunk_id": "image-only-1",
+                            "chunk_type": "image",
+                            "qualification": "qualified",
+                        },
+                    }],
+                }],
+            }],
+        },
+    )
+    ledger = EvidenceLedger.from_react_trace(output.metadata)
+
+    bundle = main._bundle_for_knowledge_output(output, ledger)
+
+    assert bundle["aspect_support"][0]["supported"] is False
+    assert bundle["missing_aspect_ids"] == ["knowledge-answer"]
+
+
+def test_component_route_can_authorize_supported_section_text_after_empty_retrieval(monkeypatch) -> None:
+    query = "如何拆卸某联接组件"
+    metadata = {
+        "original_user_message": query,
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-1",
+        },
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "arguments": {"query": query},
+                "result_data": [],
+            }],
+        }],
+    }
+    records = [{
+        "id": "component-remove-step",
+        "content": "1. 拆卸某联接组件的固定件并依次取下组件。",
+        "metadata": {
+            "document_id": "manual-1",
+            "chunk_id": "component-remove-step",
+            "qualification": "qualified",
+            "section_title": "某联接组件",
+            "page": 12,
+        },
+    }]
+    monkeypatch.setattr(main, "_manual_best_section_records", lambda *args: records)
+
+    answer = main._format_manual_evidence_answer_from_metadata(query, metadata)
+
+    assert answer is not None
+    assert "拆卸某联接组件" in answer
+    assert "第12页" in answer
+
+
+def test_post_retrieval_unsupported_fault_diagnosis_uses_safe_ai_fallback(monkeypatch) -> None:
+    query = "摩托车发动机异响是什么原因"
+    request = ChatRequest(session_id="post-retrieval-fallback", message=query)
+    input_data = AgentInput(
+        user_message=query,
+        session_id=request.session_id,
+        context={
+            "intent_decision": {"intent": "fault_diagnosis"},
+            "scope_decision": {"status": "in_scope"},
+            "response_policy": {
+                "mode": "PENDING_RETRIEVAL",
+                "allow_ai_fallback": False,
+            },
+        },
+    )
+    original_trace = [{
+        "tool_calls": [
+            {"name": "knowledge_retrieval", "result_data": []},
+            {"name": "java_graph_diagnosis_path", "result_data": []},
+        ],
+    }]
+    audited = AgentOutput(
+        agent_name="fix_agent",
+        message="当前知识库没有找到足以回答该问题的可靠依据。",
+        tools_used=["knowledge_retrieval", "java_graph_diagnosis_path"],
+        metadata={
+            "coverage_status": "unsupported",
+            "response_policy": {
+                "mode": "MAINTENANCE_AI_FALLBACK",
+                "allow_ai_fallback": True,
+                "manual_citation_allowed": False,
+                "images_allowed": False,
+                "style_profile": "maintenance_ai",
+            },
+            "scope_decision": {"status": "in_scope"},
+            "react_trace": original_trace,
+            "response_plan_id": "plan-unsupported",
+            "_deterministic_answer_evidence_pages": [6],
+            "_deterministic_answer_document_ids": ["motorcycle-manual"],
+        },
+    )
+
+    class _LLM:
+        async def chat(self, messages, **kwargs):
+            return {"content": "可以先记录异响出现的转速区间、负载变化和声源位置，再由合格人员检查。"}
+
+    monkeypatch.setattr(main, "get_llm_service", lambda: _LLM())
+
+    output = asyncio.run(
+        main._try_post_retrieval_ai_fallback(request, input_data, audited)
+    )
+
+    assert output is not None
+    assert all(marker in output.message for marker in ("知识库", "AI", "仅供参考"))
+    assert output.tools_used == audited.tools_used
+    assert output.metadata["react_trace"] == original_trace
+    assert output.metadata["execution_mode"] == "maintenance_ai_fallback_after_retrieval"
+    assert output.metadata["source_type"] == "ai"
+    assert output.metadata["coverage_status"] == "unsupported"
+    assert output.metadata["_deterministic_answer_evidence_pages"] == []
+    assert output.metadata["_deterministic_answer_document_ids"] == []
+    assert output.metadata["evidence_images"] == []
+
+
+def test_shared_finalizer_runs_post_retrieval_fallback_after_evidence_audit(monkeypatch) -> None:
+    request = ChatRequest(session_id="shared-finalizer", message="摩托车发动机异响是什么原因")
+    input_data = AgentInput(user_message=request.message, session_id=request.session_id)
+    candidate = AgentOutput(agent_name="fix_agent", message="模型原始回答")
+    audited = AgentOutput(
+        agent_name="fix_agent",
+        message="证据不足",
+        metadata={"coverage_status": "unsupported"},
+    )
+    fallback = AgentOutput(
+        agent_name="fix_agent",
+        message="知识库未找到可靠资料，以下内容由 AI 生成，仅供参考。",
+        metadata={"execution_mode": "maintenance_ai_fallback_after_retrieval"},
+    )
+    calls: list[tuple[str, str | None]] = []
+
+    def _audit(query, output, *, candidate_message=None):
+        calls.append((query, candidate_message))
+        return audited
+
+    async def _fallback(request_value, input_value, output_value):
+        assert request_value is request
+        assert input_value is input_data
+        assert output_value is audited
+        return fallback
+
+    monkeypatch.setattr(main, "_finalize_knowledge_output", _audit)
+    monkeypatch.setattr(main, "_try_post_retrieval_ai_fallback", _fallback)
+
+    output = asyncio.run(
+        main._finalize_knowledge_output_with_fallback(
+            request,
+            input_data,
+            candidate,
+            candidate_message="出口候选回答",
+        )
+    )
+
+    assert output is fallback
+    assert calls == [(request.message, "出口候选回答")]
+
+
 def test_complete_exact_title_table_answer_does_not_append_stale_partial_notice() -> None:
     original_bundle = {
         "coverage_status": "partial",
@@ -658,6 +1443,66 @@ def test_complete_exact_title_table_answer_does_not_append_stale_partial_notice(
 
     assert finalized.metadata["coverage_status"] == "complete"
     assert "当前资料没有明确说明" not in finalized.message
+
+
+def test_deterministic_table_from_qualified_source_is_audited_as_evidence_rendered() -> None:
+    bundle = {
+        "coverage_status": "complete",
+        "aspect_support": [{
+            "aspect_id": "inventory-query",
+            "aspect_text": "某总成装配部件清单",
+            "supported": True,
+            "evidence_ids": ["manual:manual-1:table-row-1"],
+        }],
+        "missing_aspect_ids": [],
+        "conflict_eligible": [],
+        "capabilities": {"may_cite_manual": True},
+    }
+    trace = [{
+        "tool_calls": [{
+            "name": "knowledge_retrieval",
+            "result_data": {
+                "evidence_status": "qualified",
+                "results": [{
+                    "id": "table-row-1",
+                    "content": "序号=1；零件名称=定位销；数量=2",
+                    "metadata": {
+                        "qualification": "qualified",
+                        "document_id": "manual-1",
+                        "chunk_id": "table-row-1",
+                        "chunk_type": "table",
+                        "evidence_bundle": bundle,
+                    },
+                }],
+                "reference_evidence": [],
+            },
+        }],
+    }]
+    candidate = (
+        "根据手册第17-18页“5.1 某总成装配部件清单”，所用部件如下：\n"
+        "1. 定位销；数量：2"
+    )
+    output = _output("rag_table_direct", trace)
+    output.metadata.update({
+        "deterministic_table_answer": True,
+        "_deterministic_answer_mode": "evidence_rendered",
+        "_deterministic_answer_table_complete": True,
+        "scope_decision": {"status": "in_scope"},
+    })
+
+    finalized = main._finalize_knowledge_output(
+        "查询某总成装配部件清单",
+        output,
+        candidate_message=candidate,
+    )
+
+    assert finalized.message == candidate
+    assert finalized.metadata["response_audit"] == {
+        "passed": True,
+        "violations": [],
+        "used_fallback": False,
+        "mode": "evidence_rendered",
+    }
 
 
 def test_rag_fast_path_is_finalized_before_return(monkeypatch) -> None:
@@ -760,6 +1605,100 @@ def test_non_stream_policy_direct_skips_all_manual_overrides(monkeypatch) -> Non
     assert not response.tools_used
     assert response.evidence_images == []
     assert response.metadata["response_policy"]["mode"] == "MAINTENANCE_AI_FALLBACK"
+
+
+def test_resolved_component_route_can_recover_manual_answer_after_initial_unsupported_policy(monkeypatch) -> None:
+    query = "如何拆卸某联接组件"
+    request = ChatRequest(session_id="route-structural-recovery", message=query)
+    route_plan = {
+        "action": "grounded_retrieval",
+        "entity_role": "document_component",
+        "selected_document_id": "manual-1",
+    }
+    input_data = AgentInput(
+        user_message=query,
+        session_id=request.session_id,
+        context={
+            "route_plan": route_plan,
+            "scope_decision": {"status": "in_scope", "document_id": "manual-1"},
+        },
+    )
+    unsupported_policy = {
+        "mode": "INSUFFICIENT_EVIDENCE",
+        "manual_citation_allowed": False,
+        "images_allowed": False,
+    }
+    output = AgentOutput(
+        agent_name="fix_agent",
+        message="当前资料不足。",
+        tools_used=["knowledge_retrieval"],
+        metadata={
+            "execution_mode": "react",
+            "route_plan": route_plan,
+            "scope_decision": input_data.context["scope_decision"],
+            "response_policy": unsupported_policy,
+            "react_trace": [{
+                "tool_calls": [{
+                    "name": "knowledge_retrieval",
+                    "arguments": {"query": query},
+                    "result_data": [],
+                }],
+            }],
+        },
+    )
+
+    class _Agent:
+        async def run_with_react(self, _input):
+            return output
+
+    class _Review:
+        async def review(self, value, level="full"):
+            return value
+
+    async def _no_direct(*args, **kwargs):
+        return None
+
+    formatter_calls = []
+
+    def _format_manual(*args):
+        formatter_calls.append(args)
+        args[1].update({
+            "_deterministic_answer_mode": "evidence_rendered",
+            "_deterministic_answer_document_ids": ["manual-1"],
+            "_deterministic_answer_evidence_pages": [12],
+        })
+        main._register_direct_manual_evidence(args[1], [{
+            "id": "component-remove-step",
+            "content": "1. 拆卸某联接组件的固定件并依次取下组件。",
+            "metadata": {
+                "document_id": "manual-1",
+                "chunk_id": "component-remove-step",
+                "page": 12,
+            },
+        }], "section_text_lookup")
+        return "1. 拆卸某联接组件的固定件并依次取下组件。"
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _no_direct)
+    monkeypatch.setattr(main, "_try_route_plan_direct", _no_direct)
+    monkeypatch.setattr(main, "_try_response_policy_direct", _no_direct)
+    monkeypatch.setattr(main, "_try_scope_guard", lambda *args: None)
+    monkeypatch.setattr(main, "_try_domain_rule_direct", _no_direct)
+    monkeypatch.setattr(main, "_should_use_rag_fast_path", lambda request: False)
+    monkeypatch.setattr(main, "get_fix_agent", lambda: _Agent())
+    monkeypatch.setattr(main, "get_review_agent", lambda: _Review())
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", _format_manual)
+    monkeypatch.setattr(main, "_collect_direct_section_images", _async_empty)
+    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", lambda *args: [])
+    monkeypatch.setattr(main, "build_follow_up", lambda *args: None)
+
+    response = asyncio.run(main.chat(request))
+
+    assert formatter_calls
+    assert "拆卸某联接组件" in response.message
+    assert response.metadata["deterministic_manual_evidence_answer"] is True
 
 
 def test_non_stream_endpoint_removes_emojis_from_final_answer(monkeypatch) -> None:
@@ -1025,6 +1964,103 @@ def test_stream_policy_direct_removes_emojis_from_every_token(monkeypatch) -> No
 
     assert "".join(token_contents) == "温度 80℃，公差 ±0.2。 "
     assert all(content not in {"✅", "🇨", "🇳", "👩", "🏾", "🔧", "\u200d", "\ufe0f"} for content in token_contents)
+
+
+def test_stream_manual_override_receives_verified_route_plan(monkeypatch) -> None:
+    request = ChatRequest(session_id="stream-route-plan", message="如何拆卸某联接组件")
+    route_plan = {
+        "action": "grounded_retrieval",
+        "entity_role": "document_component",
+        "selected_document_id": "manual-1",
+    }
+    input_data = AgentInput(
+        user_message=request.message,
+        session_id=request.session_id,
+        context={
+            "route_plan": route_plan,
+            "scope_decision": {"status": "in_scope"},
+            "intent_decision": {"intent": "maintenance_guidance"},
+            "response_policy": {"mode": "PENDING_RETRIEVAL"},
+        },
+    )
+    trace = [{
+        "tool_calls": [{
+            "name": "knowledge_retrieval",
+            "arguments": {"query": request.message},
+            "result_data": [],
+        }],
+    }]
+
+    class _Agent:
+        async def run_with_react_stream(self, input_value):
+            for char in "原始证据不足回答":
+                yield {"event": "token", "data": {"content": char}}
+            yield {
+                "event": "done",
+                "data": {
+                    "tools_used": ["knowledge_retrieval"],
+                    "latency_ms": 3,
+                    "react_trace": trace,
+                    "metadata": {"react_trace": trace, "execution_mode": "react"},
+                },
+            }
+
+        async def grounded_fallback_if_unretrieved(self, input_value, used_tools):
+            return None
+
+    class _Review:
+        async def review(self, value, level="full"):
+            return value
+
+        def get_inline_markers(self, message, verification):
+            return []
+
+    seen_route_plans: list[dict | None] = []
+
+    def _manual_override(query, metadata):
+        seen_route_plans.append(metadata.get("route_plan"))
+        return "手册中的拆卸步骤。" if metadata.get("route_plan") == route_plan else None
+
+    async def _identity_finalizer(request_value, input_value, output, **kwargs):
+        return output
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _async_none)
+    monkeypatch.setattr(main, "_try_route_plan_direct", _async_none)
+    monkeypatch.setattr(main, "_try_response_policy_direct", _async_none)
+    monkeypatch.setattr(main, "_try_scope_guard", lambda *args: None)
+    monkeypatch.setattr(main, "_try_domain_rule_direct", _async_none)
+    monkeypatch.setattr(main, "get_fix_agent", lambda: _Agent())
+    monkeypatch.setattr(main, "get_review_agent", lambda: _Review())
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", _manual_override)
+    monkeypatch.setattr(main, "_collect_direct_section_images", _async_empty)
+    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", lambda *args: [])
+    monkeypatch.setattr(main, "build_follow_up", lambda *args: None)
+    monkeypatch.setattr(main, "_finalize_knowledge_output_with_fallback", _identity_finalizer)
+
+    async def _consume():
+        response = await main.chat_stream(request)
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode() if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    payload = asyncio.run(_consume())
+    events = [
+        json.loads(line.removeprefix("data: "))
+        for line in payload.splitlines()
+        if line.startswith("data: ")
+    ]
+    visible = "".join(
+        event["data"]["content"]
+        for event in events
+        if event.get("event") == "token"
+    )
+
+    assert visible == "手册中的拆卸步骤。"
+    assert seen_route_plans == [route_plan]
 
 
 def test_direct_lookup_records_are_registered_in_evidence_ledger() -> None:

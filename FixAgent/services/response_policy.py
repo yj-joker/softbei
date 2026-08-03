@@ -132,7 +132,15 @@ def derive_response_policy(
     elif coverage == "complete" or evidence.get("qualified_evidence"):
         mode = GROUNDED_KNOWLEDGE
     else:
-        mode = INSUFFICIENT_EVIDENCE if risk == "high" or decision.requires_manual_evidence else MAINTENANCE_AI_FALLBACK
+        requires_strict_manual_evidence = (
+            decision.requires_manual_evidence
+            and decision.intent != "fault_diagnosis"
+        )
+        mode = (
+            INSUFFICIENT_EVIDENCE
+            if risk == "high" or requires_strict_manual_evidence
+            else MAINTENANCE_AI_FALLBACK
+        )
 
     grounded = mode in {GROUNDED_KNOWLEDGE, PARTIAL_GROUNDED, EVIDENCE_CONFLICT}
     if grounded:

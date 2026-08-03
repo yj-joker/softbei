@@ -89,12 +89,24 @@ def test_partial_plan_answers_supported_fact_and_names_missing_aspect() -> None:
 def test_retrieval_expansion_does_not_become_a_visible_missing_user_aspect() -> None:
     bundle = _bundle(
         "partial",
-        aspect_support=[{
-            "aspect_id": "expanded-query",
-            "aspect_text": "右曲轴箱盖 安装步骤 摩托车 发动机 手册原文",
-            "supported": False,
-            "evidence_ids": [],
-        }],
+        aspect_support=[
+            {
+                "aspect_id": "install-cover",
+                "aspect_text": "安装右曲轴箱盖",
+                "supported": True,
+                "evidence_ids": ["chunk-1"],
+                "aspect_origin": "user_query",
+                "user_obligation": True,
+            },
+            {
+                "aspect_id": "expanded-query",
+                "aspect_text": "右曲轴箱盖 安装步骤 摩托车 发动机 手册原文",
+                "supported": False,
+                "evidence_ids": [],
+                "aspect_origin": "retrieval_expansion",
+                "user_obligation": False,
+            },
+        ],
         missing_aspect_ids=["expanded-query"],
     )
     ledger = _ledger(
@@ -140,6 +152,26 @@ def test_explicit_missing_parameter_in_a_single_sentence_remains_partial() -> No
     assert plan.coverage_status == "partial"
     assert plan.missing_aspects == ("螺栓扭矩",)
     assert "关于“螺栓扭矩”，当前资料没有明确说明" in plan.deterministic_fallback()
+
+
+def test_zero_supported_user_aspects_are_unsupported_even_with_qualified_records() -> None:
+    bundle = _bundle(
+        "partial",
+        aspect_support=[{
+            "aspect_id": "fault-cause",
+            "aspect_text": "摩托车发动机异响原因",
+            "supported": False,
+            "evidence_ids": [],
+        }],
+        missing_aspect_ids=["fault-cause"],
+    )
+    ledger = _ledger(text="拆卸发动机前先排放机油。", page=6)
+
+    plan = build_response_plan("摩托车发动机异响是什么原因", bundle, ledger)
+
+    assert plan.coverage_status == "unsupported"
+    assert plan.missing_aspects == ("摩托车发动机异响原因",)
+    assert "当前知识库没有找到足以回答该问题的可靠依据" in plan.deterministic_fallback()
 
 
 def test_unsupported_plan_never_offers_generic_causes_or_operations() -> None:

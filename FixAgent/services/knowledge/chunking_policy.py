@@ -526,7 +526,7 @@ def _ordered_table_pages(*page_groups: Iterable[Any]) -> List[int]:
 def _merge_continued_tables(tables: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """合并跨页续表：同一 section 内页码连续、列数一致、且后表首行等于前表表头
     （或后表无表头、首行即数据行）的相邻表，拼成一张逻辑表。恢复被 pdfplumber
-    逐页切开的跨页表格语义，避免下游把续页当独立小表丢弃（如气缸活塞清单第17/18页）。"""
+    逐页切开的跨页表格语义，避免下游把任意续页当作独立小表丢弃。"""
     if not tables:
         return tables
 
