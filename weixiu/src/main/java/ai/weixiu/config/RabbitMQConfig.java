@@ -275,6 +275,7 @@ public class RabbitMQConfig {
     public RabbitTemplate rabbitTemplate(ConnectionFactory connectionFactory, MessageConverter jsonMessageConverter) {
         RabbitTemplate template = new RabbitTemplate(connectionFactory);
         template.setMessageConverter(jsonMessageConverter);
+        template.setMandatory(true);
         template.setConfirmCallback((data, ack, cause) -> {
             if (!ack) {
                 // publisher-confirm 失败时仅记录日志，降级由发送端处理

@@ -27,7 +27,14 @@ from typing import Optional, List
 import aiohttp
 import dashscope
 import redis.asyncio as aioredis
-from dashscope.embeddings.multimodal_embedding import AioMultiModalEmbedding
+
+try:
+    from dashscope.embeddings.multimodal_embedding import AioMultiModalEmbedding
+except ImportError:
+    # Older DashScope releases only expose the synchronous implementation.
+    # Keep the application importable and run that implementation in a worker
+    # thread so it does not block FastAPI's event loop.
+    AioMultiModalEmbedding = None
 
 from config.settings import get_settings
 from embeddings.rate_limiter import get_embedding_rate_limiter
@@ -88,13 +95,25 @@ class TextEmbedding:
     async def _call_api_async(self, inputs: List[dict]) -> List[List[float]]:
         """异步调用 dashscope MultiModalEmbedding，复用注入的 aiohttp 连接池。"""
         await get_embedding_rate_limiter().acquire()  # 全局限速：平滑突发，避免瞬时超百炼限流(429)
-        session = await self._get_session()
-        resp = await AioMultiModalEmbedding.call(
-            model=self.model,
-            input=inputs,
-            api_key=self.settings.dashscope_api_key,
-            session=session,
-        )
+        if AioMultiModalEmbedding is None:
+            logger.warning(
+                "Installed DashScope does not provide AioMultiModalEmbedding; "
+                "falling back to the synchronous API in a worker thread"
+            )
+            resp = await asyncio.to_thread(
+                dashscope.MultiModalEmbedding.call,
+                model=self.model,
+                input=inputs,
+                api_key=self.settings.dashscope_api_key,
+            )
+        else:
+            session = await self._get_session()
+            resp = await AioMultiModalEmbedding.call(
+                model=self.model,
+                input=inputs,
+                api_key=self.settings.dashscope_api_key,
+                session=session,
+            )
         if resp.status_code != 200:
             raise RuntimeError(
                 f"Embedding API 返回错误 code={resp.status_code} message={resp.message}"
