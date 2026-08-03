@@ -116,7 +116,7 @@ from services.pending_clarification import (
 )
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from services.temporary_plan_service import get_temporary_plan_service
-from config.settings import get_settings
+from config.settings import get_settings, validate_auth_tokens
 from schemas.models import AgentMode
 
 logger = logging.getLogger(__name__)
@@ -307,6 +307,9 @@ def _extract_structured_chat_payload(message: str) -> tuple[str, list[dict] | No
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
+    settings = get_settings()
+    validate_auth_tokens(settings.internal_token, settings.api_token)
+
     runtime = _runtime_snapshot()
     logger.info(
         "[runtime] build_id=%s git_commit=%s dirty=%s worktree=%s documents=%s",
@@ -7280,8 +7283,8 @@ async def manual_kg_extract(request: Request):
     result = await get_manual_kg_extractor().extract_document(document_id, device_type_hint, manual_id=manual_id, manual_name=manual_name)
 
     return {
-        "success": True,
-        "message": "操作成功",
+        "success": not bool(result.errors),
+        "message": "操作成功" if not result.errors else "知识图谱抽取部分失败，请查看 errors",
         "code": 200,
         "data": {
             "document_id":       result.document_id,

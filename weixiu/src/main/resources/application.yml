@@ -80,9 +80,10 @@ apikey: ${DASHSCOPE_API_KEY}
 ai:
   # Python 服务地址，Docker 部署时通过 PYTHON_SERVICE_URL 环境变量覆盖
   python-service-url: ${PYTHON_SERVICE_URL:http://localhost:8000}
+  # FixAgent→Java 使用 X-Internal-Token；Java→FixAgent 使用 X-Api-Token，二者必须不同。
   internal-token: ${INTERNAL_TOKEN}
-  # Python 端全站鉴权 token，与 FixAgent .env 中的 API_TOKEN 保持一致
-  api-token: ${AI_API_TOKEN:}
+  # Java→FixAgent 使用 X-Api-Token，与 FixAgent .env 中的 API_TOKEN 保持一致。
+  api-token: ${AI_API_TOKEN}
 weixiu:
   task-validate:
     enabled: true        # 入口校验总开关

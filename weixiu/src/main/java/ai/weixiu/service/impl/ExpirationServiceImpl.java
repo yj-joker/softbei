@@ -33,20 +33,20 @@ public class ExpirationServiceImpl implements ExpirationService {
 
     private final WebClient webClient;
     private final String pythonServiceUrl;
-    private final String internalToken;
+    private final String apiToken;
     private final Neo4jClient neo4jClient;
     private final ObjectMapper objectMapper;
     private final ExpirationReviewMapper reviewMapper;
 
     public ExpirationServiceImpl(
             @Value("${ai.python-service-url:http://localhost:8000}") String pythonServiceUrl,
-            @Value("${ai.internal-token}") String internalToken,
+            @Value("${ai.api-token}") String apiToken,
             Neo4jClient neo4jClient,
             ObjectMapper objectMapper,
             ExpirationReviewMapper reviewMapper
     ) {
         this.pythonServiceUrl = pythonServiceUrl;
-        this.internalToken = internalToken;
+        this.apiToken = apiToken;
         this.neo4jClient = neo4jClient;
         this.objectMapper = objectMapper;
         this.reviewMapper = reviewMapper;
@@ -67,7 +67,7 @@ public class ExpirationServiceImpl implements ExpirationService {
 
             webClient.post()
                     .uri("/ai/expiration/check-task-promotion")
-                    .header("X-Internal-Token", internalToken)
+                    .header("X-Api-Token", apiToken)
                     .bodyValue(body)
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -95,12 +95,24 @@ public class ExpirationServiceImpl implements ExpirationService {
             );
             webClient.post()
                     .uri("/ai/manual-kg/extract")
-                    .header("X-Api-Token", internalToken)
+                    .header("X-Api-Token", apiToken)
                     .bodyValue(body)
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
                     .subscribe(
-                            resp -> log.info("[KG抽取] 已触发: documentId={}", documentId),
+                            resp -> {
+                                Object success = resp != null ? resp.get("success") : null;
+                                if (Boolean.FALSE.equals(success)) {
+                                    log.warn("[KG抽取] 业务失败，未记录已触发: documentId={} message={}",
+                                            documentId, resp.get("message"));
+                                    return;
+                                }
+                                if (!Boolean.TRUE.equals(success)) {
+                                    log.warn("[KG抽取] 响应缺少成功标志，未记录已触发: documentId={}", documentId);
+                                    return;
+                                }
+                                log.info("[KG抽取] 已触发: documentId={}", documentId);
+                            },
                             e   -> log.warn("[KG抽取] 触发失败（非阻塞）: documentId={} err={}", documentId, e.getMessage())
                     );
         } catch (Exception e) {
@@ -120,7 +132,7 @@ public class ExpirationServiceImpl implements ExpirationService {
 
             webClient.post()
                     .uri("/ai/expiration/check-manual-upgrade")
-                    .header("X-Internal-Token", internalToken)
+                    .header("X-Api-Token", apiToken)
                     .bodyValue(upgradeBody)
                     .retrieve()
                     .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
@@ -143,7 +155,7 @@ public class ExpirationServiceImpl implements ExpirationService {
 
                 webClient.post()
                         .uri("/ai/manual-upgrade/sync")
-                        .header("X-Internal-Token", internalToken)
+                        .header("X-Api-Token", apiToken)
                         .bodyValue(syncBody)
                         .retrieve()
                         .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})

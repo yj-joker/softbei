@@ -51,7 +51,7 @@ public class MultimodalEmbeddingUtils {
 
     public MultimodalEmbeddingUtils(
             @Value("${ai.python-service-url:http://localhost:8000}") String pythonServiceUrl,
-            @Value("${ai.internal-token}") String apiToken,
+            @Value("${ai.api-token}") String apiToken,
             ObjectMapper objectMapper,
             MinioClient minioClient,
             MinioProperties minioProperties

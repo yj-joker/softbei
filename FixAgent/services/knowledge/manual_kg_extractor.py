@@ -29,7 +29,19 @@ from services.llm.service import get_llm_service
 
 logger = logging.getLogger(__name__)
 
-# ──────────────── 提示词 ────────────────
+
+class JavaApiError(RuntimeError):
+    """Java 内部回调失败，保留调用路径和 HTTP 状态但不暴露鉴权信息。"""
+
+    def __init__(self, path: str, status_code: Any = None, business_code: Any = None):
+        status = status_code if status_code is not None else "unavailable"
+        code_suffix = f" code={business_code}" if business_code is not None else ""
+        super().__init__(f"Java API request failed: path={path} status={status}{code_suffix}")
+        self.path = path
+        self.status_code = status_code
+        self.business_code = business_code
+
+
 
 _DEVICE_SYSTEM = """你是工业设备维修领域的专家。给定维修手册的文件名和开头内容，提取设备信息。
 
@@ -43,12 +55,41 @@ _DEVICE_SYSTEM = """你是工业设备维修领域的专家。给定维修手册
 }
 ```"""
 
-_COMPONENT_SYSTEM = """你是工业设备维修领域的专家。给定一个章节标题，提取其中的部件实体名称。
+_COMPONENT_SYSTEM = """你是工业设备维修领域的专家。判断一个**候选名称**是否指向设备上的物理部件。
 
-规则：
-- 只提取名词性部件名，去掉动词（拆卸/安装/检查等）和结构词（的/与/及等）
-- 保留型号/材料修饰词（如"铝合金气缸盖"→"气缸盖"，类型词可保留在component_type）
-- 如果标题描述的是整机操作而非具体部件，返回 has_component=false
+⚠️ 判断对象是"候选名"，不是章节标题。
+章节标题只是上下文参考。标题里的"参数/原理图/分解图/清单/技术参数/作业指导"等
+文档结构词**已经被规则剥离掉了**，不要因为标题里出现过这些词就否决候选名。
+例：标题"多合一总成原理图" → 候选名"多合一总成" → 这是物理部件，应放行。
+例：标题"动力电池主要参数" → 候选名"动力电池" → 这是物理部件，应放行。
+
+判定标准：候选名指向"设备上装着的、可以拆下来或摸得到的实体"就算物理部件，
+包括单个零件、总成、以及由零件构成的子系统。
+
+**是**物理部件（has_component=true）：
+- 零件：气缸盖、火花塞、凸轮轴、活塞环、助力油泵、水泵、涨紧器、紧固件
+- 组合件：曲轴与平衡轴、气缸与活塞、右曲轴箱盖与离合器、气缸头气门部
+- 总成：制动器总成、后桥总成、多合一总成、传动装置
+- 子系统：悬架系统、转向系统、制动系统
+- 整车装置：空调、电除霜、动力电池、空气压缩机、多合一控制器、充电控制器
+
+**不是**物理部件（has_component=false）：
+- 测量项/规格值：气门间隙、压缩压力、拧紧力矩、外压力比（是数值指标，不是零件）
+- 文档结构名：目录、前言、概述、注意事项、维修保养须知、安全须知
+- 纯数据/策略名：安全保护参数及策略、主要调整数据
+- 通信/协议概念：接口定义、插件定义、PGN512 故障信息、CAN 报文、网络拓扑
+- 供应商/品牌名：蓝海华腾、博世
+- 工具/仪表：万用表、扳手、举升机（是工具，不是被维修设备的部件）
+- 整句话：在维修区域垫上绝缘胶垫
+- 设备自身名称：候选名等于被维修的整车/整机名（如"纯电动汽车"），不是部件
+- 泛词单独出现：工具、数据、故障、参数、要点、须知
+
+规范化规则：
+- 候选名已基本干净，**尽量保留原样**，不要过度精简
+- 组合件保留完整（"曲轴与平衡轴"不要砍成"曲轴"）
+- "总成"是部件后缀，保留（"后桥总成"不要砍成"后桥"）
+- 只去掉材料修饰词，类型信息放 component_type
+- 名称长度 2~12 字
 
 严格返回 JSON：
 ```json
@@ -125,6 +166,8 @@ class ExtractionResult:
     faults_created: int = 0
     solutions_created: int = 0
     procedures_created: int = 0  # 维修规程（step聚合，直接挂Component）
+    components_rejected: int = 0  # 被准入闸门拒绝的候选数（可观测性：闸门松紧自检）
+    rejected_samples: List[Dict] = field(default_factory=list)  # 拒绝样本（标题+候选+原因）
     review_items: List[Dict] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     skipped: bool = False        # 结构质检未通过，整本跳过入图（0 污染）
@@ -194,6 +237,12 @@ class ManualKGExtractor:
                 return result
             logger.info("[KG抽取] 结构质检通过: document_id=%s stats=%s", document_id, gate["stats"])
 
+            # 1.5 建部件清单（证据基座）：零件清单表/分解图明细表的 part_name 是
+            # "手册自己承认的真实部件名"，命中即可直接放行，省一次 LLM 裁决。
+            part_inventory = _build_part_inventory(chunks)
+            logger.info("[KG抽取] 部件清单: document_id=%s size=%d sample=%s",
+                        document_id, len(part_inventory), sorted(part_inventory)[:8])
+
             # 2. 识别 Device（一次LLM调用）
             device = await self._identify_device(chunks, manifest, device_type_hint, manual_name)
             if not device:
@@ -228,8 +277,19 @@ class ManualKGExtractor:
             sem_component = asyncio.Semaphore(self._COMPONENT_CONCURRENCY)
 
             async def process_section(sec_title: str, sec_chunks: List[Dict]) -> None:
-                # 5a. 提取 Component
-                component = await self._extract_component(sec_title, sec_chunks, sem_llm)
+                # 5a. 提取 Component（准入闸门内置，脏候选在这里就被挡掉）
+                rejections: List[Dict] = []
+                component = await self._extract_component(
+                    sec_title, sec_chunks, sem_llm,
+                    part_inventory=part_inventory,
+                    rejections=rejections,
+                )
+                if rejections:
+                    result.components_rejected += len(rejections)
+                    # 只留前 20 条样本，避免大手册把结果对象撑爆
+                    keep = 20 - len(result.rejected_samples)
+                    if keep > 0:
+                        result.rejected_samples.extend(rejections[:keep])
                 comp_id = ""
                 if component:
                     sample_uid = _best_chunk_uid(sec_chunks)
@@ -334,23 +394,40 @@ class ManualKGExtractor:
                             if (proc_resp or {}).get("solutionId"):
                                 result.procedures_created += 1
 
-            # 并发处理所有section
-            await asyncio.gather(
+            # 并发处理所有section；每个分区异常必须进入业务结果，不能静默丢弃。
+            section_results = await asyncio.gather(
                 *[process_section(title, sec_chunks)
                   for title, sec_chunks in sections.items()],
                 return_exceptions=True,
             )
+            for section_title, section_result in zip(sections, section_results):
+                if isinstance(section_result, Exception):
+                    error_text = str(section_result)
+                    result.errors.append(
+                        f"section={section_title}: {error_text}"
+                    )
 
         except Exception as e:
             logger.error("[KG抽取] 异常: document_id=%s err=%s", document_id, e, exc_info=True)
             result.errors.append(str(e))
 
         logger.info(
-            "[KG抽取] 完成: document_id=%s device=%s components=%d faults=%d solutions=%d procedures=%d",
+            "[KG抽取] 完成: document_id=%s device=%s components=%d rejected=%d "
+            "faults=%d solutions=%d procedures=%d",
             document_id, result.device_name,
-            result.components_created, result.faults_created,
+            result.components_created, result.components_rejected,
+            result.faults_created,
             result.solutions_created, result.procedures_created,
         )
+        if result.rejected_samples:
+            logger.info(
+                "[KG抽取] 部件准入拒绝样本(前%d条): %s",
+                len(result.rejected_samples),
+                "; ".join(
+                    f"{s.get('candidate') or s.get('section_title')}←{s.get('reason')}"
+                    for s in result.rejected_samples
+                ),
+            )
         return result
 
     async def reextract_all(self) -> Dict[str, Any]:
@@ -464,31 +541,65 @@ class ManualKGExtractor:
         section_title: str,
         chunks: List[Dict],
         sem: asyncio.Semaphore,
+        part_inventory: frozenset = frozenset(),
+        device_name: str = "",
+        rejections: Optional[List[Dict]] = None,
     ) -> Optional[ExtractedComponent]:
-        """从章节标题（+ 少量内容）提取 Component 实体。"""
+        """从章节标题（+ 少量内容）提取 Component 实体，经准入闸门后才放行。
+
+        流程：归一化 → 硬规则否决 → 白名单快速通过 → LLM 裁决 → LLM 输出回炉硬规则。
+
+        与旧版的关键差别：旧版规则剥出非空字符串就直接入图（脏数据来源），
+        新版任何候选都必须过闸门，规则路径不再能绕过校验。
+        """
+        def _record(reason: str, candidate: str = "") -> None:
+            if rejections is not None:
+                rejections.append({
+                    "section_title": section_title,
+                    "candidate": candidate,
+                    "reason": reason,
+                })
+
         if not section_title or len(section_title.strip()) < 2:
+            _record("section_title 过短或为空")
             return None
 
-        # 快速规则：标题以常见动词结尾 → 直接提取名词部分
-        quick = _quick_extract_component(section_title)
-        if quick:
-            # 用chunk内容补充 key_specs
-            specs = _extract_specs_from_chunks(chunks[:3])
-            return ExtractedComponent(
-                name=quick,
-                component_type="",
-                key_specs=specs,
-                section_title=section_title,
-                source_chunk_uid=_best_chunk_uid(chunks),
-            )
+        # Stage 2：归一化，剥到不动点
+        candidate = _normalize_component_name(section_title)
 
-        # LLM提取（带信号量限流）
+        # Stage 3a：硬规则否决（候选非空时才判——剥成空的留给 LLM 从内容里找，保留旧版召回）
+        if candidate:
+            reason = _hard_reject_component(candidate, device_name)
+            if reason:
+                logger.info("[KG抽取] Component 硬规则拒绝: title=%s candidate=%s reason=%s",
+                            section_title, candidate, reason)
+                _record(reason, candidate)
+                return None
+
+            # Stage 3b：白名单快速通过——命中手册自己的零件清单，无需问 LLM
+            if candidate in part_inventory:
+                logger.debug("[KG抽取] Component 命中零件清单白名单: %s", candidate)
+                return ExtractedComponent(
+                    name=candidate,
+                    component_type="",
+                    key_specs=_extract_specs_from_chunks(chunks[:3]),
+                    section_title=section_title,
+                    source_chunk_uid=_best_chunk_uid(chunks),
+                )
+
+        # Stage 3c：LLM 裁决（硬规则过了但没命中白名单，或归一化剥成了空）
         async with sem:
             sample = "\n".join(
                 (c.get("metadata") or {}).get("raw_text") or c.get("text", "")
                 for c in chunks[:2]
             )[:600]
-            prompt = f"章节标题：{section_title}\n\n内容片段：\n{sample}"
+            prompt = (
+                f"【判断对象】候选名：{candidate or '（规则剥离后为空，请从下面的标题和内容里判断有无部件）'}\n\n"
+                f"【上下文参考，勿据此否决候选名】\n"
+                f"  被维修设备：{device_name or '未知'}\n"
+                f"  来源章节标题：{section_title}\n"
+                f"  章节内容片段：{sample or '（无内容）'}"
+            )
             try:
                 resp = await self.llm.chat(
                     messages=[
@@ -501,17 +612,29 @@ class ManualKGExtractor:
                     model=self.settings.intent_router_model,
                 )
                 data = _parse_json(resp["content"])
-                if data and data.get("has_component") and data.get("component_name"):
-                    specs = _extract_specs_from_chunks(chunks[:3])
-                    return ExtractedComponent(
-                        name=data["component_name"],
-                        component_type=data.get("component_type", ""),
-                        key_specs=specs,
-                        section_title=section_title,
-                        source_chunk_uid=_best_chunk_uid(chunks),
-                    )
+                if not data or not data.get("has_component") or not data.get("component_name"):
+                    _record("LLM 判定非物理部件", candidate)
+                    return None
+
+                llm_name = str(data["component_name"]).strip()
+                # LLM 输出回炉硬规则——防止模型输出整句话/结构词
+                reason = _hard_reject_component(llm_name, device_name)
+                if reason:
+                    logger.info("[KG抽取] Component LLM 输出被硬规则拒绝: title=%s llm_name=%s reason=%s",
+                                section_title, llm_name, reason)
+                    _record(f"LLM 输出未过硬规则：{reason}", llm_name)
+                    return None
+
+                return ExtractedComponent(
+                    name=llm_name,
+                    component_type=data.get("component_type", ""),
+                    key_specs=_extract_specs_from_chunks(chunks[:3]),
+                    section_title=section_title,
+                    source_chunk_uid=_best_chunk_uid(chunks),
+                )
             except Exception as e:
                 logger.warning("[KG抽取] Component LLM失败: title=%s err=%s", section_title, e)
+                _record(f"LLM 调用异常：{e}", candidate)
 
         return None
 
@@ -570,12 +693,22 @@ class ManualKGExtractor:
                     json=body,
                     headers=headers,
                 )
-                resp.raise_for_status()
+                if resp.status_code < 200 or resp.status_code >= 300:
+                    raise JavaApiError(path, resp.status_code)
                 data = resp.json()
+                if isinstance(data, dict):
+                    business_code = data.get("code")
+                    business_success = data.get("success")
+                    if (business_code is not None and str(business_code) != "200") or business_success is False:
+                        raise JavaApiError(path, resp.status_code, business_code)
+                    if "data" in data and data.get("data") is None:
+                        raise JavaApiError(path, resp.status_code, business_code or "null-data")
                 return data.get("data") if isinstance(data, dict) and "data" in data else data
-        except Exception as e:
-            logger.warning("[KG抽取] Java API失败: path=%s err=%s", path, e)
-            return None
+        except JavaApiError:
+            raise
+        except Exception:
+            logger.warning("[KG抽取] Java API失败: path=%s", path)
+            raise JavaApiError(path)
 
 
 # ──────────────── 工具函数 ────────────────
@@ -691,29 +824,149 @@ _CHAPTER_PREFIX = re.compile(r"^第?\s*[一二三四五六七八九十百零\d]+
 _NUMBER_PREFIX = re.compile(r"^\d+(\.\d+)*\s+")
 
 
-def _quick_extract_component(title: str) -> str:
-    """规则提取 section_title 中的 Component 名词。"""
-    t = title.strip()
+# 结构性后缀：文档/参数/图表类尾巴，剥掉后剩下的往往才是真部件
+# （"动力电池主要参数"→"动力电池"、"）后桥总成分解图"→"后桥总成"）。
+# 按长度降序排列，保证 "主要参数" 先于 "参数" 匹配。
+_STRUCTURAL_SUFFIXES = tuple(sorted((
+    # 注意：只放"纯结构性"词尾。绝不能放含部件语素的组合（如"总成分解图"——
+    # 它会把属于部件名的"总成"一起吃掉，"后桥总成分解图"就剩"后桥"了）。
+    "各部分技术参数", "参数及策略", "技术参数", "主要参数",
+    "调整数据", "识别标志", "拧紧力矩", "插件定义", "接口定义", "作业指导",
+    "安全须知", "网络拓扑", "分解图", "原理图", "示意图", "结构图",
+    "一览表", "明细表", "规格表", "参数表", "各部分",
+    "参数", "数据", "拓扑", "定义", "力矩", "标志", "标识", "识别",
+    "指导", "须知", "策略", "清单", "明细", "规格",
+), key=len, reverse=True))
+
+# 修饰前缀：不承载部件身份的限定词（"整车技术参数"剥完剩"整车"→拒）
+_MODIFIER_PREFIXES = tuple(sorted((
+    "各部分", "主要", "重要", "整车", "车辆", "使用",
+), key=len, reverse=True))
+
+# 裸结构词：剥离后正好等于这些词，说明整个标题只是文档结构，不是部件
+_BARE_STRUCTURAL_WORDS = frozenset({
+    "前言", "目录", "概述", "简介", "说明", "序言", "注意事项", "总则", "附录",
+    "工具", "数据", "故障", "参数", "系统", "总成", "要点", "定义", "标识",
+    "识别", "拓扑", "清单", "明细", "规格", "力矩", "指导", "须知", "策略",
+    "接口", "主要", "重要", "整车", "车辆", "部分", "项目", "内容", "安全",
+    "维修", "保养", "检查", "安装", "拆卸", "标志", "方法", "步骤", "流程",
+})
+
+# 兼容旧名（曾用于黑名单判断，现已并入 _BARE_STRUCTURAL_WORDS）
+_NON_COMPONENT_TITLES = ("前言", "目录", "概述", "简介", "说明", "序言", "注意事项", "总则", "附录")
+
+# 首尾残留标点：**不含** 。！？：: —— 那些要留给硬规则识别"整句话"
+_EDGE_PUNCT_RE = re.compile(
+    r"^[\s、，,；;·＝=—\-–）)】\]》>」』]+|[\s、，,；;·＝=—\-–（(【\[《<「『]+$"
+)
+# 句末标点：出现在结尾说明这是一整句话/一个标签，不是部件名
+_SENTENCE_END_RE = re.compile(r"[。！？!?：:]$")
+# 协议/编码类：CAN 报文、PGN 码、纯 ASCII 编号
+_PROTOCOL_RE = re.compile(r"[A-Za-z]{2,}\s*\d{2,}|\bPGN\b|\bCAN\b|\bVIN\b", re.IGNORECASE)
+_PURE_ASCII_RE = re.compile(r"^[A-Za-z0-9:._\-/\s]+$")
+
+
+def _strip_edge_punct(text: str) -> str:
+    """剥掉首尾残留标点（孤立括号、顿号、公式符号），保留句末标点供硬规则判断。"""
+    prev = None
+    t = (text or "").strip()
+    while t != prev:
+        prev = t
+        t = _EDGE_PUNCT_RE.sub("", t).strip()
+    return t
+
+
+def _normalize_component_name(title: str) -> str:
+    """把 section_title 归一化成部件名候选，剥到不动点。
+
+    剥离顺序：章节号 → 成对括号 → 首尾标点 →
+    循环（动作词后缀/前缀 → 清单类后缀 → 结构性后缀 → 修饰前缀 → 尾部连词）。
+
+    循环是关键：一次性剥离会留下残渣（"检查、维修和更换" 一次剥完剩 "、维修"）。
+    返回空字符串表示剥完什么都不剩，即整个标题都是动作词/结构词。
+    """
+    t = (title or "").strip()
+    if not t:
+        return ""
     t = _CHAPTER_PREFIX.sub("", t).strip()
     t = _NUMBER_PREFIX.sub("", t).strip()
-    # 先去后缀动作（"火花塞的检查"→"火花塞"），再去前缀动作（"拆卸火花塞"→"火花塞"）
-    t = _ACTION_SUFFIX.sub("", t).strip()
-    t = _ACTION_PREFIX.sub("", t).strip()
-    # 去掉"装配部件清单/装配零件清单/部件清单/零件清单/清单"等表格类后缀
-    t = re.sub(r"(装配)?(部件|零件)?清单$", "", t).strip()
-    t = re.sub(r"(装配|分)?(部件|零件|组件|分部件)$", "", t).strip()
-    # 去掉括号内内容
+    # 成对括号内容（孤立括号留给 _strip_edge_punct）
     t = re.sub(r"[（(][^）)]{0,30}[）)]", "", t).strip()
-    # 非部件章节黑名单（前言/目录/概述等）
-    if t in _NON_COMPONENT_TITLES or any(k in t for k in _NON_COMPONENT_TITLES):
-        return ""
-    # 至少2个汉字，不超过12个字
-    if 2 <= len(t) <= 12 and re.search(r"[一-鿿]", t):
-        return t
+    t = _strip_edge_punct(t)
+
+    for _ in range(8):
+        before = t
+        t = _ACTION_SUFFIX.sub("", t).strip()
+        t = _ACTION_PREFIX.sub("", t).strip()
+        # 前缀动作剥完可能留下"式/型/用/的"开头（"拆卸式制动器总成"→"式制动器总成"）
+        t = re.sub(r"^[式型用的]", "", t).strip()
+        t = re.sub(r"(装配)?(部件|零件)?清单$", "", t).strip()
+        t = re.sub(r"(装配|分)?(部件|零件|组件|分部件)$", "", t).strip()
+        for suffix in _STRUCTURAL_SUFFIXES:
+            if t.endswith(suffix) and len(t) > len(suffix):
+                t = t[: -len(suffix)].strip()
+                break
+        for prefix in _MODIFIER_PREFIXES:
+            if t.startswith(prefix) and len(t) > len(prefix):
+                t = t[len(prefix):].strip()
+                break
+        # 尾部悬空连词（"车辆的识别标志"剥完剩"车辆的"）
+        t = re.sub(r"[的及与和或]$", "", t).strip()
+        t = _strip_edge_punct(t)
+        if not t or t == before:
+            break
+    return t
+
+
+def _hard_reject_component(candidate: str, device_name: str = "") -> str:
+    """硬规则否决：确定不是部件的直接毙，零 LLM 成本。
+
+    返回拒绝原因；返回空字符串表示通过硬规则（还需白名单或 LLM 裁决）。
+    """
+    t = (candidate or "").strip()
+    if not t:
+        return "候选为空"
+    if _SENTENCE_END_RE.search(t):
+        return "以句末标点结尾（是整句话或标签，非部件名）"
+    if _DIRTY_TITLE_CHARS.search(t):
+        return "含公式符号/换行（PDF 解析残渣）"
+    if len(t) < 2:
+        return f"过短（{len(t)} 字）"
+    if len(t) > 12:
+        return f"过长（{len(t)} 字，部件名不应超过 12 字）"
+    if not re.search(r"[一-鿿]", t):
+        return "无汉字"
+    if _PURE_ASCII_RE.match(t):
+        return "纯 ASCII 编号"
+    if _PROTOCOL_RE.search(t):
+        return "协议/报文编码（如 PGN、CAN）"
+    if t in _BARE_STRUCTURAL_WORDS:
+        return f"裸结构词「{t}」，非物理部件"
+    if device_name and (t == device_name.strip()):
+        return "候选等于设备名，不是部件"
     return ""
 
 
-_NON_COMPONENT_TITLES = ("前言", "目录", "概述", "简介", "说明", "序言", "注意事项", "总则", "附录")
+def _build_part_inventory(chunks: List[Dict]) -> frozenset:
+    """从零件清单表/分解图明细表的 table_row 收集"已知真实部件名"作为白名单。
+
+    切分阶段已对每个 table_row 跑过 _extract_part_name 并存进 metadata.part_name，
+    这里直接复用——这些是手册自己列出的部件名，可信度最高。
+    白名单自身也要过归一化+硬规则，避免表格里的脏值进来。
+    """
+    inventory = set()
+    for chunk in chunks:
+        meta = chunk.get("metadata") or {}
+        if meta.get("chunk_label") != "table_row":
+            continue
+        part_name = (meta.get("part_name") or "").strip()
+        if not part_name:
+            continue
+        normalized = _normalize_component_name(part_name)
+        if not normalized or _hard_reject_component(normalized):
+            continue
+        inventory.add(normalized)
+    return frozenset(inventory)
 
 
 def _extract_specs_from_chunks(chunks: List[Dict]) -> List[str]:
