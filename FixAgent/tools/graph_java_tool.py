@@ -144,7 +144,12 @@ class JavaGraphDiagnosisPathTool(BaseTool):
             total = data.get("total", 0)
             cases = data.get("cases", []) or []
 
-            if not records and not cases:
+            # GraphQueryService 以 Component 为锚点，Fault 是 OPTIONAL；因此仅命中
+            # Device→Component 骨架时也会返回 record。骨架用于设备隔离/反查，不是诊断证据。
+            # 手册规程已撤出图谱后，这里只保留真正含 Fault 的因果路径。
+            diagnostic_records = [record for record in records if record.get("faultName")]
+
+            if not diagnostic_records and not cases:
                 logger.info("[graph_java_tool] 未找到匹配的诊断路径或案例")
                 return {
                     "paths_found": 0,
@@ -160,7 +165,7 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                     ),
                 }
 
-            for i, r in enumerate(records):
+            for i, r in enumerate(diagnostic_records):
                 logger.info("[graph_java_tool] 路径%d: %s → %s → %s (matchScore=%s, 方案数=%d)",
                             i + 1,
                             r.get("deviceName", "?"),
@@ -169,20 +174,20 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                             r.get("matchScore", "?"),
                             len(r.get("solutions") or []))
 
-            logger.info("[graph_java_tool] 查询完成: 命中 %d 条路径, 相关案例 %d 条, 总计 %d",
-                        len(records), len(cases), total)
+            logger.info("[graph_java_tool] 查询完成: 原始记录 %d 条, 有效诊断路径 %d 条, 相关案例 %d 条",
+                        len(records), len(diagnostic_records), len(cases))
 
-            context = self._format_paths(records, keyword)
+            context = self._format_paths(diagnostic_records, keyword)
             if cases:
                 context = context + "\n" + self._format_cases(cases)
 
             return {
-                "paths_found": len(records),
+                "paths_found": len(diagnostic_records),
                 "cases_found": len(cases),
-                "total": total,
+                "total": len(diagnostic_records),
                 "evidence_status": "found",
                 "context": context,
-                "raw_records": records,
+                "raw_records": diagnostic_records,
                 "raw_cases": cases,
             }
 
@@ -204,98 +209,47 @@ class JavaGraphDiagnosisPathTool(BaseTool):
 
     @staticmethod
     def _format_paths(records: list, keyword: str = None) -> str:
-        """
-        将 DiagnosisPathVO 列表格式化为 LLM 可读的图谱证据链文本。
-
-        支持两种路径类型：
-        - 诊断路径：Component-CAUSES->Fault-HAS_SOLUTION->Solution（faultName 非空）
-        - 维修规程路径：Component-HAS_PROCEDURE->Solution（faultName 为空，kind=procedure）
-        """
+        """将真实 Fault 诊断链格式化为 LLM 可读文本。"""
         lines = []
 
         if keyword:
             lines.append(f"【设备线索】{keyword}")
             lines.append("")
 
-        lines.append("【图谱证据链】")
+        lines.append("【图谱诊断证据链】")
 
         for i, path in enumerate(records):
             device_name = path.get("deviceName") or "未知设备"
             component_name = path.get("componentName") or "未知部件"
-            fault_name = path.get("faultName")          # 有值=诊断路径，None/空=规程路径
-            fault_severity = path.get("faultSeverity")
+            fault_name = path.get("faultName") or "未知故障"
+            fault_severity = path.get("faultSeverity") or "未知"
             match_score = path.get("matchScore", 0)
             solutions = path.get("solutions") or []
-
-            # 判断路径类型：有故障节点=诊断路径；无故障节点=维修规程路径
-            is_procedure_path = not fault_name and (
-                not solutions or all(
-                    (sol.get("kind") or "fault_solution") == "procedure"
-                    for sol in solutions
-                )
+            path_text = (
+                path.get("pathText")
+                or f"{device_name} → {component_name} → {fault_name}"
             )
-
-            if is_procedure_path:
-                # ── 维修规程路径 ──────────────────────────────────────────────
-                path_text = (
-                    path.get("pathText")
-                    or f"{device_name} -> OWNS -> {component_name} -> HAS_PROCEDURE -> ..."
-                )
-                lines.append(f"{i + 1}. {path_text}")
-                lines.append(f"   设备：{device_name}")
-                lines.append(f"   相关部件：{component_name}")
-                lines.append(f"   路径类型：维修规程（来自拆装手册，无故障触发）")
-                lines.append(f"   匹配维度：{match_score}")
-                if solutions:
-                    for j, sol in enumerate(solutions):
-                        title = sol.get("title") or "暂无标题"
-                        est_time = sol.get("estimatedTime")
-                        verified = sol.get("verified")
-                        status = sol.get("status", "active")
-                        time_str = f"{est_time}分钟" if est_time else "未知"
-                        verified_str = "已验证" if verified else "未验证(手册推断)"
-                        deprecated_suffix = " [已过期]" if status == "deprecated" else ""
-                        lines.append(
-                            f"   维修规程{j + 1}：{title}"
-                            f"（{time_str}，{verified_str}）{deprecated_suffix}"
-                        )
-                else:
-                    lines.append("   维修规程：暂无")
-            else:
-                # ── 诊断路径 ──────────────────────────────────────────────────
-                fault_name = fault_name or "未知故障"
-                fault_severity = fault_severity or "未知"
-                path_text = (
-                    path.get("pathText")
-                    or f"{device_name} → {component_name} → {fault_name}"
-                )
-                lines.append(f"{i + 1}. {path_text}")
-                lines.append(f"   设备：{device_name}")
-                lines.append(f"   可能相关部件：{component_name}")
-                lines.append(f"   匹配故障：{fault_name}")
-                lines.append(f"   故障等级：{fault_severity}")
-                lines.append(f"   匹配维度：{match_score}")
-                if solutions:
-                    for j, sol in enumerate(solutions):
-                        title = sol.get("title") or "暂无标题"
-                        est_time = sol.get("estimatedTime")
-                        verified = sol.get("verified")
-                        status = sol.get("status", "active")
-                        time_str = f"{est_time}分钟" if est_time else "未知"
-                        verified_str = "已验证" if verified else "未验证(手册推断)"
-                        deprecated_suffix = " [已过期]" if status == "deprecated" else ""
-                        lines.append(
-                            f"   方案{j + 1}：{title}"
-                            f"（{time_str}，{verified_str}）{deprecated_suffix}"
-                        )
-                else:
-                    # 兼容旧字段
-                    sol_title = path.get("solutionTitle") or "暂无解决方案"
-                    est_time = path.get("estimatedTime")
-                    verified = path.get("verified")
+            lines.append(f"{i + 1}. {path_text}")
+            lines.append(f"   设备：{device_name}")
+            lines.append(f"   可能相关部件：{component_name}")
+            lines.append(f"   匹配故障：{fault_name}")
+            lines.append(f"   故障等级：{fault_severity}")
+            lines.append(f"   匹配维度：{match_score}")
+            if solutions:
+                for j, sol in enumerate(solutions):
+                    title = sol.get("title") or "暂无标题"
+                    est_time = sol.get("estimatedTime")
+                    verified = sol.get("verified")
+                    status = sol.get("status", "active")
                     time_str = f"{est_time}分钟" if est_time else "未知"
-                    verified_str = "已验证" if verified else "未验证(手册推断)"
-                    lines.append(f"   推荐方案：{sol_title}（{time_str}，{verified_str}）")
+                    verified_str = "已验证" if verified else "未验证"
+                    deprecated_suffix = " [已过期]" if status == "deprecated" else ""
+                    lines.append(
+                        f"   方案{j + 1}：{title}"
+                        f"（{time_str}，{verified_str}）{deprecated_suffix}"
+                    )
+            else:
+                lines.append("   已知解决方案：暂无（仅确认了部件—故障关系）")
 
             lines.append("")
 

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 MAINTENANCE_SYSTEM_PROMPT = """你是一名专业的设备检修流程生成AI，负责根据故障信息和参考资料生成详细的检修步骤。
 
 ## 你的任务
-根据提供的故障描述、设备信息，以及预检索到的维修手册和知识图谱参考资料，生成一份结构化的检修步骤。
+根据提供的故障描述、设备信息，以及预检索到的维修手册参考资料，生成一份结构化的检修步骤。
 
 ## 重要：来源标注要求
 你生成的每一个步骤都必须标注来源（sources）。来源分为两类：
@@ -64,29 +64,11 @@ MAINTENANCE_SYSTEM_PROMPT = """你是一名专业的设备检修流程生成AI�
         {"type": "graph", "pathText": "设备→部件→故障→解决方案", "faultName": "故障名", "solutionTitle": "方案名"}
       ]
     }
-  ],
-  "graphExtraction": {
-    "deviceName": "从故障描述中识别的设备名称",
-    "components": [
-      {"name": "涉及的部件名称", "relation": "该部件与本次故障的关系描述"}
-    ],
-    "faults": [
-      {"name": "提炼的故障名称（简洁准确）", "severity": "轻微/一般/严重/致命", "relatedComponent": "关联的部件名称"}
-    ],
-    "solutions": [
-      {"title": "解决方案标题", "relatedFault": "关联的故障名称", "summary": "方案简要描述（一句话）"}
-    ]
-  }
+  ]
 }
 ```
 
-## graphExtraction 提取规则
-1. **deviceName**：从故障描述和设备信息中提取设备名称，尽量简洁（如"YC6108ZQ发动机"而非"3号车间的YC6108ZQ发动机"）
-2. **components**：提取故障涉及的所有部件，每个部件说明与故障的关系
-3. **faults**：将故障描述提炼为结构化的故障名称，severity 根据影响程度判断
-4. **solutions**：每个故障对应一个解决方案，title 要简洁，summary 用一句话概括
-5. 如果信息不足无法提取某个字段，对应数组可以为空，但 graphExtraction 对象必须存在
-
+## 生成规则
 ## 生成规则
 1. 步骤数量通常 4-8 步，根据复杂度调整
 2. 第一步通常是安全准备（断电/泄压/冷却等）
@@ -187,13 +169,12 @@ class MaintenanceAgent(BaseAgent):
                     "error": result.metadata.get("error_detail", "Agent执行失败"),
                 }
 
-            # ===== Step 3: 解析步骤 + 图谱线索 + 交叉验证 + 计算置信度 =====
+            # ===== Step 3: 解析步骤 + 交叉验证 + 计算置信度 =====
             parsed = self._parse_llm_output(result.message)
             if parsed is None or not parsed.get("steps"):
                 return {"success": False, "error": "无法解析LLM输出为结构化步骤"}
 
             steps = parsed["steps"]
-            graph_extraction = parsed.get("graphExtraction")
 
             # 为每个步骤计算生成置信度
             for step in steps:
@@ -204,7 +185,6 @@ class MaintenanceAgent(BaseAgent):
             return {
                 "success": True,
                 "steps": steps,
-                "graphExtraction": graph_extraction,
                 "latency_ms": result.latency_ms,
             }
 
@@ -574,27 +554,16 @@ class MaintenanceAgent(BaseAgent):
     # ==================== LLM 输出解析 ====================
 
     def _parse_llm_output(self, message: str) -> Optional[Dict]:
-        """
-        从LLM输出中提取完整JSON（steps + graphExtraction）。
-        返回 {"steps": [...], "graphExtraction": {...}} 或 None。
-        """
+        """从LLM输出中提取步骤JSON。"""
         data = self._extract_json_object(message)
         if data and isinstance(data, dict) and "steps" in data:
             result = {"steps": self._normalize_steps(data["steps"])}
-            # 提取图谱线索（可选字段，LLM可能没返回）
-            if "graphExtraction" in data and isinstance(data["graphExtraction"], dict):
-                result["graphExtraction"] = data["graphExtraction"]
-                logger.info("[MaintenanceAgent] 图谱线索提取成功: %s",
-                            json.dumps(data["graphExtraction"], ensure_ascii=False)[:300])
-            else:
-                result["graphExtraction"] = None
-                logger.info("[MaintenanceAgent] LLM未返回图谱线索")
             return result
 
         # 兜底：尝试只提取 steps 数组
         data = self._extract_json_array(message)
         if data:
-            return {"steps": self._normalize_steps(data), "graphExtraction": None}
+            return {"steps": self._normalize_steps(data)}
 
         logger.warning("[MaintenanceAgent] 无法解析LLM输出JSON，原始输出: %s", message[:500])
         return None

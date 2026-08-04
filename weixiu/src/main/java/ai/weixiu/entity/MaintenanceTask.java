@@ -46,8 +46,25 @@ public class MaintenanceTask implements Serializable {
     /** 检修等级: ROUTINE(日常保养) / MINOR(小修) / MAJOR(大修) */
     private String maintenanceLevel;
 
-    /** 状态: CREATED / GENERATING / GENERATED / GENERATE_FAILED / EXECUTING / CLOSED */
+    /** 状态: CREATED / GENERATING / GENERATED / GENERATE_FAILED / EXECUTING / RESOLUTION_PENDING / CLOSED */
     private String status;
+
+    /** 最终维修结果: RESOLVED / PARTIALLY_RESOLVED / UNRESOLVED */
+    private String resolutionStatus;
+    private String finalFaultCause;
+    private String effectiveMeasure;
+    private String completionSummary;
+    private LocalDateTime resolvedAt;
+
+    /** 固化后的执行证据快照，不对任务列表 VO 暴露 */
+    @TableField(typeHandler = JacksonTypeHandler.class)
+    private Object evidenceBundle;
+    private Integer evidenceVersion;
+    private String extractionStatus;
+    private String extractionError;
+    private String extractionRequestId;
+    private LocalDateTime extractionRequestedAt;
+    private LocalDateTime extractionCompletedAt;
 
     /** 生成模式: PROCEDURE_COPY(直接拷贝规程) / AI_ADAPT(AI基于规程微调) / AI_GENERATE(AI从零生成) */
     private String generateMode;

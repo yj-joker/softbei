@@ -2,8 +2,9 @@
 import { ref, reactive, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, Refresh, DocumentAdd, Share, CloseBold, Right } from '@element-plus/icons-vue'
-import { getTaskList, promoteToProcedure, promoteToGraph, skipPromotion } from '@/api/task'
+import { getTaskList, promoteToProcedure, skipPromotion } from '@/api/task'
 import DistillationReviewPanel from '@/components/DistillationReviewPanel.vue'
+import TaskEvidenceCandidateReview from '@/components/TaskEvidenceCandidateReview.vue'
 import ExpirationReviewSection from '@/components/ExpirationReviewSection.vue'
 
 /* ========== Tab ========== */
@@ -40,6 +41,7 @@ const STATUS_MAP = {
   GENERATE_FAILED: { label: '生成失败', color: '#c5402c', bg: '#fbeae4' },
   EXECUTING:       { label: '执行中',   color: '#a8605f', bg: '#f5ece8' },
   CLOSED:          { label: '已关闭',   color: 'var(--plaza-text-muted)', bg: 'var(--plaza-panel-bg)' },
+  RESOLUTION_PENDING: { label: '待确认结果', color: '#df9226', bg: '#fdf2e0' },
 }
 const PROMO_MAP = {
   PENDING:  { label: '待沉淀', color: '#df9226', bg: '#fdf2e0' },
@@ -125,21 +127,8 @@ async function handlePromoteProcedure(row) {
   }
 }
 
-async function handlePromoteGraph(row) {
-  addBusy(row.id)
-  try {
-    await promoteToGraph(row.id, row.graphExtraction || {})
-    ElMessage.success('已沉淀到知识图谱')
-    loadTasks(pagination.page)
-  } catch (e) {
-    ElMessage.error('沉淀图谱失败：' + (e.message || ''))
-  } finally {
-    removeBusy(row.id)
-  }
-}
-
 async function handleSkip(row, type) {
-  const label = type === 'procedure' ? '规程' : type === 'graph' ? '图谱' : '全部'
+  const label = type === 'procedure' ? '规程' : '全部'
   try {
     await ElMessageBox.confirm(
       `确认跳过「${row.taskNumber}」的${label}沉淀？此任务不再出现在待审核列表中。`,
@@ -241,7 +230,7 @@ function graphExtractionSections(extraction) {
 }
 
 function needsDistill(row) {
-  return canPromote(row) && (row.promotedProcedure === 'PENDING' || row.promotedGraph === 'PENDING')
+  return canPromote(row) && row.promotedProcedure === 'PENDING'
 }
 
 onMounted(() => loadTasks(1))
@@ -482,26 +471,17 @@ onMounted(() => loadTasks(1))
                     沉淀规程
                   </el-button>
                   <el-button
-                    v-if="canPromote(row) && row.promotedGraph === 'PENDING'"
-                    size="small"
-                    style="color:#a8605f;border-color:#e0c4bf;background:#f5ece8"
-                    :loading="isBusy(row.id)"
-                    @click="handlePromoteGraph(row)"
-                  >
-                    沉淀图谱
-                  </el-button>
-                  <el-button
-                    v-if="canPromote(row) && (row.promotedProcedure === 'PENDING' || row.promotedGraph === 'PENDING')"
+                    v-if="canPromote(row) && row.promotedProcedure === 'PENDING'"
                     size="small"
                     type="danger"
                     plain
                     :loading="isBusy(row.id)"
-                    @click="handleSkip(row, 'both')"
+                    @click="handleSkip(row, 'procedure')"
                   >
                     跳过
                   </el-button>
                   <span
-                    v-if="!canPromote(row) || (row.promotedProcedure !== 'PENDING' && row.promotedGraph !== 'PENDING')"
+                    v-if="!canPromote(row) || row.promotedProcedure !== 'PENDING'"
                     style="color:var(--plaza-text-muted);font-size:12px"
                   >-</span>
                 </div>
@@ -533,6 +513,13 @@ onMounted(() => loadTasks(1))
           </span>
         </template>
         <DistillationReviewPanel :jump-to-id="focusTaskId" :key="activeTab === 'review' ? 'review' : 'idle'" />
+      </el-tab-pane>
+
+      <el-tab-pane name="evidence-review">
+        <template #label>
+          <span class="tab-label-custom">任务证据候选 <span class="tab-badge">候选审核</span></span>
+        </template>
+        <TaskEvidenceCandidateReview />
       </el-tab-pane>
 
       <el-tab-pane name="expiration-review">

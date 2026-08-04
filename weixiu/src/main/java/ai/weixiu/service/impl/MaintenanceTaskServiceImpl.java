@@ -13,15 +13,19 @@ import ai.weixiu.mapper.ManualDeviceMapper;
 import ai.weixiu.mapper.MaintenanceTaskMapper;
 import ai.weixiu.mapper.ProcedureStepMapper;
 import ai.weixiu.mapper.StandardProcedureMapper;
+import ai.weixiu.mapper.TaskGraphExtractionCandidateMapper;
 import ai.weixiu.mapper.TaskChatMessageMapper;
 import ai.weixiu.mapper.TaskStepRecordMapper;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.dto.MaintenanceTaskDTO;
 import ai.weixiu.pojo.dto.StepExecuteDTO;
+import ai.weixiu.pojo.dto.TaskResolutionDTO;
 import ai.weixiu.pojo.query.MaintenanceTaskQuery;
 import ai.weixiu.pojo.vo.MaintenanceTaskVO;
 import ai.weixiu.pojo.vo.StepSourceVO;
 import ai.weixiu.pojo.vo.TaskStepRecordVO;
+import ai.weixiu.service.TaskCompletionTransitionService;
+import ai.weixiu.service.TaskEvidenceBundleService;
 import ai.weixiu.service.MaintenanceTaskService;
 import ai.weixiu.service.MemoryPreferenceService;
 import ai.weixiu.service.MioIOUpLoadService;
@@ -29,6 +33,7 @@ import ai.weixiu.service.ExpirationService;
 import ai.weixiu.utils.MultimodalEmbeddingUtils;
 import ai.weixiu.utils.BaseContext;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.toolkit.Db;
@@ -44,6 +49,8 @@ import org.springframework.beans.BeanUtils;
 import org.springframework.data.neo4j.core.Neo4jClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.web.reactive.function.client.WebClient;
 
 import java.time.LocalDate;
@@ -75,6 +82,13 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     private final MultimodalEmbeddingUtils multimodalEmbeddingUtils;
     private final WebClient webClient;
     private final ExpirationService expirationService;
+    private final TaskCompletionTransitionService completionTransitionService;
+    @org.springframework.beans.factory.annotation.Autowired
+    private TaskGraphExtractionCandidateMapper taskCandidateMapper;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ai.weixiu.mq.TaskEvidenceExtractionProducer taskEvidenceExtractionProducer;
+    @org.springframework.beans.factory.annotation.Autowired
+    private ai.weixiu.service.TaskEvidenceExtractionFailureService taskEvidenceExtractionFailureService;
 
     @Value("${weixiu.task-validate.enabled:true}")
     private boolean validateEnabled;
@@ -243,7 +257,15 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     @Override
     @Transactional
     public void onStepVerifyResult(Long stepId, Boolean aiPass, Double confidence, String reason) {
-        TaskStepRecord step = stepMapper.selectById(stepId);
+        TaskStepRecord initialStep = stepMapper.selectById(stepId);
+        if (initialStep == null) {
+            log.warn("[任务] AI验证回调：步骤不存在 stepId={}", stepId);
+            return;
+        }
+
+        TaskCompletionTransitionService.LockedTaskAndSteps locked =
+                completionTransitionService.lockTaskAndSteps(initialStep.getTaskId());
+        TaskStepRecord step = locked.stepById(stepId);
         if (step == null) {
             log.warn("[任务] AI验证回调：步骤不存在 stepId={}", stepId);
             return;
@@ -275,17 +297,12 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         stepMapper.updateById(step);
 
         // COMPLETED 或 AI_PASSED 都视为该步骤已完成，检查任务是否可关闭
-        if ("COMPLETED".equals(step.getStatus()) || "AI_PASSED".equals(step.getStatus())) {
-            MaintenanceTask task = taskMapper.selectById(step.getTaskId());
-            if (task != null) {
-                checkAllStepsCompleted(task);
-                saveFocusStep(task.getId(), task.getReporterId(), nextIncompleteStep(task.getId(), step.getId()), "NORMAL");
-            }
-        } else if ("AI_REJECTED".equals(step.getStatus())) {
-            MaintenanceTask task = taskMapper.selectById(step.getTaskId());
-            if (task != null) {
-                saveFocusStep(task.getId(), task.getReporterId(), step.getId(), "NORMAL");
-            }
+        MaintenanceTask task = locked.task();
+        if (("COMPLETED".equals(step.getStatus()) || "AI_PASSED".equals(step.getStatus())) && task != null) {
+            completionTransitionService.advanceIfAllStepsDone(task.getId());
+            saveFocusStep(task.getId(), task.getReporterId(), nextIncompleteStep(task.getId(), step.getId()), "NORMAL");
+        } else if ("AI_REJECTED".equals(step.getStatus()) && task != null) {
+            saveFocusStep(task.getId(), task.getReporterId(), step.getId(), "NORMAL");
         }
     }
 
@@ -294,13 +311,17 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     @Override
     @Transactional
     public TaskStepRecordVO forceCompleteStep(Long taskId, Long stepId, String reason) {
-        MaintenanceTask task = getTaskOrThrow(taskId);
+        TaskCompletionTransitionService.LockedTaskAndSteps locked = completionTransitionService.lockTaskAndSteps(taskId);
+        MaintenanceTask task = locked.task();
+        if (task == null) {
+            throw new NotFoundException("任务不存在");
+        }
         if (!"EXECUTING".equals(task.getStatus())) {
             throw new TaskStateException("任务未在执行中，当前状态: " + task.getStatus());
         }
 
-        TaskStepRecord step = stepMapper.selectById(stepId);
-        if (step == null || !step.getTaskId().equals(taskId)) {
+        TaskStepRecord step = locked.stepById(stepId);
+        if (step == null) {
             throw new NotFoundException("步骤不存在");
         }
         if (!"AI_REJECTED".equals(step.getStatus())) {
@@ -317,7 +338,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         log.info("[任务] 工人强制完成步骤 taskId={} stepId={} aiConfidence={} reason={}",
                 taskId, stepId, step.getAiConfidence(), reason);
 
-        checkAllStepsCompleted(task);
+        completionTransitionService.advanceIfAllStepsDone(taskId);
         saveFocusStep(taskId, BaseContext.getCurrentId(), nextIncompleteStep(taskId, stepId), "NORMAL");
         return toStepVO(step);
     }
@@ -325,13 +346,15 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     @Override
     @Transactional
     public TaskStepRecordVO reopenStep(Long taskId, Long stepId, String reason) {
-        MaintenanceTask task = getTaskOrThrow(taskId);
-        if (!"EXECUTING".equals(task.getStatus()) && !"CLOSED".equals(task.getStatus())) {
+        TaskCompletionTransitionService.LockedTaskAndSteps locked = completionTransitionService.lockTaskAndSteps(taskId);
+        MaintenanceTask task = locked.task();
+        if (task == null) throw new NotFoundException("任务不存在");
+        if (!"EXECUTING".equals(task.getStatus()) && !"RESOLUTION_PENDING".equals(task.getStatus())) {
             throw new TaskStateException("任务未在执行中，当前状态: " + task.getStatus());
         }
 
-        TaskStepRecord step = stepMapper.selectById(stepId);
-        if (step == null || !step.getTaskId().equals(taskId)) {
+        TaskStepRecord step = locked.stepById(stepId);
+        if (step == null) {
             throw new NotFoundException("步骤不存在");
         }
 
@@ -340,20 +363,21 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             return toStepVO(step);
         }
 
-        step.setStatus("PENDING");
-        step.setImages(null);
-        step.setNote(null);
-        step.setCheckpointConfirmed(false);
-        step.setAiPass(null);
-        step.setAiConfidence(null);
-        step.setAiReason(null);
-        step.setCompletedAt(null);
-        stepMapper.updateById(step);
+        LambdaUpdateWrapper<TaskStepRecord> stepUpdate = new LambdaUpdateWrapper<>();
+        stepUpdate.eq(TaskStepRecord::getId, stepId).eq(TaskStepRecord::getTaskId, taskId)
+                .set(TaskStepRecord::getStatus, "PENDING").set(TaskStepRecord::getImages, null)
+                .set(TaskStepRecord::getNote, null).set(TaskStepRecord::getCheckpointConfirmed, false)
+                .set(TaskStepRecord::getAiPass, null).set(TaskStepRecord::getAiConfidence, null)
+                .set(TaskStepRecord::getAiReason, null).set(TaskStepRecord::getCompletedAt, null);
+        stepMapper.update(null, stepUpdate);
+        step.setStatus("PENDING").setImages(null).setNote(null).setCheckpointConfirmed(false)
+                .setAiPass(null).setAiConfidence(null).setAiReason(null).setCompletedAt(null);
 
-        if ("CLOSED".equals(task.getStatus())) {
-            task.setStatus("EXECUTING");
-            task.setUpdatedAt(LocalDateTime.now());
-            taskMapper.updateById(task);
+        if ("RESOLUTION_PENDING".equals(task.getStatus())) {
+            LambdaUpdateWrapper<MaintenanceTask> taskUpdate = new LambdaUpdateWrapper<>();
+            taskUpdate.eq(MaintenanceTask::getId, taskId).eq(MaintenanceTask::getStatus, "RESOLUTION_PENDING")
+                    .set(MaintenanceTask::getStatus, "EXECUTING").set(MaintenanceTask::getUpdatedAt, LocalDateTime.now());
+            if (taskMapper.update(null, taskUpdate) != 1) throw new TaskStateException("任务状态已变化，无法重新打开步骤");
         }
 
         saveFocusStep(taskId, BaseContext.getCurrentId(), stepId, "NORMAL");
@@ -364,16 +388,18 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     @Override
     @Transactional
     public List<TaskStepRecordVO> rollbackToStep(Long taskId, Long stepId, String reason) {
-        MaintenanceTask task = getTaskOrThrow(taskId);
-        if (!"EXECUTING".equals(task.getStatus()) && !"CLOSED".equals(task.getStatus())) {
+        TaskCompletionTransitionService.LockedTaskAndSteps locked = completionTransitionService.lockTaskAndSteps(taskId);
+        MaintenanceTask task = locked.task();
+        if (task == null) throw new NotFoundException("任务不存在");
+        if (!"EXECUTING".equals(task.getStatus()) && !"RESOLUTION_PENDING".equals(task.getStatus())) {
             throw new TaskStateException("任务未在执行中，当前状态: " + task.getStatus());
         }
-        TaskStepRecord target = stepMapper.selectById(stepId);
-        if (target == null || !target.getTaskId().equals(taskId)) {
+        TaskStepRecord target = locked.stepById(stepId);
+        if (target == null) {
             throw new NotFoundException("步骤不存在");
         }
         int targetOrder = target.getSortOrder();
-        List<TaskStepRecord> allSteps = loadSteps(taskId);
+        List<TaskStepRecord> allSteps = locked.steps();
 
         // 将 sortOrder >= targetOrder 且已进入完成/验证状态的步骤全部重置为 PENDING
         List<TaskStepRecord> toReset = allSteps.stream()
@@ -398,10 +424,11 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         target.setNote("[批量回退: " + (StringUtils.hasText(reason) ? reason : "工人要求回退") + "]");
         stepMapper.updateById(target);
 
-        if ("CLOSED".equals(task.getStatus())) {
-            task.setStatus("EXECUTING");
-            task.setUpdatedAt(LocalDateTime.now());
-            taskMapper.updateById(task);
+        if ("RESOLUTION_PENDING".equals(task.getStatus())) {
+            LambdaUpdateWrapper<MaintenanceTask> taskUpdate = new LambdaUpdateWrapper<>();
+            taskUpdate.eq(MaintenanceTask::getId, taskId).eq(MaintenanceTask::getStatus, "RESOLUTION_PENDING")
+                    .set(MaintenanceTask::getStatus, "EXECUTING").set(MaintenanceTask::getUpdatedAt, LocalDateTime.now());
+            if (taskMapper.update(null, taskUpdate) != 1) throw new TaskStateException("任务状态已变化，无法回退步骤");
         }
 
         saveFocusStep(taskId, BaseContext.getCurrentId(), stepId, "NORMAL");
@@ -492,6 +519,12 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
 
         if (query.getStatus() != null && !query.getStatus().isBlank()) {
             wrapper.eq(MaintenanceTask::getStatus, query.getStatus());
+        }
+        if (query.getTaskNumber() != null && !query.getTaskNumber().isBlank()) {
+            wrapper.like(MaintenanceTask::getTaskNumber, query.getTaskNumber());
+        }
+        if (query.getResolutionStatus() != null && !query.getResolutionStatus().isBlank()) {
+            wrapper.eq(MaintenanceTask::getResolutionStatus, query.getResolutionStatus());
         }
         if (query.getDeviceName() != null && !query.getDeviceName().isBlank()) {
             wrapper.like(MaintenanceTask::getDeviceName, query.getDeviceName());
@@ -588,7 +621,85 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         log.error("[任务] 步骤生成失败 taskId={} error={}", taskId, errorMsg);
     }
 
-    // ==================== 知识沉淀 ====================
+    @Override
+    @Transactional
+    public MaintenanceTaskVO confirmResolution(Long taskId, TaskResolutionDTO dto) {
+        TaskCompletionTransitionService.LockedTaskAndSteps locked = completionTransitionService.lockTaskAndSteps(taskId);
+        MaintenanceTask task = locked.task();
+        if (task == null) throw new NotFoundException("任务不存在");
+        if (dto == null || !ai.weixiu.enumerate.ResolutionStatus.isValid(dto.getResolutionStatus())) {
+            throw new IllegalArgumentException("resolutionStatus 必须为 RESOLVED / PARTIALLY_RESOLVED / UNRESOLVED");
+        }
+        List<TaskStepRecord> steps = locked.steps();
+        boolean complete = steps.stream().allMatch(s -> List.of("COMPLETED", "AI_PASSED", "SKIPPED").contains(s.getStatus()));
+        if (!complete) throw new TaskStateException("存在未结束的步骤，无法确认维修结果");
+        if ("CLOSED".equals(task.getStatus())) {
+            boolean same = Objects.equals(task.getResolutionStatus(), dto.getResolutionStatus())
+                    && Objects.equals(task.getFinalFaultCause(), dto.getFinalFaultCause())
+                    && Objects.equals(task.getEffectiveMeasure(), dto.getEffectiveMeasure())
+                    && Objects.equals(task.getCompletionSummary(), dto.getCompletionSummary());
+            if (same) return toVO(task, steps);
+            throw new TaskStateException("任务已关闭，不允许覆盖已固化的维修结果");
+        }
+        if (!"RESOLUTION_PENDING".equals(task.getStatus()) && !"CLOSED".equals(task.getStatus())) {
+            throw new TaskStateException("只有待确认结果或已关闭的任务才能提交维修结果，当前状态: " + task.getStatus());
+        }
+        if ("CLOSED".equals(task.getStatus())) {
+            return toVO(task, steps);
+        }
+        task.setResolutionStatus(dto.getResolutionStatus()).setFinalFaultCause(dto.getFinalFaultCause())
+                .setEffectiveMeasure(dto.getEffectiveMeasure()).setCompletionSummary(dto.getCompletionSummary())
+                .setResolvedAt(LocalDateTime.now()).setEvidenceVersion(task.getEvidenceVersion() == null ? 1 : task.getEvidenceVersion() + 1)
+                .setEvidenceBundle(new TaskEvidenceBundleService().build(task, steps)).setExtractionStatus("PENDING")
+                .setExtractionError(null).setExtractionRequestId("task-" + task.getId() + "-v" + (task.getEvidenceVersion() == null ? 1 : task.getEvidenceVersion()) + "-a1")
+                .setExtractionRequestedAt(LocalDateTime.now()).setStatus("CLOSED").setUpdatedAt(LocalDateTime.now());
+        MaintenanceTask update = new MaintenanceTask()
+                .setId(task.getId()).setResolutionStatus(task.getResolutionStatus())
+                .setFinalFaultCause(task.getFinalFaultCause()).setEffectiveMeasure(task.getEffectiveMeasure())
+                .setCompletionSummary(task.getCompletionSummary()).setResolvedAt(task.getResolvedAt())
+                .setEvidenceVersion(task.getEvidenceVersion()).setEvidenceBundle(task.getEvidenceBundle())
+                .setExtractionStatus(task.getExtractionStatus()).setExtractionError(null)
+                .setExtractionRequestId(task.getExtractionRequestId()).setExtractionRequestedAt(task.getExtractionRequestedAt()).setStatus(task.getStatus())
+                .setUpdatedAt(task.getUpdatedAt());
+        LambdaUpdateWrapper<MaintenanceTask> cas = new LambdaUpdateWrapper<>();
+        cas.eq(MaintenanceTask::getId, task.getId())
+                .eq(MaintenanceTask::getStatus, "RESOLUTION_PENDING");
+        if (taskMapper.update(update, cas) != 1) {
+            MaintenanceTask current = taskMapper.selectByIdForUpdate(taskId);
+            if (current == null) throw new NotFoundException("任务不存在: " + taskId);
+            boolean same = Objects.equals(current.getResolutionStatus(), dto.getResolutionStatus())
+                    && Objects.equals(current.getFinalFaultCause(), dto.getFinalFaultCause())
+                    && Objects.equals(current.getEffectiveMeasure(), dto.getEffectiveMeasure())
+                    && Objects.equals(current.getCompletionSummary(), dto.getCompletionSummary());
+            if (same) return toVO(current, steps);
+            throw new TaskStateException("任务结果已被其他请求确认，不允许覆盖");
+        }
+        TaskGraphExtractionCandidate candidate = taskCandidateMapper.selectOne(new LambdaQueryWrapper<TaskGraphExtractionCandidate>()
+                .eq(TaskGraphExtractionCandidate::getTaskId, task.getId()).eq(TaskGraphExtractionCandidate::getEvidenceVersion, task.getEvidenceVersion()));
+        if (candidate == null) {
+            candidate = new TaskGraphExtractionCandidate().setTaskId(task.getId()).setEvidenceVersion(task.getEvidenceVersion())
+                    .setRequestId(task.getExtractionRequestId()).setAttempt(1).setExtractionStatus("PENDING")
+                    .setReviewStatus("PENDING").setRowVersion(0);
+            taskCandidateMapper.insert(candidate);
+        }
+        final Long candidateId = candidate.getId();
+        final Integer evidenceVersion = task.getEvidenceVersion();
+        final String requestId = task.getExtractionRequestId();
+        final LocalDateTime requestedAt = task.getExtractionRequestedAt();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override public void afterCommit() {
+                    try { taskEvidenceExtractionProducer.publish(task, 1); }
+                    catch (RuntimeException ex) { log.error("[MQ] 证据抽取发布失败 taskId={}", taskId, ex); try { taskEvidenceExtractionFailureService.markFailed(taskId, evidenceVersion, requestId, candidateId, ex.getMessage()); } catch (RuntimeException markEx) { log.error("[MQ] 标记证据抽取失败也失败 taskId={}", taskId, markEx); } }
+                }
+            });
+        } else {
+            taskEvidenceExtractionProducer.publish(task, 1);
+        }
+        return toVO(task, steps);
+    }
+
+
 
     @Override
     @Transactional
@@ -1262,21 +1373,6 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
                 msg
         );
         log.info("[任务] 发送步骤AI验证消息 taskId={} stepId={}", task.getId(), step.getId());
-    }
-
-    private void checkAllStepsCompleted(MaintenanceTask task) {
-        // COMPLETED 和 AI_PASSED 都视为已完成状态
-        Long count = stepMapper.selectCount(
-                new LambdaQueryWrapper<TaskStepRecord>()
-                        .eq(TaskStepRecord::getTaskId, task.getId())
-                        .notIn(TaskStepRecord::getStatus, "COMPLETED", "AI_PASSED", "SKIPPED")
-        );
-        if (count == 0) {
-            task.setStatus("CLOSED");
-            task.setUpdatedAt(LocalDateTime.now());
-            taskMapper.updateById(task);
-            log.info("[任务] 所有步骤完成，任务关闭 taskId={}", task.getId());
-        }
     }
 
     private List<TaskStepRecord> loadSteps(Long taskId) {

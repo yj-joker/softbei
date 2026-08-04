@@ -19,6 +19,14 @@ public class MaintenanceTaskVO {
     private String procedureName;
     private String maintenanceLevel;
     private String status;
+    private String resolutionStatus;
+    private String finalFaultCause;
+    private String effectiveMeasure;
+    private String completionSummary;
+    private LocalDateTime resolvedAt;
+    private Integer evidenceVersion;
+    private String extractionStatus;
+    private String extractionError;
     /** 生成模式: PROCEDURE_COPY / AI_ADAPT / AI_GENERATE */
     private String generateMode;
     private Integer stepCount;
@@ -27,7 +35,9 @@ public class MaintenanceTaskVO {
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;
 
-    /** AI提取的图谱线索（沉淀时供管理员确认） */
+
+    /** 旧图谱线索仅保留兼容字段，不在任务 VO 暴露 */
+    @com.fasterxml.jackson.annotation.JsonIgnore
     private Object graphExtraction;
 
     /** 规程沉淀状态: PENDING / PROMOTED / SKIPPED */

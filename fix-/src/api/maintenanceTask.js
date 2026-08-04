@@ -29,6 +29,11 @@ export function forceCompleteStep(taskId, stepId, reason = '') {
   return request({ url: `${BASE}/${taskId}/steps/${stepId}/force-complete`, method: 'POST', data: { reason }, throwOnError: true })
 }
 
+/** 确认任务最终结果：RESOLVED / PARTIALLY_RESOLVED / UNRESOLVED */
+export function confirmTaskResolution(taskId, data) {
+  return request({ url: `${BASE}/${taskId}/resolution`, method: 'POST', data, throwOnError: true })
+}
+
 export function reopenStep(taskId, stepId, reason = '') {
   return request({ url: `${BASE}/${taskId}/steps/${stepId}/reopen`, method: 'POST', data: { reason }, throwOnError: true })
 }
