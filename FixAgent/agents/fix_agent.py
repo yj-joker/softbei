@@ -28,7 +28,13 @@ import logging
 import time
 from typing import List, Any, Optional, Dict, Callable
 
-from agents.base_agent import BaseAgent, AgentInput, AgentOutput, AgentRunContext
+from agents.base_agent import (
+    BaseAgent,
+    AgentInput,
+    AgentOutput,
+    AgentRunContext,
+    make_experiment_tool_profile,
+)
 from services.llm.output_style import USER_VISIBLE_PLAIN_TEXT_RULES
 from services.retrieval.evidence import EvidenceLedger
 from services.retrieval.response_plan import build_response_plan, finalize_response
@@ -194,6 +200,10 @@ def build_fix_agent_system_prompt() -> str:
 
 # 记忆工具不受意图路由 tool_scope 限制（横切能力，任何意图下都可读/存/删记忆）
 _ALWAYS_ALLOWED_TOOLS = {"read_memory", "save_memory", "delete_memory"}
+_EXPERIMENT_TOOL_SETS = {
+    "rag_only": {"knowledge_retrieval"},
+    "rag_kg": {"knowledge_retrieval", "java_graph_diagnosis_path"},
+}
 
 
 class FixAgent(BaseAgent):
@@ -285,6 +295,9 @@ class FixAgent(BaseAgent):
     def get_tools_for_run(self, run_context: AgentRunContext) -> List[Any]:
         self.get_tools()
         tools = self._tools or []
+        if run_context.experiment_tool_profile:
+            allowed_set = _EXPERIMENT_TOOL_SETS[run_context.experiment_tool_profile]
+            return [tool for tool in tools if tool.name in allowed_set]
         allowed = run_context.allowed_tools
         if allowed is None:
             return tools
@@ -360,7 +373,7 @@ class FixAgent(BaseAgent):
             if react_status.get("status") == "needs_user_clarification":
                 output.message = self._format_user_clarification_message(react_status)
 
-        if self._needs_more_tools(output) and run_context.allowed_tools is not None:
+        if self._needs_more_tools(output) and run_context.allowed_tools is not None and not run_context.experiment_tool_profile:
             logger.info("[fix_agent] intent tool scope insufficient, rerunning once with full tools")
             rerun_input = self._without_tool_scope(input_data)
             rerun = await super().run_with_react(rerun_input, max_iterations, _event_sink=_event_sink)

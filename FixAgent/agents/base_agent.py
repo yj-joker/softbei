@@ -33,6 +33,37 @@ from config.settings import get_settings
 logger = logging.getLogger(__name__)
 
 
+_EXPERIMENT_PROFILE_CAPABILITY = object()
+_EXPERIMENT_TOOL_PROFILES = frozenset({"rag_only", "rag_kg"})
+
+
+class _ExperimentToolProfile:
+    """In-process-only capability; JSON strings are intentionally not accepted."""
+
+    __slots__ = ("name", "_capability")
+
+    def __init__(self, name: str, capability) -> None:
+        if capability is not _EXPERIMENT_PROFILE_CAPABILITY:
+            raise TypeError("experiment tool profile is in-process only")
+        if name not in _EXPERIMENT_TOOL_PROFILES:
+            raise ValueError(f"unsupported experiment tool profile: {name}")
+        self.name = name
+        self._capability = capability
+
+
+def make_experiment_tool_profile(name: str) -> _ExperimentToolProfile:
+    """Construct an experiment profile for trusted in-process runners only."""
+    return _ExperimentToolProfile(name, _EXPERIMENT_PROFILE_CAPABILITY)
+
+
+def _trusted_experiment_tool_profile(value: Any) -> Optional[str]:
+    if not isinstance(value, _ExperimentToolProfile):
+        return None
+    if value._capability is not _EXPERIMENT_PROFILE_CAPABILITY:
+        raise ValueError("invalid experiment tool profile capability")
+    return value.name
+
+
 def _jsonable(value):
     return value.model_dump() if hasattr(value, "model_dump") else value
 
@@ -266,6 +297,7 @@ class AgentRunContext(BaseModel):
     intent_decision: Dict[str, Any] = Field(default_factory=dict)
     allowed_tools: Optional[List[str]] = None
     retrieval_scope: Dict[str, Any] = Field(default_factory=dict)
+    experiment_tool_profile: Optional[str] = None
     # 本轮用户消息毫秒时间戳：注入 save_memory 工具，供 Java 同轮写仲裁（漏洞#1）
     turn_ts: Optional[int] = None
 
@@ -381,6 +413,9 @@ class BaseAgent(ABC):
             intent_decision=dict(intent_decision),
             allowed_tools=[str(name) for name in allowed_tools] if isinstance(allowed_tools, list) else None,
             retrieval_scope=dict(context.get("retrieval_scope") or {}),
+            experiment_tool_profile=_trusted_experiment_tool_profile(
+                context.get("_experiment_tool_profile")
+            ),
             turn_ts=context.get("turn_ts"),
         )
 
