@@ -408,9 +408,9 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 ? "AND EXISTS { MATCH (dev:Device)-[:OWNS]->(c) WHERE dev.id IN $deviceIds } "
                 : "";
 
-        // 方案X：以 Component 为锚点，Fault OPTIONAL。
-        // Solution 从两条边收集：Fault-HAS_SOLUTION（诊断方案）+ Component-HAS_PROCEDURE（维修规程）。
-        // 无 Fault 的 Component（纯拆装手册）也能通过 HAS_PROCEDURE 返回规程。
+        // 以 Component 为锚点，Fault OPTIONAL。
+        // 图谱只返回真实任务沉淀的 Fault-HAS_SOLUTION 路径；手册规程留在向量库，
+        // 不再从 Component-HAS_PROCEDURE 读取手册内容的有损副本。
         String cypher = """
                 MATCH (c:Component)
                 OPTIONAL MATCH (c)-[:CAUSES]->(f:Fault)
@@ -434,7 +434,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 UNWIND allPaths[$skip..$endIdx] AS path
                 WITH path.d AS d, path.c AS c, path.f AS f,
                      path.hasHistory AS hasHistory, path.matchScore AS matchScore, total
-                // 诊断方案：Fault-HAS_SOLUTION->Solution
+                // 诊断方案只来自真实故障链：Fault-HAS_SOLUTION->Solution
                 OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(fs:Solution)
                 WHERE (fs.status IS NULL OR fs.status <> 'deprecated')
                 WITH d, c, f, hasHistory, matchScore, total,
@@ -444,18 +444,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                          verified: fs.verified,
                          status: coalesce(fs.status, 'active'),
                          kind: coalesce(fs.solution_kind, 'fault_solution')
-                     }) AS faultSolutions
-                // 维修规程：Component-HAS_PROCEDURE->Solution
-                OPTIONAL MATCH (c)-[:HAS_PROCEDURE]->(ps:Solution)
-                WHERE (ps.status IS NULL OR ps.status <> 'deprecated')
-                WITH d, c, f, hasHistory, matchScore, total, faultSolutions,
-                     collect(DISTINCT {
-                         id: ps.id, title: ps.title,
-                         estimatedTime: ps.estimated_time,
-                         verified: ps.verified,
-                         status: coalesce(ps.status, 'active'),
-                         kind: 'procedure'
-                     }) AS procedures
+                     }) AS solutions
                 RETURN d.id AS deviceId,
                        d.name AS deviceName,
                        c.id AS componentId,
@@ -465,7 +454,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                        f.severity AS faultSeverity,
                        hasHistory,
                        matchScore,
-                       faultSolutions + procedures AS solutions,
+                       solutions,
                        total
                 """.formatted(whereClause, deviceFilterClause);
 

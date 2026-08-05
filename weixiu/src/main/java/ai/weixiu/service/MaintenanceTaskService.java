@@ -4,6 +4,7 @@ import ai.weixiu.entity.TaskChatMessage;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.dto.MaintenanceTaskDTO;
 import ai.weixiu.pojo.dto.StepExecuteDTO;
+import ai.weixiu.pojo.dto.TaskResolutionDTO;
 import ai.weixiu.pojo.query.MaintenanceTaskQuery;
 import ai.weixiu.pojo.vo.MaintenanceTaskVO;
 import ai.weixiu.pojo.vo.TaskStepRecordVO;
@@ -49,10 +50,15 @@ public interface MaintenanceTaskService {
     /** 校验当前用户是否有权访问指定任务（非管理员只能访问自己报修的任务） */
     void assertTaskAccess(Long taskId, Long userId, Integer userType);
 
+    /** 工人确认任务最终维修结果并固化证据快照 */
+    MaintenanceTaskVO confirmResolution(Long taskId, TaskResolutionDTO dto);
+
+
+
     /** 管理员跳过沉淀（标记为无沉淀价值） */
     void skipPromotion(Long taskId, String type);
 
-    /** MQ回调：步骤AI验证结果（由StepVerifyResultListener调用） */
+
     void onStepVerifyResult(Long stepId, Boolean aiPass, Double confidence, String reason);
 
     /** MQ回调：LLM生成步骤成功（含图谱线索） */

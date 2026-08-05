@@ -7,6 +7,7 @@ export const TASK_STATUS = {
   GENERATING:      { label: '生成中',  color: 'var(--plaza-accent)', bg: 'var(--plaza-accent-soft)', spin: true },
   GENERATED:       { label: '待执行',  color: 'var(--plaza-accent)', bg: 'var(--plaza-accent-soft)' },
   EXECUTING:       { label: '执行中',  color: 'var(--plaza-accent)', bg: 'var(--plaza-accent-soft)' },
+  RESOLUTION_PENDING: { label: '待确认结果', color: '#b45309', bg: 'var(--plaza-warning-soft)' },
   CLOSED:          { label: '已完成',  color: '#5e8c3e', bg: '#f1f5e6' },
   GENERATE_FAILED: { label: '生成失败', color: '#c5402c', bg: '#fbeae4' },
 }

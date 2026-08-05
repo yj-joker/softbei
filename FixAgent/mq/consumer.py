@@ -12,15 +12,19 @@ RabbitMQ 消费者
 import json
 import logging
 import asyncio
+from collections.abc import Mapping
 
 import aio_pika
 import httpx
+from pydantic import ValidationError
 
 from mq.connection import get_connection
 from config.settings import get_settings
+from schemas.task_evidence_extraction import TaskEvidenceExtractionRequest
+
+from services.task_evidence_extraction import get_task_evidence_extraction_service
 
 logger = logging.getLogger(__name__)
-
 # ===== 记忆系统队列 =====
 EXCHANGE_NAME = "memory.exchange"
 RESULT_KEY = "memory.result"
@@ -39,6 +43,9 @@ TASK_EXCHANGE = "task.exchange"
 TASK_GENERATE_QUEUE = "task.generate.queue"
 TASK_GENERATE_RESULT_KEY = "task.generate.result"
 TASK_GENERATE_RESULT_QUEUE = "task.generate.result.queue"
+TASK_EVIDENCE_EXTRACT_QUEUE = "task.evidence.extract.queue"
+TASK_EVIDENCE_EXTRACT_RESULT_KEY = "task.evidence.extract.result"
+TASK_EVIDENCE_EXTRACT_RESULT_QUEUE = "task.evidence.extract.result.queue"
 
 # ===== 画像出题队列 =====
 QUIZ_GENERATE_QUEUE = "quiz.generate.queue"
@@ -300,14 +307,7 @@ async def handle_task_generate(message: aio_pika.abc.AbstractIncomingMessage, ch
             )
 
             if result.get("success"):
-                msg_body = {
-                    "taskId": task_id,
-                    "success": True,
-                    "steps": result["steps"],
-                }
-                # 传递AI提取的图谱线索（用于知识沉淀）
-                if result.get("graphExtraction"):
-                    msg_body["graphExtraction"] = result["graphExtraction"]
+                msg_body = _task_generate_message({**result, "taskId": task_id})
                 await publish_result(channel, msg_body,
                                      exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
                 logger.info("[MQ消费] 检修步骤生成成功, taskId=%s, 步骤数=%d",
@@ -328,6 +328,34 @@ async def handle_task_generate(message: aio_pika.abc.AbstractIncomingMessage, ch
                 "success": False,
                 "error": str(e),
             }, exchange_name=TASK_EXCHANGE, routing_key=TASK_GENERATE_RESULT_KEY)
+
+
+async def handle_task_evidence_extract(message: aio_pika.abc.AbstractIncomingMessage, channel):
+    """消费最终任务快照，仅抽取待审核候选。"""
+    # ACK only after extraction result publish returns successfully.  A broker/
+    # publish failure must leave the original request (including requestId) for
+    # redelivery rather than silently losing it.
+    async with message.process(requeue=True):
+        body = None
+        try:
+            body = json.loads(message.body)
+            request = TaskEvidenceExtractionRequest.model_validate(body)
+            result = await get_task_evidence_extraction_service().extract(request.snapshot.model_dump(by_alias=True), request.request_id, request.task_id, request.evidence_version)
+            payload = result.model_dump(by_alias=True)
+        except json.JSONDecodeError as exc:
+            payload = {"success": False, "requestId": None, "taskId": None, "evidenceVersion": None, "errorCode": "INVALID_JSON", "error": str(exc), "retryable": False}
+        except Exception as exc:
+            identity = body if isinstance(body, Mapping) else {}
+            payload = {
+                "success": False, "requestId": identity.get("requestId"), "taskId": identity.get("taskId"),
+                "evidenceVersion": identity.get("evidenceVersion"), "errorCode": "INVALID_REQUEST" if isinstance(exc, ValidationError) else "EXTRACTION_FAILED",
+                "error": str(exc), "retryable": False,
+            }
+        await publish_result(channel, payload, exchange_name=TASK_EXCHANGE, routing_key=TASK_EVIDENCE_EXTRACT_RESULT_KEY)
+
+
+def _task_generate_message(result):
+    return {"taskId": result.get("taskId"), "success": True, "steps": result.get("steps", [])}
 
 
 async def handle_quiz_generate(message: aio_pika.abc.AbstractIncomingMessage, channel: aio_pika.abc.AbstractChannel):
@@ -549,7 +577,12 @@ async def _declare_topology(channel: aio_pika.abc.AbstractChannel):
     )
     await task_generate_result_q.bind(task_exchange, "task.generate.result")
 
-    # ===== 画像出题拓扑（复用 task.exchange） =====
+    # ===== 任务最终证据抽取拓扑 =====
+    evidence_q = await channel.declare_queue(TASK_EVIDENCE_EXTRACT_QUEUE, durable=True, arguments={"x-message-ttl": 600000, "x-dead-letter-exchange": "memory.dlx"})
+    await evidence_q.bind(task_exchange, "task.evidence.extract")
+    evidence_result_q = await channel.declare_queue(TASK_EVIDENCE_EXTRACT_RESULT_QUEUE, durable=True)
+    await evidence_result_q.bind(task_exchange, TASK_EVIDENCE_EXTRACT_RESULT_KEY)
+
     quiz_generate_q = await channel.declare_queue(
         QUIZ_GENERATE_QUEUE, durable=True,
         arguments={"x-message-ttl": 300_000, "x-dead-letter-exchange": "memory.dlx"},
@@ -591,7 +624,7 @@ async def _declare_topology(channel: aio_pika.abc.AbstractChannel):
     )
     await reflection_result_q.bind(exchange, "memory.reflection.result")
 
-    return realtime_q, consolidate_q, knowledge_import_q, task_generate_q, step_verify_q, reflection_q
+    return realtime_q, consolidate_q, knowledge_import_q, task_generate_q, step_verify_q, reflection_q, evidence_q
 
 
 async def start_consumers():
@@ -599,7 +632,7 @@ async def start_consumers():
 
     # 先用一个临时通道声明拓扑
     init_channel = await connection.channel()
-    realtime_q, consolidate_q, knowledge_import_q, task_generate_q, step_verify_q, reflection_q = await _declare_topology(init_channel)
+    realtime_q, consolidate_q, knowledge_import_q, task_generate_q, step_verify_q, reflection_q, evidence_q = await _declare_topology(init_channel)
     await init_channel.close()
 
     # [已退役] 实时更新消费者删除：事实纠正改由对话内 save_memory/delete_memory 处理。
@@ -629,7 +662,12 @@ async def start_consumers():
         lambda msg: handle_task_generate(msg, task_channel)
     )
 
-    # 出题生成通道（prefetch=1，LLM 检索+生成耗时，串行处理）
+    # 检修任务最终证据抽取通道（独立串行 channel）
+    evidence_channel = await connection.channel()
+    await evidence_channel.set_qos(prefetch_count=1)
+    evidence_queue = await evidence_channel.get_queue(TASK_EVIDENCE_EXTRACT_QUEUE)
+    await evidence_queue.consume(lambda msg: handle_task_evidence_extract(msg, evidence_channel))
+
     quiz_channel = await connection.channel()
     await quiz_channel.set_qos(prefetch_count=1)
     quiz_queue = await quiz_channel.get_queue(QUIZ_GENERATE_QUEUE)
@@ -653,6 +691,7 @@ async def start_consumers():
         lambda msg: handle_reflection(msg, reflection_channel)
     )
 
-    logger.info("[MQ消费] 消费者启动完成，监听 %s, %s, %s, %s, %s, %s",
-                REALTIME_QUEUE, CONSOLIDATE_QUEUE, KNOWLEDGE_IMPORT_QUEUE,
-                TASK_GENERATE_QUEUE, TASK_STEP_VERIFY_QUEUE, REFLECTION_QUEUE)
+    logger.info("[MQ消费] 消费者启动完成，监听 %s, %s, %s, %s, %s, %s, %s",
+                CONSOLIDATE_QUEUE, KNOWLEDGE_IMPORT_QUEUE, TASK_GENERATE_QUEUE,
+                TASK_EVIDENCE_EXTRACT_QUEUE, QUIZ_GENERATE_QUEUE,
+                TASK_STEP_VERIFY_QUEUE, REFLECTION_QUEUE)

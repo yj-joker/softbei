@@ -375,40 +375,22 @@ class ManualKGExtractor:
                                 "chunk_uid": item.source_chunk_uid,
                             })
 
-                # 5c. 维修规程：把 section 内的 step chunk 聚合成一个 Solution，
-                #     直接挂 Component（Component-HAS_PROCEDURE->Solution），不经过 Fault。
-                #     适配拆装/操作类手册——内容是"怎么做"而非"故障排除"。
-                if comp_id:
-                    step_chunks = [
-                        c for c in sec_chunks
-                        if (c.get("metadata") or {}).get("chunk_label") == "step"
-                    ]
-                    if step_chunks:
-                        steps_text = [
-                            ((c.get("metadata") or {}).get("raw_text") or c.get("text", "")).strip()
-                            for c in step_chunks
-                        ]
-                        steps_text = [s for s in steps_text if s]
-                        if steps_text:
-                            proc_title = _procedure_title(sec_title, component.name if component else "")
-                            async with sem_api:
-                                proc_resp = await self._call_java("/weixiu/kg/internal/upsert-procedure", {
-                                    "componentId": comp_id,
-                                    "title": proc_title,
-                                    "description": f"{component.name if component else ''}的维修操作规程",
-                                    "steps": steps_text,
-                                    "sourceChunkUid": _best_chunk_uid(step_chunks),
-                                    **_section_provenance(
-                                        document_id,
-                                        document_version,
-                                        sec_title,
-                                        step_chunks,
-                                    ),
-                                    "documentId": document_id,
-                                    "manualId": manual_id,
-                                })
-                            if (proc_resp or {}).get("solutionId"):
-                                result.procedures_created += 1
+                # 5c. 【已撤除】维修规程不再入图谱。
+                #
+                # 原逻辑把 section 内的 step chunk 聚合成 Solution 挂 Component
+                # （Component-HAS_PROCEDURE->Solution）。撤除原因：
+                #   1. 手册规程是"标准做法"，属说明书类知识，归宿是向量库；
+                #      灌进图谱只是原文的有损拷贝（steps_text 会把拆卸+安装糊在一起、丢步骤），
+                #      同一份信息走向量检索质量更高。
+                #   2. 图谱的不可替代价值在因果链（Fault←CAUSES-Component-HAS_SOLUTION->Solution）
+                #      和经验沉淀（verified/成功次数），这些只能来自真实检修任务，手册里没有。
+                #   3. 手册抽取只需给图谱提供 Device→OWNS→Component 骨架，
+                #      作为故障归属的命名空间 + 设备隔离锚点，规程内容用 source_chunk_uid 指回向量库。
+                #
+                # 任务沉淀路径不受影响：MaintenanceTaskServiceImpl 建的是
+                # OWNS/CAUSES/HAS_FAULT/HAS_SOLUTION，不经过 HAS_PROCEDURE。
+                # 查询侧只读取 Fault-HAS_SOLUTION 诊断链，不再读取 HAS_PROCEDURE。
+                # result.procedures_created 保留字段但恒为 0，避免破坏调用方契约。
 
             # 并发处理所有section；每个分区异常必须进入业务结果，不能静默丢弃。
             section_results = await asyncio.gather(
@@ -1058,20 +1040,6 @@ def _extract_model_from_name(name: str) -> str:
     """从设备名中提取型号（字母+数字组合）。"""
     m = re.search(r"[A-Z]{1,5}\d{3,6}", name.upper())
     return m.group(0) if m else ""
-
-
-def _procedure_title(section_title: str, component_name: str) -> str:
-    """构造维修规程标题：优先用 section_title（含真实维修动作），降级用 部件+维修规程。"""
-    t = (section_title or "").strip()
-    t = _CHAPTER_PREFIX.sub("", t).strip()
-    t = _NUMBER_PREFIX.sub("", t).strip()
-    # "清单/明细/一览"类是表格章节，不是维修动作 → 降级
-    is_list_section = bool(re.search(r"(清单|明细|一览|BOM)", t))
-    # 真实维修动作词（不含"装配"——"装配部件清单"是表格不是动作）
-    has_action = bool(re.search(r"(拆卸|拆装|安装|检查|检验|测量|调整|更换|保养|分解|维修|检修)", t))
-    if t and has_action and not is_list_section:
-        return t[:80]
-    return f"{component_name}维修规程" if component_name else (t[:80] or "维修规程")
 
 
 def _parse_json(text: str) -> Optional[Dict]:

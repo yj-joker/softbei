@@ -24,6 +24,7 @@ import { useStepReadAlong } from '@/composables/useStepReadAlong'
 import TaskStepCard from '@/components/task/TaskStepCard.vue'
 import TaskAssistantPanel from '@/components/task/TaskAssistantPanel.vue'
 import TaskVoiceModePanel from '@/components/task/TaskVoiceModePanel.vue'
+import TaskResolutionDialog from '@/components/task/TaskResolutionDialog.vue'
 import CaseSubmitDialog from '@/components/case/CaseSubmitDialog.vue'
 
 const route = useRoute()
@@ -37,6 +38,7 @@ const acting = ref(false)
 const panelRef = ref(null)
 const voiceMode = ref(false)
 const caseDialog = ref(false)
+const resolutionDialog = ref(false)
 const caseDraft = ref(null)
 const myCasesDrawer = ref(false)
 const myCasesLoading = ref(false)
@@ -61,7 +63,16 @@ const estimatedMinutes = computed(() => steps.value.reduce((t, s) => t + Number(
 const progressPct = computed(() => (steps.value.length ? Math.round((completedSteps.value.length / steps.value.length) * 100) : 0))
 const st = computed(() => taskStatus(task.value?.status))
 const urgencyMeta = computed(() => urgency(task.value?.urgencyLevel))
-const showWork = computed(() => ['EXECUTING', 'CLOSED'].includes(task.value?.status))
+const showWork = computed(() => ['EXECUTING', 'RESOLUTION_PENDING', 'CLOSED'].includes(task.value?.status))
+const resolutionPending = computed(() => task.value?.status === 'RESOLUTION_PENDING')
+// RESOLUTION_PENDING 保留步骤展示但 executing 必须为 false；仅 EXECUTING 可操作步骤。
+const stepExecuting = computed(() => task.value?.status === 'EXECUTING')
+const resolutionLabel = computed(() => ({
+  RESOLVED: '已解决', PARTIALLY_RESOLVED: '部分解决', UNRESOLVED: '未解决',
+}[task.value?.resolutionStatus] || task.value?.resolutionStatus || '未填写'))
+const extractionLabel = computed(() => ({
+  PENDING: '候选整理中', READY: '候选已整理，待管理员审核', FAILED: '候选整理失败，后台可重试',
+}[task.value?.extractionStatus] || task.value?.extractionStatus || '未开始'))
 
 // —— 分步推进看板：节点状态 ——
 const flowNodes = computed(() =>
@@ -121,6 +132,7 @@ function startReadAlongFrom(step) {
 }
 
 function enterVoiceMode() {
+  if (resolutionPending.value) return
   readAlong.exit()
   voiceMode.value = true
   if (activeStepId.value) focusStep(activeStepId.value, 'VOICE')
@@ -184,6 +196,13 @@ async function onVoiceUpdated(data) {
   if (Array.isArray(data.steps) && task.value) {
     task.value = { ...task.value, steps: data.steps }
     scheduleVerifyPoll()
+    // 最后一步完成后，退出语音态并重新读取任务状态，让待确认卡及时出现。
+    if (data.steps.length > 0 && data.steps.every((step) => DONE_SET.includes(step.status))) {
+      readAlong.exit()
+      voiceMode.value = false
+      await load()
+      return
+    }
   } else {
     await load()
   }
@@ -340,6 +359,9 @@ onUnmounted(() => {
           </div>
 
           <div class="command-actions">
+            <button v-if="resolutionPending" type="button" class="command-primary" :disabled="acting" @click="resolutionDialog = true">
+              <el-icon><Check /></el-icon> 确认任务结果
+            </button>
             <button v-if="task.status === 'GENERATED'" type="button" class="command-primary" :disabled="acting" @click="onStart">
               开始执行
             </button>
@@ -352,7 +374,7 @@ onUnmounted(() => {
 
       <!-- 状态条 -->
       <section
-        v-if="['GENERATING', 'GENERATE_FAILED', 'GENERATED', 'CLOSED'].includes(task.status)"
+        v-if="['GENERATING', 'GENERATE_FAILED', 'GENERATED', 'RESOLUTION_PENDING', 'CLOSED'].includes(task.status)"
         class="state-strip"
         :class="{ error: task.status === 'GENERATE_FAILED', success: task.status === 'CLOSED' }"
       >
@@ -370,11 +392,22 @@ onUnmounted(() => {
           <small v-if="task.status === 'GENERATING'">生成完成后会自动同步任务状态并通知你。</small>
           <small v-else-if="task.status === 'GENERATE_FAILED'">请重新触发生成，或检查任务描述是否完整。</small>
           <small v-else-if="task.status === 'GENERATED'">共 {{ steps.length || task.stepCount || 0 }} 个步骤，开始后将进入现场执行流程。</small>
-          <small v-else>可以将本次处理过程沉淀为案例，供后续检修复用。</small>
+          <small v-else-if="task.status === 'RESOLUTION_PENDING'">步骤已完成，请确认最终结果后结束任务。</small>
+          <small v-else>结果已保存。{{ extractionLabel }}，不代表已进入知识图谱。</small>
         </span>
       </section>
 
-      <!-- 执行中 / 已完成 -->
+      <section v-if="task.status === 'CLOSED'" class="resolution-summary">
+        <div class="resolution-summary-head"><div><span class="section-kicker">TASK OUTCOME</span><h2>任务结果已保存</h2></div><strong>{{ resolutionLabel }}</strong></div>
+        <dl>
+          <div v-if="task.finalFaultCause"><dt>最终故障原因</dt><dd>{{ task.finalFaultCause }}</dd></div>
+          <div v-if="task.effectiveMeasure"><dt>有效处理措施</dt><dd>{{ task.effectiveMeasure }}</dd></div>
+          <div v-if="task.completionSummary"><dt>完成摘要</dt><dd>{{ task.completionSummary }}</dd></div>
+        </dl>
+        <p class="extraction-note">候选整理状态：{{ extractionLabel }}。候选内容需管理员审核后才可能沉淀，不称为已入图。<span v-if="task.extractionStatus === 'FAILED'">本次任务结果已保存，后台可以重试整理。</span></p>
+      </section>
+
+      <!-- 执行中 / 待确认 / 已完成 -->
       <section v-if="showWork" class="workflow">
         <!-- 分步推进看板（保留） -->
         <section class="flow-board">
@@ -417,7 +450,7 @@ onUnmounted(() => {
 
         <!-- 语音检修模式控制条：从步骤区进入，进入后隐藏右侧检修助手。 -->
         <div v-if="steps.length" class="readalong-bar" :class="{ on: voiceMode }">
-          <button v-if="!voiceMode" type="button" class="ra-start" @click="enterVoiceMode">
+          <button v-if="!voiceMode && !resolutionPending" type="button" class="ra-start" @click="enterVoiceMode">
             <el-icon><Headset /></el-icon> 语音检修
           </button>
           <template v-else>
@@ -453,7 +486,7 @@ onUnmounted(() => {
                 :id="'step-' + s.id"
                 :step="s"
                 :task-id="taskId"
-                :executing="task.status === 'EXECUTING'"
+                :executing="stepExecuting"
                 :active="s.id === activeStepId"
                 :reading="s.id === readAlong.currentStepId.value"
                 @submitted="load"
@@ -481,6 +514,13 @@ onUnmounted(() => {
       <p>任务可能已被删除，或当前账号无权访问。</p>
       <button type="button" class="command-primary" @click="router.push('/user/tasks')">返回任务列表</button>
     </section>
+
+    <TaskResolutionDialog
+      v-model="resolutionDialog"
+      :task-id="taskId"
+      :task="task"
+      @submitted="load"
+    />
 
     <CaseSubmitDialog
       v-model:visible="caseDialog"
@@ -645,6 +685,17 @@ onUnmounted(() => {
 .state-spinner { width: 18px; height: 18px; }
 @keyframes console-spin { to { transform: rotate(360deg); } }
 
+.resolution-summary { margin-top: 14px; padding: 16px; border: 1px solid var(--plaza-border-strong); border-radius: 12px; background: var(--plaza-bg-card); }
+.resolution-summary-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.section-kicker { color: var(--plaza-text-muted); font: 800 8px var(--font-mono); letter-spacing: .13em; }
+.resolution-summary h2 { margin: 4px 0 0; color: var(--plaza-heading); font-size: 18px; }
+.resolution-summary-head strong { padding: 5px 9px; border-radius: 999px; color: #5e8c3e; background: var(--plaza-success-soft); font-size: 12px; }
+.resolution-summary dl { display: grid; gap: 9px; margin: 15px 0 0; }
+.resolution-summary dl div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 10px; }
+.resolution-summary dt { color: var(--plaza-text-muted); font-size: 12px; }
+.resolution-summary dd { margin: 0; color: var(--plaza-text); font-size: 13px; line-height: 1.55; }
+.extraction-note { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--plaza-border); color: var(--plaza-text-muted); font-size: 12px; line-height: 1.55; }
+
 /* ===== 检修步骤区 ===== */
 .workflow { margin-top: 16px; }
 .workflow-heading { justify-content: space-between; gap: 20px; margin-bottom: 11px; }
@@ -743,8 +794,9 @@ onUnmounted(() => {
   .command-readout { grid-template-columns: 72px minmax(0, 1fr); padding: 14px; }
   .readout-grid { grid-template-columns: 1fr; }
   .workflow-heading { align-items: flex-start; flex-direction: column; }
-  .assistant-column { height: 560px; min-height: 560px; }
-}
+  .resolution-summary dl div { grid-template-columns: 1fr; gap: 3px; }
+  .resolution-summary-head { flex-direction: column; }
+  }
 @media (prefers-reduced-motion: reduce) {
   .status-spinner, .state-spinner { animation: none; }
   .back-button { transition: none; }

@@ -157,11 +157,7 @@ def test_call_java_rejects_http_200_business_failure_without_token(monkeypatch, 
 
 
 def _failure_chunks(path):
-    label = "text"
-    if path.endswith("upsert-fault-solution"):
-        label = "troubleshooting"
-    elif path.endswith("upsert-procedure"):
-        label = "step"
+    label = "troubleshooting" if path.endswith("upsert-fault-solution") else "text"
     return [
         {
             "metadata": {
@@ -181,7 +177,6 @@ def _failure_chunks(path):
         "/weixiu/kg/internal/upsert-device",
         "/weixiu/kg/internal/upsert-component",
         "/weixiu/kg/internal/upsert-fault-solution",
-        "/weixiu/kg/internal/upsert-procedure",
     ],
 )
 def test_each_java_callback_business_failure_enters_result_errors(monkeypatch, failure_path):
@@ -214,6 +209,53 @@ def test_each_java_callback_business_failure_enters_result_errors(monkeypatch, f
 
     assert result.errors
     assert any(failure_path in error and "code=500" in error for error in result.errors)
+
+
+def test_step_chunks_do_not_create_manual_procedure_nodes(monkeypatch):
+    calls = []
+    extractor = object.__new__(kg.ManualKGExtractor)
+    extractor.vector_svc = SimpleNamespace(
+        list_document_chunks=lambda _document_id: [
+            {
+                "metadata": {
+                    "section_title": "拆卸气缸盖",
+                    "chunk_label": "step",
+                    "chunk_uid": "step-1",
+                    "raw_text": "1. 拆卸气缸盖螺栓",
+                },
+                "text": "1. 拆卸气缸盖螺栓",
+            }
+        ],
+        get_document_manifest=lambda _document_id: {},
+    )
+    extractor.settings = SimpleNamespace(intent_router_model="test-model")
+    extractor.llm = SimpleNamespace()
+    extractor._base_url = "http://java.test"
+    extractor._token = "internal-token-B"
+    extractor._identify_device = _identify_device
+    extractor._extract_component = _extract_component
+    extractor._extract_fault_solutions = _extract_fault_solutions
+
+    async def call_java(path, body):
+        calls.append(path)
+        if path.endswith("upsert-device"):
+            return {"deviceId": "device-1"}
+        if path.endswith("upsert-component"):
+            return {"componentId": "component-1"}
+        raise AssertionError(f"unexpected Java callback: {path}")
+
+    extractor._call_java = call_java
+    monkeypatch.setattr(kg, "assess_section_structure", lambda _chunks: {"ok": True, "reason": "", "stats": {}})
+
+    result = asyncio.run(extractor.extract_document("doc-1", device_type_hint="测试设备"))
+
+    assert not result.errors
+    assert result.procedures_created == 0
+    assert "/weixiu/kg/internal/upsert-procedure" not in calls
+    assert calls == [
+        "/weixiu/kg/internal/upsert-device",
+        "/weixiu/kg/internal/upsert-component",
+    ]
 
 
 def test_section_callback_exception_enters_result_errors(monkeypatch):

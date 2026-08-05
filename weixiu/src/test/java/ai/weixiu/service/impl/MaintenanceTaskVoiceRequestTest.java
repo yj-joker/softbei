@@ -8,6 +8,7 @@ import ai.weixiu.mapper.TaskStepRecordMapper;
 import ai.weixiu.mapper.UserMapper;
 import ai.weixiu.pojo.dto.RecallContext;
 import ai.weixiu.pojo.dto.TaskVoiceTurnDTO;
+import ai.weixiu.service.TaskCompletionTransitionService;
 import ai.weixiu.service.MaintenanceTaskService;
 import ai.weixiu.service.MemoryPreferenceService;
 import ai.weixiu.service.MemoryRecallService;
@@ -41,6 +42,7 @@ class MaintenanceTaskVoiceRequestTest {
                 voiceEventMapper,
                 mock(UserMapper.class),
                 mock(MaintenanceTaskService.class),
+                mock(TaskCompletionTransitionService.class),
                 memoryRecallService,
                 mock(MemoryPreferenceService.class),
                 mock(WebClient.class),
