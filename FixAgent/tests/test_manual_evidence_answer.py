@@ -15,10 +15,14 @@ from api.main import (
     _manual_action_target,
     _manual_answer_should_refuse_detail_query,
     _manual_best_section_records,
+    _manual_append_unique_records,
     _manual_query_action,
     _manual_query_kind,
     _manual_strip_next_procedure_heading,
+    _manual_overrides_blocked_by_low_confidence,
+    _response_policy_direct_must_defer,
 )
+from services.retrieval.response_plan import ResponsePlan, finalize_response
 
 
 def _component_route(document_id: str, component: str, action: str) -> dict:
@@ -30,12 +34,81 @@ def _component_route(document_id: str, component: str, action: str) -> dict:
     }
 
 
+def test_directional_evidence_supports_inverse_orientation_answer() -> None:
+    direct_text = "气门弹簧间距较密的一端必须朝下安装。"
+
+    assert _direct_manual_text_supports_query(
+        direct_text,
+        "气门弹簧哪一端朝上安装？",
+    )
+
+
+def test_exact_section_title_can_authorize_broad_procedure_query() -> None:
+    direct_text = "6.8 水泵\n1. 取下水泵盖。\n2. 安装水泵组件。"
+
+    assert _direct_manual_text_supports_query(
+        direct_text,
+        "水泵应该怎样拆装？",
+    )
+
+
+def test_final_audit_preserves_authorized_rendered_answer_with_partial_coverage() -> None:
+    plan = ResponsePlan(
+        plan_id="test-plan",
+        coverage_status="unsupported",
+        source_mode="normal",
+        allowed_evidence=(
+            {
+                "evidence_id": "manual:doc:chunk",
+                "source_type": "manual",
+                "qualification": "qualified",
+                "text": "水泵拆卸步骤",
+                "source": {"document_id": "doc", "chunk_id": "chunk", "page": 20},
+            },
+        ),
+        missing_aspects=("水泵拆装",),
+        conflicts=(),
+        ledger_digest="digest",
+    )
+
+    result = finalize_response(
+        plan,
+        "可以按以下顺序操作：\n1. 拆下水泵盖。",
+        evidence_rendered=True,
+    )
+
+    assert result.passed
+    assert "拆下水泵盖" in result.answer
+
+
+def test_low_confidence_does_not_block_authorized_structural_section_recovery() -> None:
+    metadata = {
+        "low_confidence_retrieval": True,
+        "route_plan": _component_route("manual-doc", "水泵", "拆装"),
+    }
+
+    assert not _manual_overrides_blocked_by_low_confidence(metadata)
+
+
+def test_insufficient_policy_defers_to_authorized_structural_retrieval() -> None:
+    context = {
+        "response_policy": {"mode": "INSUFFICIENT_EVIDENCE"},
+        "route_plan": _component_route("manual-doc", "水泵", "拆装"),
+    }
+
+    assert _response_policy_direct_must_defer(context)
+
+
 def test_manual_query_action_recognizes_adjustment_family() -> None:
     assert _manual_query_action("如何调整气门间隙？") == "调整"
     assert _manual_query_action("怎样调节气门间隙？") == "调整"
     assert _manual_query_action("校正气门间隙的步骤") == "调整"
     assert _manual_action_target("怎样调节气门间隙？", "调整") == "气门间隙"
     assert _manual_query_kind("怎样调节气门间隙？") == "procedure"
+
+
+def test_manual_action_target_strips_generic_procedure_question_suffix() -> None:
+    assert _manual_action_target("这个曲轴箱盖的拆卸步骤是什么？", "拆卸") == "曲轴箱盖"
 
 
 def test_authorized_structural_lookup_initializes_vector_service_lazily(monkeypatch) -> None:
@@ -368,6 +441,187 @@ def test_title_match_lookup_stays_within_scoped_document(monkeypatch) -> None:
 
     assert section_ids == {"sec-right"}
     assert {record["metadata"]["document_id"] for record in records} == {"selected-manual"}
+
+
+def test_manual_records_stay_within_resolved_section_scope() -> None:
+    from api import main as api_main
+
+    records = [
+        {
+            "id": "selected-step",
+            "content": "选中章节的操作步骤。",
+            "metadata": {
+                "document_id": "manual-doc",
+                "parent_section_id": "sec:selected",
+            },
+        },
+        {
+            "id": "other-step",
+            "content": "其他章节的操作步骤。",
+            "metadata": {
+                "document_id": "manual-doc",
+                "parent_section_id": "sec:other",
+            },
+        },
+    ]
+
+    filtered = api_main._manual_records_for_scoped_document(
+        records,
+        {
+            "scope_decision": {
+                "status": "in_scope",
+                "document_id": "manual-doc",
+            },
+            "retrieval_scope": {
+                "document_id": "manual-doc",
+                "allowed_section_ids": ["sec:selected"],
+            },
+        },
+    )
+
+    assert [record["id"] for record in filtered] == ["selected-step"]
+
+
+def test_structural_recovery_uses_server_selected_section_without_title_in_query(monkeypatch) -> None:
+    from api import main as api_main
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return [{
+                "id": "install-thrust-washer",
+                "content": "1. 安装止推垫圈并确认其贴合。",
+                "metadata": {
+                    "document_id": document_id,
+                    "parent_section_id": section_id,
+                    "section_title": "6.4 右曲轴箱盖与离合器",
+                    "chunk_type": "step_raw",
+                    "page": 26,
+                },
+            }]
+
+    monkeypatch.setattr(
+        api_main,
+        "_initialized_or_injected_vector_service",
+        lambda **kwargs: FakeVectorService(),
+    )
+    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda *args: ([], set()))
+    monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
+    metadata = {
+        "route_plan": _component_route("manual-doc", "止推垫圈", "安装") | {
+            "selected_section_id": "sec-right-cover",
+        },
+        "scope_decision": {"status": "in_scope", "document_id": "manual-doc"},
+        "retrieval_scope": {
+            "document_id": "manual-doc",
+            "allowed_section_ids": ["sec-right-cover"],
+        },
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [],
+            }],
+        }],
+    }
+
+    records = _manual_best_section_records("止推垫圈怎么安装？", "procedure", metadata)
+
+    assert [record["id"] for record in records] == ["install-thrust-washer"]
+    assert records[0]["metadata"]["_structural_recovery_lookup_source"] == "section_text_lookup"
+
+
+def test_structural_recovery_uses_authorized_record_ids_when_section_search_is_empty(monkeypatch) -> None:
+    """澄清后的章节恢复不能因 RediSearch 瞬时空结果丢失已授权文本。"""
+    from api import main as api_main
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=80, chunk_type=None):
+            return []
+
+        def get_vector_records(self, doc_ids):
+            assert doc_ids == ["step-1"]
+            return [{
+                "doc_id": "step-1",
+                "text": "1. 先对角松开曲轴箱盖螺栓。",
+                "metadata": {
+                    "document_id": "manual-doc",
+                    "parent_section_id": "sec-cover",
+                    "section_title": "6.4 右曲轴箱盖与离合器",
+                    "chunk_type": "step_raw",
+                    "page": 25,
+                    "toc_path": "摩托车发动机维修手册 > 6.4 右曲轴箱盖与离合器 > 拆卸右盖",
+                },
+            }]
+
+    monkeypatch.setattr(
+        api_main,
+        "_initialized_or_injected_vector_service",
+        lambda **kwargs: FakeVectorService(),
+    )
+    monkeypatch.setattr(api_main, "_manual_title_match_records", lambda *args: ([], set()))
+    monkeypatch.setattr(api_main, "_manual_title_section_match_scores", lambda message: {})
+    metadata = {
+        "route_plan": _component_route("manual-doc", "曲轴箱盖", "拆卸") | {
+            "selected_section_id": "sec-cover",
+        },
+        "scope_decision": {"status": "in_scope", "document_id": "manual-doc"},
+        "retrieval_scope": {
+            "document_id": "manual-doc",
+            "allowed_section_ids": ["sec-cover"],
+            "allowed_evidence_refs": ["step-1"],
+        },
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [],
+            }],
+        }],
+    }
+
+    records = api_main._manual_best_section_records(
+        "这个曲轴箱盖的拆卸步骤是什么？",
+        "procedure",
+        metadata,
+    )
+
+    assert [record.get("id") or record.get("doc_id") for record in records] == ["step-1"]
+    assert records[0]["metadata"]["_structural_recovery_lookup_source"] == "record_id_lookup"
+
+    answer = api_main._format_manual_evidence_answer_from_metadata(
+        "这个曲轴箱盖的拆卸步骤是什么？",
+        metadata,
+    )
+    assert answer is not None
+    assert "对角松开曲轴箱盖螺栓" in answer
+
+
+def test_duplicate_manual_records_merge_trusted_lookup_provenance() -> None:
+    merged = _manual_append_unique_records(
+        [
+            {
+                "id": "same-step",
+                "content": "1. 拆下水泵盖。",
+                "metadata": {
+                    "document_id": "manual-doc",
+                    "parent_section_id": "sec:pump",
+                    "qualification": "reference_only",
+                },
+            }
+        ],
+        [
+            {
+                "id": "same-step",
+                "content": "1. 拆下水泵盖。",
+                "metadata": {
+                    "document_id": "manual-doc",
+                    "parent_section_id": "sec:pump",
+                    "original_title_match": True,
+                },
+            }
+        ],
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["metadata"]["original_title_match"] is True
 
 
 def test_directional_cover_install_answer_stays_on_target_procedure_page(monkeypatch) -> None:
@@ -2226,6 +2480,76 @@ def test_manual_evidence_answer_prefers_letter_mark_anchors_over_neighbor_check_
     assert "曲柄上的标记（图示“C”）" in answer
     assert "平衡轴配重块上的标记（图示“D”）对齐" in answer
     assert "曲轴轴向跳动" not in answer
+
+
+def test_manual_evidence_answer_focuses_open_vocabulary_structured_action() -> None:
+    """结构化动作不在旧动作表中时，也只能呈现与该动作直接匹配的证据。"""
+
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "intent": "procedure_planning",
+            "task_action": "formal_procedure",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+            "selected_section_id": "sec-sync",
+            "query_contract": {
+                "task_action": "formal_procedure",
+                "component": "星门同步盘",
+                "action": "标定",
+            },
+        },
+        "retrieval_scope": {
+            "document_id": "manual-doc",
+            "parent_section_id": "sec-sync",
+        },
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [
+                    {
+                        "id": "sync-calibration",
+                        "content": "1. 标定星门同步盘刻线，使两条刻线与壳体基准面平齐。",
+                        "metadata": {
+                            "qualification": "qualified",
+                            "chunk_type": "text",
+                            "chunk_label": "step",
+                            "document_id": "manual-doc",
+                            "parent_section_id": "sec-sync",
+                            "section_match_ids": ["sec-sync"],
+                            "section_title": "4.3 星门同步盘",
+                            "page": 11,
+                            "source_index": 1,
+                        },
+                    },
+                    {
+                        "id": "sync-removal",
+                        "content": "2. 拆下同步盘固定螺母，并取出轴套。",
+                        "metadata": {
+                            "qualification": "qualified",
+                            "chunk_type": "text",
+                            "chunk_label": "step",
+                            "document_id": "manual-doc",
+                            "parent_section_id": "sec-sync",
+                            "section_match_ids": ["sec-sync"],
+                            "section_title": "4.3 星门同步盘",
+                            "page": 11,
+                            "source_index": 2,
+                        },
+                    },
+                ],
+            }],
+        }],
+    }
+
+    answer = _format_manual_evidence_answer_from_metadata(
+        "星门同步盘的刻线怎么标定？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "标定星门同步盘刻线" in answer
+    assert "拆下同步盘固定螺母" not in answer
 
 
 def test_manual_evidence_answer_refuses_missing_model_detail_from_evidence() -> None:

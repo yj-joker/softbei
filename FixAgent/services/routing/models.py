@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any
 
@@ -13,6 +13,8 @@ class RouteAction(str, Enum):
     GENERAL_AI = "general_ai"
     KNOWLEDGE_INVENTORY = "knowledge_inventory"
     GROUNDED_RETRIEVAL = "grounded_retrieval"
+    # 一级反问动作；旧名称保留为同值别名以兼容历史序列化数据。
+    CLARIFY = "clarify_document"
     CLARIFY_DOCUMENT = "clarify_document"
     AI_FALLBACK = "ai_fallback"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
@@ -48,6 +50,10 @@ class RoutePlan:
     allow_ai_fallback: bool
     reason: str
     clarification_options: tuple[dict[str, Any], ...] = ()
+    clarification_kind: str = ""
+    selected_section_id: str = ""
+    graph_scope: dict[str, Any] = field(default_factory=dict)
+    selected_graph_candidate_id: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RoutePlan":
@@ -71,6 +77,12 @@ class RoutePlan:
                 dict(item) for item in payload.get("clarification_options") or ()
                 if isinstance(item, dict)
             ),
+            clarification_kind=str(payload.get("clarification_kind") or ""),
+            selected_section_id=str(payload.get("selected_section_id") or ""),
+            graph_scope=dict(payload.get("graph_scope") or {})
+            if isinstance(payload.get("graph_scope"), dict)
+            else {},
+            selected_graph_candidate_id=str(payload.get("selected_graph_candidate_id") or ""),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,4 +92,5 @@ class RoutePlan:
         data["candidate_document_ids"] = list(self.candidate_document_ids)
         data["allowed_tools"] = list(self.allowed_tools)
         data["clarification_options"] = [dict(item) for item in self.clarification_options]
+        data["graph_scope"] = dict(self.graph_scope)
         return data

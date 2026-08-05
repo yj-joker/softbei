@@ -305,3 +305,53 @@ async def _call_java_for_section_error(path, body):
     if path.endswith("upsert-device"):
         return {"deviceId": "device-1"}
     raise kg.JavaApiError(f"Java API request failed: path={path} status=503")
+
+
+def test_extract_document_sends_document_scoped_provenance(monkeypatch):
+    calls = []
+    extractor = _extractor_with_result({})
+    extractor.vector_svc = SimpleNamespace(
+        list_document_chunks=lambda _document_id: [
+            {
+                "metadata": {
+                    "section_title": "6.2 离合器装配",
+                    "parent_section_id": "6.2",
+                    "chunk_label": "text",
+                    "chunk_uid": "chunk-23",
+                    "page_number": 23,
+                },
+                "text": "内容",
+            }
+        ],
+        get_document_manifest=lambda _document_id: {
+            "document_version": "batch-7",
+        },
+    )
+
+    async def call_java(path, body):
+        calls.append((path, body))
+        if path.endswith("upsert-device"):
+            return {"deviceId": "device-1"}
+        if path.endswith("upsert-component"):
+            return {"componentId": "component-1"}
+        return {"faultId": "fault-1", "solutionId": "solution-1"}
+
+    extractor._call_java = call_java
+    monkeypatch.setattr(
+        kg,
+        "assess_section_structure",
+        lambda _chunks: {"ok": True, "reason": "", "stats": {}},
+    )
+
+    asyncio.run(extractor.extract_document("manual-1", device_type_hint="测试设备"))
+
+    component_path, component_body = next(
+        item for item in calls if item[0].endswith("upsert-component")
+    )
+    assert component_path.endswith("upsert-component")
+    assert component_body["documentId"] == "manual-1"
+    assert component_body["documentVersion"] == "batch-7"
+    assert component_body["sectionId"] == "6.2"
+    assert component_body["sourceChunkUid"] == "chunk-23"
+    assert component_body["pageStart"] == 23
+    assert component_body["pageEnd"] == 23

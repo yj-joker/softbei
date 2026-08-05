@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.main import (
     _collect_direct_section_table_items,
+    _dedupe_inventory_rows,
     _format_inventory_table_answer_from_metadata,
     _inventory_rows_from_table_full,
     _is_inventory_table_query,
@@ -492,6 +493,361 @@ def test_direct_section_table_items_prefers_title_index_inventory_match(monkeypa
     assert items[0]["metadata"]["original_title_match"] is True
 
 
+def test_direct_section_table_items_use_selected_section_for_structured_parameter(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            if parent_section_id != "sec:selected":
+                return []
+            return [{
+                "id": "tbl-selected",
+                "content": (
+                    "表格：第23页表格\n"
+                    "序号 | 料件名称 | 数量 | 备注\n"
+                    "2 | QX-47 复合锁环 | 1 | 校准值 12 N·m"
+                ),
+                "metadata": {
+                    "chunk_type": "table",
+                    "document_id": document_id,
+                    "parent_section_id": parent_section_id,
+                    "section_title": "6.2 星门总成装配零件清单",
+                    "page": 23,
+                },
+            }]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+            "selected_section_id": "sec:selected",
+            "task_action": "parameter_lookup",
+            "query_contract": {
+                "part_spec": "QX-47",
+                "component": "QX-47锁环",
+                "requested_fields": ["校准值"],
+            },
+        },
+        "react_trace": [],
+    }
+
+    items = asyncio.run(_collect_direct_section_table_items(
+        "QX-47复合锁环的校准值是多少？",
+        metadata,
+    ))
+
+    assert [item["id"] for item in items] == ["tbl-selected"]
+    assert items[0]["metadata"]["parent_section_id"] == "sec:selected"
+
+
+def test_direct_section_table_items_relocates_parameter_lookup_to_evidence_section(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            if parent_section_id != "sec:table":
+                return []
+            return [{
+                "id": "tbl-valve-clearance",
+                "content": "表格：第15页表格\n气门类型 | 标准间隙范围\n进气门 | 0.13～0.20 mm\n排气门 | 0.20～0.30 mm",
+                "metadata": {
+                    "chunk_type": "table",
+                    "document_id": document_id,
+                    "parent_section_id": parent_section_id,
+                    "section_title": "4.6 气门间隙",
+                    "page": 15,
+                },
+            }]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+        def find_evidence(self, contract):
+            return [SimpleNamespace(
+                document_id="manual-doc",
+                section_id="sec:table",
+                core_title="气门间隙",
+                full_title="4.6 气门间隙",
+            )]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+            "selected_section_id": "sec:procedure",
+            "task_action": "parameter_lookup",
+            "query_contract": {
+                "component": "进气门",
+                "targets": [
+                    {"component": "进气门", "requested_fields": ["标准间隙"]},
+                    {"component": "排气门", "requested_fields": ["标准间隙"]},
+                ],
+                "requested_fields": ["标准间隙"],
+            },
+        },
+        "react_trace": [],
+    }
+
+    items = asyncio.run(_collect_direct_section_table_items(
+        "进气门和排气门的标准间隙分别是多少？",
+        metadata,
+    ))
+
+    assert [item["id"] for item in items] == ["tbl-valve-clearance"]
+    assert items[0]["metadata"]["parent_section_id"] == "sec:table"
+
+
+def test_direct_section_table_items_respects_resolved_clarification_scope(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            return [{
+                "id": f"tbl-{parent_section_id}",
+                "content": f"表格：第22页表格\n序号 | 料件名称 | 数量 | 备注\n1 | QX-47 紧固件 | 1 | {parent_section_id}",
+                "metadata": {
+                    "chunk_type": "table",
+                    "document_id": document_id,
+                    "parent_section_id": parent_section_id,
+                    "section_title": parent_section_id,
+                    "page": 22,
+                },
+            }]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+        def find_evidence(self, contract):
+            return [SimpleNamespace(
+                document_id="manual-doc",
+                section_id="sec:other",
+                core_title="其他参数表",
+                full_title="6.2 其他参数表",
+            )]
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+            "selected_section_id": "sec:selected",
+            "task_action": "parameter_lookup",
+            "query_contract": {
+                "part_spec": "QX-47",
+                "component": "紧固件",
+                "requested_fields": ["扭矩"],
+            },
+        },
+        "retrieval_scope": {
+            "document_id": "manual-doc",
+            "allowed_section_ids": ["sec:selected"],
+            "allowed_evidence_refs": ["chunk-selected"],
+        },
+        "react_trace": [],
+    }
+
+    items = asyncio.run(_collect_direct_section_table_items(
+        "QX-47紧固件的扭矩是多少？",
+        metadata,
+    ))
+
+    assert [item["id"] for item in items] == ["tbl-sec:selected"]
+
+
+def test_direct_section_table_items_accepts_server_resolved_section_for_device_identity_route(monkeypatch) -> None:
+    """章节反问完成后，显式设备查询也必须能按服务端作用域直取表格。"""
+
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            assert document_id == "manual-doc"
+            assert parent_section_id == "sec:selected"
+            assert chunk_type == "table"
+            return [{
+                "id": "tbl-selected",
+                "content": (
+                    "表格：第22页表格\n"
+                    "序号 | 料件名称 | 数量 | 备注\n"
+                    "1 | QX-47 紧固件 | 1 | 校准值 12 N·m"
+                ),
+                "metadata": {
+                    "chunk_type": "table",
+                    "document_id": document_id,
+                    "parent_section_id": parent_section_id,
+                    "section_title": "6.1 紧固件装配清单",
+                    "page": 22,
+                },
+            }]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+        def find_evidence(self, contract):
+            return []
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "device_identity",
+            "selected_document_id": "manual-doc",
+            "selected_section_id": "sec:selected",
+            "task_action": "parameter_lookup",
+            "query_contract": {
+                "task_action": "parameter_lookup",
+                "part_spec": "QX-47",
+                "component": "紧固件",
+                "requested_fields": ["校准值"],
+            },
+        },
+        "retrieval_scope": {
+            "document_id": "manual-doc",
+            "allowed_section_ids": ["sec:selected"],
+            "allowed_evidence_refs": ["tbl-selected"],
+        },
+        "react_trace": [],
+    }
+
+    items = asyncio.run(_collect_direct_section_table_items(
+        "QX-47紧固件的校准值是多少？",
+        metadata,
+    ))
+
+    assert [item["id"] for item in items] == ["tbl-selected"]
+
+
+def test_direct_section_table_items_falls_back_to_authorized_record_ids(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=200, chunk_type=None):
+            return []
+
+        def get_vector_records(self, record_ids):
+            assert record_ids == ["tbl-selected", "image-selected", "tbl-other"]
+            return [
+                {
+                    "doc_id": "tbl-selected",
+                    "text": (
+                        "表格：第22页表格\n"
+                        "序号 | 料件名称 | 数量 | 备注\n"
+                        "3 | QX-47 六角法兰面螺栓 | 1 | 预紧力 5±1 N·m"
+                    ),
+                    "metadata": {
+                        "chunk_type": "table",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec:selected",
+                        "section_title": "6.1 星门总成装配部件清单",
+                        "page": 22,
+                    },
+                },
+                {
+                    "doc_id": "image-selected",
+                    "text": "同页插图",
+                    "metadata": {
+                        "chunk_type": "image",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec:selected",
+                        "section_title": "6.1 星门总成装配部件清单",
+                        "page": 22,
+                    },
+                },
+                {
+                    "doc_id": "tbl-other",
+                    "text": "QX-47 六角法兰面螺栓；校正力 12±1.5 N·m",
+                    "metadata": {
+                        "chunk_type": "table",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec:other",
+                        "section_title": "6.2 其他装配部件清单",
+                        "page": 23,
+                    },
+                },
+            ]
+
+    class FakeSectionIndex:
+        def build(self, vector_service):
+            return None
+
+        def find(self, query):
+            return []
+
+        def find_evidence(self, contract):
+            return []
+
+    from services.knowledge import vector_service as vector_service_module
+    from services.retrieval.section_index import SectionTitleIndex
+
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
+    monkeypatch.setattr(SectionTitleIndex, "get_instance", classmethod(lambda cls: FakeSectionIndex()))
+
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+            "selected_section_id": "sec:selected",
+            "task_action": "parameter_lookup",
+            "query_contract": {
+                "part_spec": "QX-47",
+                "component": "六角法兰面螺栓",
+                "requested_fields": ["扭矩"],
+            },
+        },
+        "retrieval_scope": {
+            "document_id": "manual-doc",
+            "allowed_section_ids": ["sec:selected"],
+            "allowed_evidence_refs": ["tbl-selected", "image-selected", "tbl-other"],
+        },
+        "react_trace": [],
+    }
+
+    items = asyncio.run(_collect_direct_section_table_items(
+        "QX-47六角法兰面螺栓的扭矩是多少？",
+        metadata,
+    ))
+
+    assert [item["id"] for item in items] == ["tbl-selected"]
+    assert items[0]["metadata"]["parent_section_id"] == "sec:selected"
+    assert "5±1" in items[0]["content"]
+    assert "12±1.5" not in items[0]["content"]
+
+
 def test_inventory_table_answer_parses_pipe_table_content() -> None:
     metadata = {
         "react_trace": [
@@ -739,6 +1095,107 @@ def test_inventory_table_answer_filters_specific_part_quantity_and_torque_query(
     assert "M10×1.25 盖形法兰面螺母（12级/氧化黑）；数量：4；备注：14# 套筒及扭力扳手 / 60 ± 5 N·m" in answer
     assert "M6×30" not in answer
     assert "M8×110" not in answer
+
+
+def test_structured_part_spec_selects_only_the_exact_table_row() -> None:
+    metadata = {
+        "route_plan": {
+            "query_contract": {
+                "part_spec": "QX-47",
+                "component": "复合锁环",
+                "targets": [
+                    {"part_spec": "QX-47", "component": "复合锁环"},
+                ],
+            },
+        },
+        "react_trace": [{
+            "tool_calls": [{
+                "result_data": [{
+                    "content": (
+                        "表格：第23页表格\n"
+                        "序号 | 料件名称 | 数量 | 备注\n"
+                        "1 | QX-30 复合锁环 | 1 | 校准值 8 N·m\n"
+                        "2 | QX-47 复合锁环 | 1 | 校准值 12 N·m\n"
+                        "3 | QX-75 复合锁环 | 1 | 校准值 16 N·m"
+                    ),
+                    "metadata": {
+                        "chunk_type": "table",
+                        "chunk_label": "table_full",
+                        "section_title": "6.2 星门总成装配零件清单",
+                        "page": 23,
+                        "parent_section_id": "sec:open-vocabulary",
+                        "section_match_ids": ["sec:open-vocabulary"],
+                    },
+                }],
+            }],
+        }],
+    }
+
+    answer = _format_inventory_table_answer_from_metadata(
+        "星门总成装配零件清单中QX-47复合锁环的校准值是多少？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "QX-47 复合锁环" in answer
+    assert "QX-30" not in answer
+    assert "QX-75" not in answer
+
+
+def test_structured_parameter_contract_uses_table_evidence_without_inventory_wording() -> None:
+    metadata = {
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+            "selected_section_id": "sec:open-vocabulary",
+            "query_contract": {
+                "task_action": "parameter_lookup",
+                "part_spec": "QX-47",
+                "component": "复合锁环",
+                "requested_fields": ["校准值"],
+                "targets": [
+                    {
+                        "part_spec": "QX-47",
+                        "component": "复合锁环",
+                        "requested_fields": ["校准值"],
+                    }
+                ],
+            },
+        },
+        "react_trace": [{
+            "tool_calls": [{
+                "result_data": [{
+                    "content": (
+                        "表格：第23页表格\n"
+                        "序号 | 料件名称 | 数量 | 备注\n"
+                        "1 | QX-30 复合锁环 | 1 | 校准值 8 N·m\n"
+                        "2 | QX-47 复合锁环 | 1 | 校准值 12 N·m\n"
+                        "3 | QX-75 复合锁环 | 1 | 校准值 16 N·m"
+                    ),
+                    "metadata": {
+                        "chunk_type": "table",
+                        "chunk_label": "table_full",
+                        "section_title": "6.2 星门总成装配零件清单",
+                        "page": 23,
+                        "parent_section_id": "sec:open-vocabulary",
+                        "section_match_ids": ["sec:open-vocabulary"],
+                    },
+                }],
+            }],
+        }],
+    }
+
+    answer = _format_inventory_table_answer_from_metadata(
+        "QX-47复合锁环的校准值是多少？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "QX-47 复合锁环" in answer
+    assert "校准值 12 N·m" in answer
+    assert "QX-30" not in answer
+    assert "QX-75" not in answer
 
 
 def test_inventory_table_answer_filters_multiple_named_parts_but_keeps_full_list_query() -> None:
@@ -1004,3 +1461,106 @@ def test_inventory_table_answer_treats_legacy_textual_table_full_as_complete() -
     assert answer is not None
     assert "根据手册第17-18页" in answer
     assert metadata["_deterministic_answer_table_complete"] is True
+
+
+def test_key_value_row_preserves_continuation_parameter_lines() -> None:
+    metadata = {
+        "route_plan": {
+            "task_action": "parameter_lookup",
+            "query_contract": {
+                "part_spec": "M6×30",
+                "requested_fields": ["预紧力", "校正力"],
+            },
+        },
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": [
+                            {
+                                "content": (
+                                    "表格：第34页表格\n"
+                                    "序号=1；料件名称=M6×30 六角法兰面螺栓；数量=2；备注=8# T杆或套筒\n"
+                                    "预紧力 5±1 N·m\n"
+                                    "校正力 12±1.5 N·m"
+                                ),
+                                "metadata": {
+                                    "chunk_type": "table",
+                                    "section_title": "8.1 传动装置装配部件清单",
+                                    "parent_section_id": "sec:drive",
+                                    "page": 34,
+                                },
+                            },
+                            {
+                                "content": "表格：第34页表格\n序号=2；料件名称=M6×75 六角法兰面螺栓；数量=7；备注=8# T杆或套筒",
+                                "metadata": {
+                                    "chunk_type": "table",
+                                    "section_title": "8.1 传动装置装配部件清单",
+                                    "parent_section_id": "sec:drive",
+                                    "page": 34,
+                                },
+                            }
+                        ],
+                    }
+                ]
+            }
+        ]
+    }
+
+    answer = _format_inventory_table_answer_from_metadata(
+        "传动装置装配中M6×30螺栓的预紧力和校正力分别是多少？",
+        metadata,
+    )
+
+    assert answer is not None
+    assert "预紧力 5±1 N·m" in answer
+    assert "校正力 12±1.5 N·m" in answer
+
+
+def test_duplicate_rows_merge_non_empty_evidence_fields() -> None:
+    rows = _dedupe_inventory_rows(
+        [
+            {
+                "seq": "1",
+                "name": "M6×30 六角法兰面螺栓",
+                "quantity": "2",
+                "remark": "8# T杆或套筒",
+            },
+            {
+                "seq": "1",
+                "name": "M6×30 六角法兰面螺栓",
+                "quantity": "2",
+                "remark": "8# T杆或套筒 预紧力 5±1 N·m 校正力 12±1.5 N·m",
+            },
+        ]
+    )
+
+    assert len(rows) == 1
+    assert "预紧力 5±1 N·m" in rows[0]["remark"]
+    assert "校正力 12±1.5 N·m" in rows[0]["remark"]
+
+
+def test_structured_table_preserves_unmapped_parameter_columns() -> None:
+    rows = _inventory_rows_from_table_full({
+        "headers": ["气门类型", "标准间隙范围"],
+        "rows": [
+            ["进气门", "0.13～0.20 mm"],
+            ["排气门", "0.20～0.30 mm"],
+        ],
+    })
+
+    assert rows == [
+        {
+            "seq": "",
+            "name": "进气门",
+            "quantity": "",
+            "remark": "标准间隙范围 0.13～0.20 mm",
+        },
+        {
+            "seq": "",
+            "name": "排气门",
+            "quantity": "",
+            "remark": "标准间隙范围 0.20～0.30 mm",
+        },
+    ]

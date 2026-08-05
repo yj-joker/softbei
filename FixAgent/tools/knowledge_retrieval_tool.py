@@ -6,7 +6,7 @@ import logging
 import asyncio
 import inspect
 import re
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 from embeddings.multimodal_embedding import get_multimodal_embedding
 from embeddings.text_embedding import get_text_embedding
@@ -96,6 +96,17 @@ class KnowledgeRetrievalTool(BaseTool):
                 "category": {"type": "string", "description": "Existing category filter."},
                 "tags": {"type": "array", "items": {"type": "string"}, "description": "Existing tag filter."},
                 "document_id": {"type": "string", "description": "Restrict retrieval to one imported document."},
+                "parent_section_id": {"type": "string", "description": "Restrict retrieval to one imported section."},
+                "allowed_section_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Server-resolved section allow-list from clarification.",
+                },
+                "allowed_evidence_refs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Server-resolved evidence allow-list from clarification.",
+                },
                 "chunk_type": {"type": "string", "description": "text/table/image/image_summary filter."},
                 "device_type": {"type": "string", "description": "Device type metadata filter."},
                 "document_version": {"type": "string", "description": "Document version metadata filter."},
@@ -121,8 +132,9 @@ class KnowledgeRetrievalTool(BaseTool):
         record_type: str = None,
         status: str = None,
         chunk_label: str = None,
+        parent_section_id: str = None,
     ) -> Optional[str]:
-        if not any((document_id, chunk_type, device_type, document_version, manual_type, record_type, status, chunk_label)):
+        if not any((document_id, chunk_type, device_type, document_version, manual_type, record_type, status, chunk_label, parent_section_id)):
             parts = []
             if category:
                 parts.append(f"@category:{{{escape_redis_tag_value(category)}}}")
@@ -142,6 +154,7 @@ class KnowledgeRetrievalTool(BaseTool):
             record_type=record_type,
             status=status,
             chunk_label=chunk_label,
+            parent_section_id=parent_section_id,
         )
 
     @staticmethod
@@ -155,6 +168,39 @@ class KnowledgeRetrievalTool(BaseTool):
         if metadata.get("chunk_type") == "image_summary":
             return doc_id.replace(":ims:", ":img:")
         return doc_id
+
+    @classmethod
+    def _filter_to_resolved_scope(
+        cls,
+        candidates: List[Dict],
+        *,
+        allowed_section_ids: Iterable[str] = (),
+        allowed_evidence_refs: Iterable[str] = (),
+    ) -> List[Dict]:
+        """Apply a non-relaxable allow-list after every retrieval expansion."""
+        sections = {str(value).strip() for value in allowed_section_ids if str(value).strip()}
+        evidence = {str(value).strip() for value in allowed_evidence_refs if str(value).strip()}
+        if not sections and not evidence:
+            return list(candidates)
+        filtered: List[Dict] = []
+        for candidate in candidates:
+            metadata = candidate.get("metadata") or {}
+            section_id = str(metadata.get("parent_section_id") or "").strip()
+            if sections and section_id not in sections:
+                continue
+            identifiers = {
+                str(candidate.get("doc_id") or "").strip(),
+                str(metadata.get("id") or "").strip(),
+                str(metadata.get("chunk_id") or "").strip(),
+                str(metadata.get("source_chunk_id") or "").strip(),
+                str(metadata.get("source_image_id") or "").strip(),
+                str(cls._canonical_id(candidate) or "").strip(),
+            }
+            identifiers.discard("")
+            if evidence and not identifiers.intersection(evidence):
+                continue
+            filtered.append(candidate)
+        return filtered
 
     @staticmethod
     def _is_step(item: Dict) -> bool:
@@ -1300,8 +1346,19 @@ class KnowledgeRetrievalTool(BaseTool):
         device_type: str = None,
         document_version: str = None,
         manual_type: str = None,
+        parent_section_id: str = None,
+        allowed_section_ids: List[str] = None,
+        allowed_evidence_refs: List[str] = None,
         _event_sink: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ) -> List[VectorSearchResult]:
+        resolved_sections = tuple(dict.fromkeys(
+            str(value).strip() for value in (allowed_section_ids or ()) if str(value).strip()
+        ))
+        resolved_evidence = tuple(dict.fromkeys(
+            str(value).strip() for value in (allowed_evidence_refs or ()) if str(value).strip()
+        ))
+        if parent_section_id and not resolved_sections:
+            resolved_sections = (str(parent_section_id),)
         query_understanding = understand_query(query)
         query_vectors = await self._embed_query_vectors(query, image_urls)
         # B: 标题命中查找（纯字符串匹配，< 1ms），提前 build 并传入 plan
@@ -1312,13 +1369,18 @@ class KnowledgeRetrievalTool(BaseTool):
         except Exception:
             vector_service = None
         section_match_hits = section_index.find(query)
-        sm_ids = [ref.section_id for ref in section_match_hits]
+        if resolved_sections:
+            section_match_hits = [
+                ref for ref in section_match_hits
+                if ref.section_id in resolved_sections
+            ]
+        sm_ids = list(resolved_sections) if resolved_sections else [ref.section_id for ref in section_match_hits]
         plan = build_retrieval_plan(query, has_images=bool(image_urls), explicit_chunk_type=chunk_type, section_match_ids=sm_ids)
         logger.debug("[knowledge_retrieval] plan.section_match_ids=%s  intent=%s", sm_ids, plan.intent)
         confidence_type = confidence_intent(plan)
         final_top_k = max(int(top_k or 0), 0)
         recall_k = max(final_top_k * 3, DEFAULT_RECALL_TOP_N) if final_top_k else 0
-        optional_filter_used = any((category, tags, device_type, document_version, manual_type))
+        optional_filter_used = any((category, tags, device_type, document_version, manual_type, parent_section_id))
         await _emit_retrieval_event(
             _event_sink,
             "retrieval_start",
@@ -1359,6 +1421,7 @@ class KnowledgeRetrievalTool(BaseTool):
                 manual_type=None if relaxed else manual_type,
                 record_type="manual",
                 status="ready",
+                parent_section_id=parent_section_id,
             )
 
         text_vector = query_vectors.get("text_vector")
@@ -1484,7 +1547,14 @@ class KnowledgeRetrievalTool(BaseTool):
                 *(run_route(route) for route in plan.routes),
                 fetch_section_match_candidates(),
             )
-            candidate_lists = [list(docs) for docs in route_results]
+            candidate_lists = [
+                self._filter_to_resolved_scope(
+                    list(docs),
+                    allowed_section_ids=resolved_sections,
+                    allowed_evidence_refs=resolved_evidence,
+                )
+                for docs in route_results
+            ]
 
             if not any(candidate_lists) and optional_filter_used and not document_id:
                 logger.info("No evidence matched optional retrieval filters; retrying without inferred metadata filters")
@@ -1514,6 +1584,11 @@ class KnowledgeRetrievalTool(BaseTool):
                 self._merge_candidates(locator_candidates + current_merged),
                 plan,
             )
+            merged_with_locator = self._filter_to_resolved_scope(
+                merged_with_locator,
+                allowed_section_ids=resolved_sections,
+                allowed_evidence_refs=resolved_evidence,
+            )
             return merged_with_locator, rank_candidates(query, merged_with_locator, plan)
 
         fused = reciprocal_rank_fusion(
@@ -1523,6 +1598,11 @@ class KnowledgeRetrievalTool(BaseTool):
             rrf_constant=DEFAULT_RRF_CONSTANT,
         )
         merged = self._filter_candidates_for_plan(self._merge_candidates(fused), plan)
+        merged = self._filter_to_resolved_scope(
+            merged,
+            allowed_section_ids=resolved_sections,
+            allowed_evidence_refs=resolved_evidence,
+        )
         ranked = rank_candidates(query, merged, plan)
         merged, ranked = apply_image_locator(merged, ranked)
         selected = diversify_candidates(ranked, top_k=final_top_k, intent=confidence_type)
@@ -1600,6 +1680,11 @@ class KnowledgeRetrievalTool(BaseTool):
                     rrf_constant=DEFAULT_RRF_CONSTANT,
                 )
                 merged = self._filter_candidates_for_plan(self._merge_candidates(fused), plan)
+                merged = self._filter_to_resolved_scope(
+                    merged,
+                    allowed_section_ids=resolved_sections,
+                    allowed_evidence_refs=resolved_evidence,
+                )
                 ranked = rank_candidates(query, merged, plan)
                 merged, ranked = apply_image_locator(merged, ranked)
                 selected = diversify_candidates(ranked, top_k=final_top_k, intent=confidence_type)
@@ -1623,6 +1708,11 @@ class KnowledgeRetrievalTool(BaseTool):
             query_understanding,
             vector_service,
             document_id=document_id,
+        )
+        selected = self._filter_to_resolved_scope(
+            selected,
+            allowed_section_ids=resolved_sections,
+            allowed_evidence_refs=resolved_evidence,
         )
         final_quality = evaluate_retrieval_quality(plan, ranked, selected, top_k=final_top_k)
         candidate_count_after = len(merged)
@@ -1670,6 +1760,11 @@ class KnowledgeRetrievalTool(BaseTool):
             query_understanding,
             vector_service,
             document_id=document_id,
+        )
+        expanded_selected = self._filter_to_resolved_scope(
+            expanded_selected,
+            allowed_section_ids=resolved_sections,
+            allowed_evidence_refs=resolved_evidence,
         )
         qualification = qualify_candidates(
             query,

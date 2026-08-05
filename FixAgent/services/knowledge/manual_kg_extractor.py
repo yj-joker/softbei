@@ -225,6 +225,7 @@ class ManualKGExtractor:
                 return result
 
             manifest = self.vector_svc.get_document_manifest(document_id) or {}
+            document_version = _manifest_document_version(manifest)
 
             # 结构质检闸门：section_title 结构塌陷的手册（如流程叙述型、
             # PDF 标题未正确解析）整本跳过入图，宁可 0 入图也不产出脏节点污染图谱。
@@ -256,6 +257,7 @@ class ManualKGExtractor:
                 "model": device.model,
                 "manufacturer": device.manufacturer,
                 "documentId": document_id,   # 记录版本来源
+                "documentVersion": document_version,
                 "manualId": manual_id,       # 归属标识（数组），供删手册时精确清理
             })
             device_id = (device_resp or {}).get("deviceId", "")
@@ -277,6 +279,12 @@ class ManualKGExtractor:
             sem_component = asyncio.Semaphore(self._COMPONENT_CONCURRENCY)
 
             async def process_section(sec_title: str, sec_chunks: List[Dict]) -> None:
+                section_provenance = _section_provenance(
+                    document_id,
+                    document_version,
+                    sec_title,
+                    sec_chunks,
+                )
                 # 5a. 提取 Component（准入闸门内置，脏候选在这里就被挡掉）
                 rejections: List[Dict] = []
                 component = await self._extract_component(
@@ -300,6 +308,7 @@ class ManualKGExtractor:
                             "componentType": component.component_type,
                             "keySpecs": component.key_specs,
                             "sourceChunkUid": sample_uid,
+                            **section_provenance,
                             "documentId": document_id,
                             "manualId": manual_id,
                         })
@@ -350,6 +359,7 @@ class ManualKGExtractor:
                                 "solutionDescription": item.solution_description,
                                 "solutionSteps": item.solution_steps,
                                 "sourceChunkUid": item.source_chunk_uid,
+                                **section_provenance,
                                 "confidence": item.confidence,
                                 "documentId": document_id,
                                 "manualId": manual_id,
@@ -388,6 +398,12 @@ class ManualKGExtractor:
                                     "description": f"{component.name if component else ''}的维修操作规程",
                                     "steps": steps_text,
                                     "sourceChunkUid": _best_chunk_uid(step_chunks),
+                                    **_section_provenance(
+                                        document_id,
+                                        document_version,
+                                        sec_title,
+                                        step_chunks,
+                                    ),
                                     "documentId": document_id,
                                     "manualId": manual_id,
                                 })
@@ -805,6 +821,55 @@ def _best_chunk_uid(chunks: List[Dict]) -> str:
         if uid:
             return uid
     return ""
+
+
+def _manifest_document_version(manifest: Dict[str, Any]) -> str:
+    """Return an import/version identifier without inferring it from a filename."""
+    for key in ("document_version", "documentVersion", "import_batch_id", "importBatchId", "version"):
+        value = str(manifest.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _section_provenance(
+    document_id: str,
+    document_version: str,
+    section_title: str,
+    chunks: List[Dict],
+) -> Dict[str, Any]:
+    """Build stable document/section/chunk/page provenance for Java upserts."""
+    metadata = [chunk.get("metadata") or {} for chunk in chunks]
+    raw_section_id = next(
+        (
+            str(meta.get(key) or "").strip()
+            for meta in metadata
+            for key in ("section_id", "parent_section_id")
+            if str(meta.get(key) or "").strip()
+        ),
+        str(section_title or "").strip(),
+    )
+    source_chunk_uids = tuple(dict.fromkeys(
+        str(meta.get("chunk_uid") or meta.get("id") or "").strip()
+        for meta in metadata
+        if str(meta.get("chunk_uid") or meta.get("id") or "").strip()
+    ))
+    pages: list[int] = []
+    for meta in metadata:
+        raw_page = meta.get("page_number") or meta.get("page")
+        try:
+            page = int(raw_page)
+        except (TypeError, ValueError):
+            continue
+        if page > 0 and page not in pages:
+            pages.append(page)
+    return {
+        "documentVersion": document_version,
+        "sectionId": raw_section_id,
+        "sourceChunkUids": list(source_chunk_uids),
+        "pageStart": min(pages) if pages else None,
+        "pageEnd": max(pages) if pages else None,
+    }
 
 
 _ACTION_WORDS = (

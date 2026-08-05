@@ -55,6 +55,26 @@ def _technical_decision(**overrides) -> IntentDecision:
     return IntentDecision(**payload)
 
 
+def test_dynamic_section_recovers_device_when_model_omits_component_field() -> None:
+    catalog = _catalog(("manual-a", "摩托车发动机", "发动机", "摩托车"))
+    contract = QueryContract.from_mapping(
+        {
+            "raw_device_span": "摩托车发动机气缸活塞",
+            "device_name": "摩托车发动机气缸活塞",
+        },
+        raw_query="摩托车发动机气缸活塞装配部件清单",
+    )
+    resolution = EntityResolver().resolve(
+        contract,
+        catalog,
+        (SectionRef("section-a", "manual-a", "气缸活塞装配部件清单", "5.1 气缸活塞装配部件清单"),),
+    )
+
+    assert resolution.contract.raw_device_span == "摩托车发动机"
+    assert resolution.contract.component == "气缸活塞"
+    assert resolution.entity_role == "device_identity"
+
+
 def test_dynamic_section_role_demotes_unseen_component_phrase_without_keyword_lists() -> None:
     query = "查询星门耦联簇装配明细"
     contract = QueryContract.from_mapping(
@@ -76,6 +96,66 @@ def test_dynamic_section_role_demotes_unseen_component_phrase_without_keyword_li
     assert resolution.contract.raw_device_span == ""
     assert resolution.entity_role == "document_component"
     assert resolution.reason == "matched_dynamic_section"
+
+
+def test_structured_part_span_is_not_treated_as_device_identity() -> None:
+    query = "QX-47复合锁环的校准值是多少"
+    contract = QueryContract.from_mapping(
+        {
+            "raw_device_span": "QX-47复合锁环",
+            "device_name": "QX-47复合锁环",
+            "device_category": "机械实体",
+            "model": "QX-47",
+            "component": "复合锁环",
+            "raw_component_span": "复合锁环",
+            "part_spec": "QX-47",
+            "requested_fields": ["校准值"],
+        },
+        raw_query=query,
+    )
+    sections = (
+        SectionRef("section-a", "manual-a", "星门总成参数表", "4.2 星门总成参数表"),
+    )
+
+    resolution = EntityResolver().resolve(
+        contract,
+        _catalog(("manual-a", "苍穹涡轮装置", "涡轮装置", "苍穹平台")),
+        sections,
+    )
+
+    assert resolution.entity_role == "document_component"
+    assert resolution.contract.raw_device_span == ""
+    assert resolution.contract.identity_resolution == "confirmed_absent"
+
+
+def test_model_inside_near_identical_component_span_does_not_create_device_identity() -> None:
+    contract = QueryContract.from_mapping(
+        {
+            "raw_device_span": "QX-47复合锁环",
+            "device_name": "QX-47复合锁环",
+            "device_category": "紧固件",
+            "model": "QX-47",
+            "component": "47复合锁环",
+            "raw_component_span": "47复合锁环",
+            "part_spec": "",
+            "task_action": "parameter_lookup",
+            "requested_fields": ["校准值"],
+        },
+        raw_query="QX-47复合锁环的校准值是多少",
+    )
+    sections = (
+        SectionRef("section-a", "manual-a", "星门总成参数表", "4.2 星门总成参数表"),
+    )
+
+    resolution = EntityResolver().resolve(
+        contract,
+        _catalog(("manual-a", "苍穹涡轮装置", "涡轮装置", "苍穹平台")),
+        sections,
+    )
+
+    assert resolution.entity_role == "document_component"
+    assert resolution.contract.raw_device_span == ""
+    assert resolution.contract.identity_resolution == "confirmed_absent"
 
 
 def test_compound_device_and_dynamic_section_span_recovers_catalog_identity() -> None:
@@ -186,6 +266,34 @@ def test_unknown_explicit_device_is_not_demoted_or_bound_to_existing_document() 
     assert candidates.selected_document_id == ""
 
 
+def test_qualified_unknown_device_is_not_demoted_by_fuzzy_section_overlap() -> None:
+    query = "远航飞行器涡轮装置出现周期性抖动是什么原因"
+    contract = QueryContract.from_mapping(
+        {
+            "raw_device_span": "远航飞行器涡轮装置",
+            "device_name": "远航飞行器涡轮装置",
+            "device_category": "涡轮装置",
+            "carrier_or_application": "远航飞行器",
+            "component": "涡轮装置",
+            "task_action": "find_cause",
+            "symptoms": ["周期性抖动"],
+        },
+        raw_query=query,
+    )
+    catalog = _catalog(("manual-a", "苍穹传动总成", "传动总成", "苍穹平台"))
+    fuzzy_sections = (
+        SectionRef("section-a", "manual-a", "安装传动装置", "8.5 安装传动装置"),
+    )
+
+    entity = EntityResolver().resolve(contract, catalog, fuzzy_sections)
+    candidates = DocumentCandidateResolver().resolve(entity.contract, catalog, fuzzy_sections)
+
+    assert entity.entity_role == "device_identity"
+    assert entity.contract.raw_device_span == "远航飞行器涡轮装置"
+    assert candidates.action == RouteAction.AI_FALLBACK
+    assert candidates.selected_document_id == ""
+
+
 def test_unique_dynamic_section_match_binds_document_without_explicit_device() -> None:
     catalog = _catalog(
         ("manual-a", "苍穹涡轮装置", "涡轮装置", "苍穹平台"),
@@ -217,6 +325,98 @@ def test_multiple_document_matches_require_clarification() -> None:
     assert resolution.action == RouteAction.CLARIFY_DOCUMENT
     assert resolution.selected_document_id == ""
     assert resolution.candidate_document_ids == ("manual-a", "manual-b")
+
+
+def test_confirmed_session_document_precedes_new_multi_document_section_matches() -> None:
+    catalog = _catalog(
+        ("manual-a", "苍穹设备", "设备", "平台"),
+        ("manual-b", "深渊设备", "设备", "平台"),
+    )
+    refs = (
+        SectionRef("section-a", "manual-a", "离合器", "6.1 离合器"),
+        SectionRef("section-b", "manual-b", "离合器", "6.1 离合器"),
+    )
+    contract = QueryContract.from_mapping(
+        {"component": "离合器"}, raw_query="如何查询离合器"
+    )
+
+    resolution = DocumentCandidateResolver().resolve(
+        contract,
+        catalog,
+        refs,
+        session_document_id="manual-b",
+    )
+
+    assert resolution.action == RouteAction.GROUNDED_RETRIEVAL
+    assert resolution.selected_document_id == "manual-b"
+
+
+def test_legacy_document_selection_accepts_option_letters() -> None:
+    from services.routing.document_selection import resolve_pending_document_selection
+
+    resolved = resolve_pending_document_selection(
+        {
+            "status": "awaiting_answer",
+            "original_query": "query",
+            "alternatives": [
+                {"document_id": "manual-a", "display_name": "Manual A"},
+                {"document_id": "manual-b", "display_name": "Manual B"},
+            ],
+        },
+        "B",
+    )
+
+    assert resolved is not None
+    assert resolved["selected_document_id"] == "manual-b"
+
+
+def test_unique_section_is_carried_into_grounded_route_plan() -> None:
+    plan = asyncio.run(
+        SemanticRoutingOrchestrator().build_plan(
+            query="查询9.7星门耦联簇装配明细",
+            decision=_technical_decision(component="星门耦联簇"),
+            catalog=_catalog(("manual-a", "苍穹涡轮装置", "涡轮装置", "苍穹平台")),
+            section_refs=(
+                SectionRef("section-a", "manual-a", "星门耦联簇装配明细", "9.7 星门耦联簇装配明细"),
+            ),
+        )
+    )
+
+    assert plan.action == RouteAction.GROUNDED_RETRIEVAL
+    assert plan.selected_document_id == "manual-a"
+    assert plan.selected_section_id == "section-a"
+
+
+def test_diagnostic_intent_does_not_turn_plain_section_titles_into_cause_options() -> None:
+    plan = asyncio.run(
+        SemanticRoutingOrchestrator().build_plan(
+            query="苍穹涡轮装置出现周期性抖动是什么原因",
+            decision=_technical_decision(
+                task_action="find_cause",
+                component="涡轮装置",
+                operation_intent=False,
+            ),
+            catalog=_catalog(("manual-a", "苍穹涡轮装置", "涡轮装置", "苍穹平台")),
+            section_refs=(
+                SectionRef("section-a", "manual-a", "拆卸涡轮装置", "3.2 拆卸涡轮装置"),
+                SectionRef("section-b", "manual-a", "安装涡轮装置", "3.3 安装涡轮装置"),
+            ),
+            query_contract=QueryContract.from_mapping(
+                {
+                    "raw_device_span": "苍穹涡轮装置",
+                    "device_name": "苍穹涡轮装置",
+                    "task_action": "find_cause",
+                    "component": "涡轮装置",
+                    "symptoms": ["周期性抖动"],
+                },
+                raw_query="苍穹涡轮装置出现周期性抖动是什么原因",
+            ),
+        )
+    )
+
+    assert plan.action == RouteAction.GROUNDED_RETRIEVAL
+    assert plan.clarification_kind == ""
+    assert plan.selected_section_id == ""
 
 
 def test_inventory_route_is_deterministic_and_never_becomes_ai_fallback() -> None:

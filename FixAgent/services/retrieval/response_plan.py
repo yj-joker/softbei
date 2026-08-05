@@ -391,7 +391,16 @@ def finalize_response(
             else:
                 violations.append("partial_missing_disclosure")
     if plan.coverage_status == "unsupported":
-        if answer and answer != plan.deterministic_fallback():
+        # A deterministic renderer may have recovered an authorized section
+        # directly even when the semantic aspect classifier marked the
+        # original retrieval as unsupported. In that case the answer is still
+        # bound to the plan's qualified evidence and must not be overwritten
+        # by the generic insufficient-evidence fallback.
+        if (
+            answer
+            and answer != plan.deterministic_fallback()
+            and not (evidence_rendered and plan.allowed_evidence)
+        ):
             violations.append("unsupported_generic_completion")
     if plan.coverage_status == "conflict":
         for conflict in plan.conflicts:

@@ -2,12 +2,15 @@ package ai.weixiu.service.impl;
 
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.query.DiagnosisSearchQuery;
+import ai.weixiu.pojo.query.GraphCandidateQuery;
+import ai.weixiu.pojo.query.GraphQueryContract;
 import ai.weixiu.pojo.vo.CaseRecordVO;
 import ai.weixiu.pojo.vo.ComponentDeviceVO;
 import ai.weixiu.pojo.vo.ComponentVO;
 import ai.weixiu.pojo.vo.DeviceVO;
 import ai.weixiu.pojo.vo.DiagnosisPathVO;
 import ai.weixiu.pojo.vo.DiagnosisSearchVO;
+import ai.weixiu.pojo.vo.GraphCandidateVO;
 import ai.weixiu.pojo.vo.FaultVO;
 import ai.weixiu.repository.DeviceRepository;
 import ai.weixiu.service.CaseRecordService;
@@ -21,6 +24,7 @@ import org.springframework.data.neo4j.core.Neo4jClient;
 import org.springframework.stereotype.Service;
 
 import java.util.*;
+import java.util.stream.Stream;
 
 /**
  * 统一诊断路径查询服务
@@ -168,6 +172,183 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 cases.size());
 
         return pageResult(records, total, safePage, safeSize, cases);
+    }
+
+    @Override
+    public List<GraphCandidateVO> findClarificationCandidates(GraphCandidateQuery request) {
+        if (request == null) {
+            return List.of();
+        }
+        GraphQueryContract contract = request.getQueryContract() == null
+                ? new GraphQueryContract()
+                : request.getQueryContract();
+        String componentDescription = joinText(
+                contract.getComponent(),
+                contract.getPartSpec(),
+                contract.getAssemblyContext(),
+                contract.getOrientation()
+        );
+        String faultDescription = joinText(
+                contract.getSymptoms(),
+                contract.getOperatingConditions(),
+                contract.getRawQuery()
+        );
+        int limit = Math.max(1, Math.min(request.getLimit(), 50));
+        double minScore = Math.max(0.0, Math.min(request.getMinScore(), 1.0));
+
+        Map<String, Double> componentScores = new HashMap<>();
+        Map<String, Double> faultScores = new HashMap<>();
+        try {
+            if (hasText(componentDescription)) {
+                for (ComponentVO component : componentService.getComponentByEmbedding(
+                        componentDescription, (long) limit, minScore)) {
+                    componentScores.merge(component.getId(), component.getScore(), Math::max);
+                }
+            }
+            if (hasText(faultDescription) && !"parameter_lookup".equals(contract.getTaskAction())) {
+                for (FaultVO fault : faultService.getFaultByEmbedding(
+                        faultDescription, (long) limit, minScore)) {
+                    faultScores.merge(fault.getId(), fault.getScore(), Math::max);
+                }
+            }
+        } catch (Exception e) {
+            log.info("图谱候选向量召回不可用: {}", e.getMessage());
+            return List.of();
+        }
+        if (componentScores.isEmpty() && faultScores.isEmpty()) {
+            return List.of();
+        }
+
+        Map<String, Object> params = new HashMap<>();
+        params.put("componentIds", new ArrayList<>(componentScores.keySet()));
+        params.put("faultIds", new ArrayList<>(faultScores.keySet()));
+        params.put("componentScores", componentScores);
+        params.put("faultScores", faultScores);
+        params.put("limit", limit);
+
+        List<String> matchConditions = new ArrayList<>();
+        if (!componentScores.isEmpty()) {
+            matchConditions.add("c.id IN $componentIds");
+        }
+        if (!faultScores.isEmpty()) {
+            matchConditions.add("f.id IN $faultIds");
+        }
+        List<String> scopeConditions = new ArrayList<>();
+        addListFilter(params, scopeConditions, "allowedDocumentIds", "documentFilter",
+                request.getAllowedDocumentIds(),
+                "coalesce(c.document_id, d.document_id, f.document_id) IN $allowedDocumentIds");
+        addListFilter(params, scopeConditions, "allowedSectionIds", "sectionFilter",
+                request.getAllowedSectionIds(),
+                "coalesce(c.section_id, f.section_id) IN $allowedSectionIds");
+        addListFilter(params, scopeConditions, "allowedSourceChunkUids", "chunkFilter",
+                request.getAllowedSourceChunkUids(),
+                "(c.source_chunk_uid IN $allowedSourceChunkUids OR f.source_chunk_uid IN $allowedSourceChunkUids OR any(uid IN coalesce(c.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids) OR any(uid IN coalesce(f.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids))");
+
+        String cypher = """
+                MATCH (d:Device)-[:OWNS]->(c:Component)
+                OPTIONAL MATCH (c)-[:CAUSES]->(f:Fault)
+                WHERE (%s)
+                  AND ($documentFilter = false OR coalesce(c.document_id, d.document_id, f.document_id) IN $allowedDocumentIds)
+                  AND ($sectionFilter = false OR coalesce(c.section_id, f.section_id) IN $allowedSectionIds)
+                  AND ($chunkFilter = false OR c.source_chunk_uid IN $allowedSourceChunkUids OR f.source_chunk_uid IN $allowedSourceChunkUids OR any(uid IN coalesce(c.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids) OR any(uid IN coalesce(f.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids))
+                WITH DISTINCT d, c, f,
+                     CASE WHEN coalesce($componentScores[c.id], 0.0) > coalesce($faultScores[f.id], 0.0)
+                          THEN coalesce($componentScores[c.id], 0.0)
+                          ELSE coalesce($faultScores[f.id], 0.0) END AS graphScore
+                ORDER BY graphScore DESC, c.id, f.id
+                LIMIT $limit
+                RETURN d.id AS deviceId,
+                       d.name AS deviceName,
+                       c.id AS componentId,
+                       c.name AS componentName,
+                       f.id AS faultId,
+                       f.name AS faultName,
+                       coalesce(c.document_id, d.document_id, f.document_id) AS documentId,
+                       coalesce(c.document_version, d.document_version, f.document_version) AS documentVersion,
+                       coalesce(c.section_id, f.section_id) AS sectionId,
+                       coalesce(c.source_chunk_uids, CASE WHEN c.source_chunk_uid IS NULL THEN [] ELSE [c.source_chunk_uid] END) AS componentChunks,
+                       coalesce(f.source_chunk_uids, CASE WHEN f.source_chunk_uid IS NULL THEN [] ELSE [f.source_chunk_uid] END) AS faultChunks,
+                       coalesce(c.page_start, d.page_start, f.page_start) AS pageStart,
+                       coalesce(c.page_end, d.page_end, f.page_end) AS pageEnd,
+                       CASE WHEN f IS NULL THEN 'procedure' ELSE 'fault' END AS pathType,
+                       graphScore,
+                       CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL THEN 'missing'
+                            WHEN coalesce(c.section_id, f.section_id) IS NULL THEN 'partial'
+                            WHEN size(coalesce(c.source_chunk_uids, [])) = 0 AND c.source_chunk_uid IS NULL THEN 'partial'
+                            ELSE 'complete' END AS provenanceStatus
+                """.formatted(String.join(" OR ", matchConditions));
+
+        List<GraphCandidateVO> candidates = new ArrayList<>();
+        try {
+            neo4jClient.query(cypher)
+                    .bindAll(params)
+                    .fetch()
+                    .all()
+                    .forEach(row -> candidates.add(mapGraphCandidate(row)));
+        } catch (Exception e) {
+            log.info("图谱候选范围查询不可用: {}", e.getMessage());
+            return List.of();
+        }
+        return candidates;
+    }
+
+    private GraphCandidateVO mapGraphCandidate(Map<String, Object> row) {
+        GraphCandidateVO candidate = new GraphCandidateVO();
+        candidate.setDeviceId(asText(row.get("deviceId")));
+        candidate.setDeviceName(asText(row.get("deviceName")));
+        candidate.setComponentId(asText(row.get("componentId")));
+        candidate.setComponentName(asText(row.get("componentName")));
+        candidate.setFaultId(asText(row.get("faultId")));
+        candidate.setFaultName(asText(row.get("faultName")));
+        candidate.setDocumentId(asText(row.get("documentId")));
+        candidate.setDocumentVersion(asText(row.get("documentVersion")));
+        candidate.setSectionId(asText(row.get("sectionId")));
+        candidate.setPathType(asText(row.get("pathType")));
+        candidate.setGraphScore(number(row.get("graphScore")));
+        candidate.setProvenanceStatus(asText(row.get("provenanceStatus")));
+        String pathId = String.join("|", candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId());
+        candidate.setPathId(pathId);
+        candidate.setSourceChunkUids(concatTextLists(row.get("componentChunks"), row.get("faultChunks")));
+        Integer pageStart = integer(row.get("pageStart"));
+        Integer pageEnd = integer(row.get("pageEnd"));
+        if (pageStart != null) {
+            candidate.setPages(pageEnd == null || pageEnd.equals(pageStart)
+                    ? List.of(pageStart)
+                    : List.of(pageStart, pageEnd));
+        }
+        return candidate;
+    }
+
+    private static void addListFilter(
+            Map<String, Object> params,
+            List<String> conditions,
+            String parameter,
+            String switchName,
+            List<String> values,
+            String condition
+    ) {
+        List<String> normalized = values == null ? List.of() : values.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
+        params.put(parameter, normalized);
+        params.put(switchName, !normalized.isEmpty());
+        conditions.add(condition);
+    }
+
+    private static String joinText(Object... values) {
+        return Arrays.stream(values)
+                .flatMap(value -> value instanceof Collection<?> collection
+                        ? collection.stream()
+                        : Stream.of(value))
+                .filter(Objects::nonNull)
+                .map(String::valueOf)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .collect(java.util.stream.Collectors.joining(" "));
     }
 
     // ===== 核心 Cypher：OR 匹配 + matchScore 评分（单次查询返回 records + total）=====
@@ -381,6 +562,34 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             sb.append(" -> HAS_SOLUTION -> ").append(vo.getSolutionTitle());
         }
         return sb.toString();
+    }
+
+    private static String asText(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    private static double number(Object value) {
+        return value instanceof Number number ? number.doubleValue() : 0.0;
+    }
+
+    private static Integer integer(Object value) {
+        return value instanceof Number number ? number.intValue() : null;
+    }
+
+    private static List<String> concatTextLists(Object... values) {
+        List<String> result = new ArrayList<>();
+        for (Object value : values) {
+            if (!(value instanceof Collection<?> collection)) {
+                continue;
+            }
+            for (Object item : collection) {
+                String text = asText(item);
+                if (!text.isBlank() && !result.contains(text)) {
+                    result.add(text);
+                }
+            }
+        }
+        return result;
     }
 
     private DiagnosisSearchVO emptyResult(int page, int size) {

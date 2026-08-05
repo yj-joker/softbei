@@ -121,6 +121,33 @@ def test_maintenance_ai_fallback_enforces_source_disclaimer(monkeypatch) -> None
     assert output.metadata["source_type"] == "ai"
 
 
+def test_find_cause_defers_fallback_until_evidence_candidates_are_checked(monkeypatch) -> None:
+    llm = _FakeLLM("不应在证据候选检查之前调用模型。")
+    monkeypatch.setattr(main, "get_llm_service", lambda: llm)
+    request = ChatRequest(session_id="diagnosis-evidence-first", message="发动机出现异响是什么原因？")
+    input_data = AgentInput(
+        user_message=request.message,
+        session_id=request.session_id,
+        context={
+            "intention": "fault_diagnosis",
+            "intent_decision": {
+                "intent": "fault_diagnosis",
+                "task_action": "find_cause",
+            },
+            "scope_decision": {"status": "unknown"},
+            "response_policy": {
+                "mode": "MAINTENANCE_AI_FALLBACK",
+                "style_profile": "maintenance_ai",
+            },
+        },
+    )
+
+    output = asyncio.run(main._try_response_policy_direct(request, input_data))
+
+    assert output is None
+    assert llm.calls == []
+
+
 def test_maintenance_ai_fallback_removes_unverified_exact_values_and_citations(monkeypatch) -> None:
     llm = _FakeLLM(
         "知识库没有该设备对应文档，以下内容来自 AI，仅供参考。\n"

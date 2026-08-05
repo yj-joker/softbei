@@ -456,3 +456,65 @@ def test_route_scoped_visual_evidence_rejects_foreign_document_images() -> None:
 
     assert selected == []
     assert metadata["route_scoped_visual_evidence_allowed"] is False
+
+
+def test_insufficient_evidence_final_state_never_returns_images() -> None:
+    metadata = {
+        "original_user_message": "查询虚构总成的校准值",
+        "route_plan": {
+            "action": "insufficient_evidence",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-1",
+        },
+        "blocked_for_insufficient_evidence": True,
+        "allowed_document_ids": ["manual-1"],
+        "allowed_evidence_pages": [9],
+    }
+
+    message, images = main._apply_final_image_contract(
+        "当前资料不足，无法可靠确认。",
+        [_image(9, "unsupported-figure")],
+        metadata,
+    )
+
+    assert message == "当前资料不足，无法可靠确认。"
+    assert images == []
+
+
+def test_ai_fallback_after_retrieval_never_returns_manual_images() -> None:
+    metadata = {
+        "original_user_message": "远航飞行器涡轮装置出现周期性抖动是什么原因",
+        "execution_mode": "maintenance_ai_fallback_after_retrieval",
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-1",
+        },
+        "allowed_document_ids": ["manual-1"],
+    }
+
+    message, images = main._apply_final_image_contract(
+        "以下内容由 AI 基于通用知识生成，仅供参考。",
+        [_image(38, "unrelated-manual-figure")],
+        metadata,
+    )
+
+    assert message == "以下内容由 AI 基于通用知识生成，仅供参考。"
+    assert images == []
+
+
+def test_no_evidence_execution_state_never_returns_images() -> None:
+    metadata = {
+        "execution_mode": "generic_guidance",
+        "evidence_status": "no_evidence",
+        "insufficient_evidence_reason": "empty_retrieval",
+    }
+
+    message, images = main._apply_final_image_contract(
+        "当前知识库没有找到足以回答该问题的可靠依据。",
+        [_image(33, "unsupported-section-figure")],
+        metadata,
+    )
+
+    assert message == "当前知识库没有找到足以回答该问题的可靠依据。"
+    assert images == []

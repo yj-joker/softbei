@@ -7,7 +7,35 @@ from services.retrieval.device_identity import (
     DocumentIdentity,
     QueryContract,
     compare_query_to_document,
+    infer_query_identity_from_catalog,
+    reconcile_query_device_span,
 )
+
+
+def test_overcaptured_device_span_is_trimmed_only_when_dynamic_catalog_improves_match():
+    catalog = DeviceCatalog((
+        DocumentIdentity(
+            document_id="manual-motorcycle",
+            device_name="摩托车发动机",
+            device_category="发动机",
+            carrier_or_application="摩托车",
+            confidence=0.96,
+        ),
+    ))
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "摩托车发动机气缸活塞",
+            "device_name": "摩托车发动机气缸活塞",
+            "component": "气缸活塞",
+            "raw_component_span": "气缸活塞",
+        },
+        raw_query="摩托车发动机气缸活塞装配部件清单",
+    )
+
+    reconciled = reconcile_query_device_span(query, catalog)
+
+    assert reconciled.raw_device_span == "摩托车发动机"
+    assert reconciled.component == "气缸活塞"
 
 
 def test_non_finite_confidence_never_authorizes_a_document() -> None:
@@ -117,6 +145,48 @@ def test_missing_carrier_is_uncertain_instead_of_authorizing_retrieval() -> None
     result = compare_query_to_document(query, document)
 
     assert result.relation == "uncertain"
+
+
+def test_catalog_binds_literal_imported_identity_when_model_omits_device_span() -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    query = _contract(
+        "摩托车发动机有异响，可能是什么原因？",
+        intent="fault_diagnosis",
+        task_action="find_cause",
+        symptoms=("摩托车发动机有异响",),
+    )
+
+    bound = infer_query_identity_from_catalog(query, catalog)
+
+    assert bound.raw_device_span == "摩托车发动机"
+    assert bound.device_name == "摩托车发动机"
+    assert bound.carrier_or_application == "摩托车"
+    assert bound.identity_resolution == "catalog_exact"
+
+
+def test_catalog_does_not_bind_generic_or_ambiguous_identity_heads() -> None:
+    catalog = DeviceCatalog((
+        DocumentIdentity(
+            "manual-a",
+            "摩托车发动机",
+            device_category="发动机",
+            carrier_or_application="摩托车",
+            confidence=0.96,
+        ),
+        DocumentIdentity(
+            "manual-b",
+            "卡车发动机",
+            device_category="发动机",
+            carrier_or_application="卡车",
+            confidence=0.96,
+        ),
+    ))
+
+    generic = _contract("发动机有异响", intent="fault_diagnosis", task_action="find_cause")
+    ambiguous = _contract("发动机冒蓝烟", intent="fault_diagnosis", task_action="find_cause")
+
+    assert infer_query_identity_from_catalog(generic, catalog).raw_device_span == ""
+    assert infer_query_identity_from_catalog(ambiguous, catalog).raw_device_span == ""
 
 
 def test_generic_document_name_never_prefix_matches_a_more_specific_device() -> None:

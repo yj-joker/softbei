@@ -1973,6 +1973,11 @@ def test_stream_manual_override_receives_verified_route_plan(monkeypatch) -> Non
         "entity_role": "document_component",
         "selected_document_id": "manual-1",
     }
+    retrieval_scope = {
+        "document_id": "manual-1",
+        "allowed_section_ids": ["section-a"],
+        "allowed_evidence_refs": ["chunk-a"],
+    }
     input_data = AgentInput(
         user_message=request.message,
         session_id=request.session_id,
@@ -1981,6 +1986,7 @@ def test_stream_manual_override_receives_verified_route_plan(monkeypatch) -> Non
             "scope_decision": {"status": "in_scope"},
             "intent_decision": {"intent": "maintenance_guidance"},
             "response_policy": {"mode": "PENDING_RETRIEVAL"},
+            "retrieval_scope": retrieval_scope,
         },
     )
     trace = [{
@@ -2016,9 +2022,15 @@ def test_stream_manual_override_receives_verified_route_plan(monkeypatch) -> Non
             return []
 
     seen_route_plans: list[dict | None] = []
+    seen_retrieval_scopes: list[dict | None] = []
+
+    async def _collect_table_items(query, metadata):
+        seen_retrieval_scopes.append(metadata.get("retrieval_scope"))
+        return []
 
     def _manual_override(query, metadata):
         seen_route_plans.append(metadata.get("route_plan"))
+        seen_retrieval_scopes.append(metadata.get("retrieval_scope"))
         return "手册中的拆卸步骤。" if metadata.get("route_plan") == route_plan else None
 
     async def _identity_finalizer(request_value, input_value, output, **kwargs):
@@ -2032,7 +2044,7 @@ def test_stream_manual_override_receives_verified_route_plan(monkeypatch) -> Non
     monkeypatch.setattr(main, "_try_domain_rule_direct", _async_none)
     monkeypatch.setattr(main, "get_fix_agent", lambda: _Agent())
     monkeypatch.setattr(main, "get_review_agent", lambda: _Review())
-    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _collect_table_items)
     monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", lambda *args: None)
     monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", _manual_override)
     monkeypatch.setattr(main, "_collect_direct_section_images", _async_empty)
@@ -2061,6 +2073,7 @@ def test_stream_manual_override_receives_verified_route_plan(monkeypatch) -> Non
 
     assert visible == "手册中的拆卸步骤。"
     assert seen_route_plans == [route_plan]
+    assert seen_retrieval_scopes == [retrieval_scope, retrieval_scope]
 
 
 def test_direct_lookup_records_are_registered_in_evidence_ledger() -> None:

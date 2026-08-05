@@ -32,24 +32,46 @@ public class ManualKGInternalController {
             if (name == null || name.isBlank()) {
                 return Result.error("500", "name is required");
             }
-            String model        = (String) body.getOrDefault("model", "");
-            String manufacturer = (String) body.getOrDefault("manufacturer", "");
-            String documentId   = (String) body.getOrDefault("documentId", "");
+            String model        = asText(body.get("model"));
+            String manufacturer = asText(body.get("manufacturer"));
+            String documentId   = asText(body.get("documentId"));
+            String documentVersion = asText(body.get("documentVersion"));
+            String sectionId    = asText(body.get("sectionId"));
+            String chunkUid     = asText(body.get("sourceChunkUid"));
+            String identityKey  = canonicalIdentity(name, model, manufacturer);
+            Long pageStart      = toLong(body.get("pageStart"));
+            Long pageEnd        = toLong(body.get("pageEnd"));
             Long manualId       = toLong(body.get("manualId"));
 
+            if (documentId.isBlank()) {
+                return Result.error("400", "documentId is required for manual graph identity");
+            }
+
             String cypher = """
-                    MERGE (d:Device {name: $name})
+                    MERGE (d:Device {document_id: $documentId, identity_key: $identityKey})
                     ON CREATE SET
                         d.id           = randomUUID(),
+                        d.name         = $name,
                         d.model        = $model,
                         d.manufacturer = $manufacturer,
                         d.source       = 'manual',
-                        d.document_id  = $documentId,
+                        d.document_version = $documentVersion,
+                        d.section_id   = $sectionId,
+                        d.source_chunk_uid = $chunkUid,
+                        d.page_start   = $pageStart,
+                        d.page_end     = $pageEnd,
                         d.manual_ids   = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         d.created_at   = datetime()
                     ON MATCH SET
                         d.updated_at   = datetime(),
-                        d.document_id  = coalesce($documentId, d.document_id),
+                        d.name         = coalesce($name, d.name),
+                        d.model        = coalesce($model, d.model),
+                        d.manufacturer = coalesce($manufacturer, d.manufacturer),
+                        d.document_version = coalesce($documentVersion, d.document_version),
+                        d.section_id   = coalesce($sectionId, d.section_id),
+                        d.source_chunk_uid = coalesce($chunkUid, d.source_chunk_uid),
+                        d.page_start   = coalesce($pageStart, d.page_start),
+                        d.page_end     = coalesce($pageEnd, d.page_end),
                         d.manual_ids   = CASE
                             WHEN $manualId IS NULL THEN coalesce(d.manual_ids, [])
                             WHEN $manualId IN coalesce(d.manual_ids, []) THEN d.manual_ids
@@ -62,6 +84,12 @@ public class ManualKGInternalController {
                     .bind(model).to("model")
                     .bind(manufacturer).to("manufacturer")
                     .bind(documentId).to("documentId")
+                    .bind(identityKey).to("identityKey")
+                    .bind(documentVersion).to("documentVersion")
+                    .bind(sectionId).to("sectionId")
+                    .bind(chunkUid).to("chunkUid")
+                    .bind(pageStart).to("pageStart")
+                    .bind(pageEnd).to("pageEnd")
                     .bind(manualId).to("manualId")
                     .fetch()
                     .first();
@@ -95,8 +123,13 @@ public class ManualKGInternalController {
             @SuppressWarnings("unchecked")
             List<String> keySpecs = (List<String>) body.getOrDefault("keySpecs", Collections.emptyList());
             String spec          = String.join(", ", keySpecs);
-            String chunkUid      = (String) body.get("sourceChunkUid");
-            String documentId    = (String) body.getOrDefault("documentId", "");
+            String chunkUid      = asText(body.get("sourceChunkUid"));
+            String documentId    = asText(body.get("documentId"));
+            String documentVersion = asText(body.get("documentVersion"));
+            String sectionId     = asText(body.get("sectionId"));
+            List<String> sourceChunkUids = textList(body.get("sourceChunkUids"));
+            Long pageStart       = toLong(body.get("pageStart"));
+            Long pageEnd         = toLong(body.get("pageEnd"));
             Long manualId        = toLong(body.get("manualId"));
 
             // deviceId 必填：Component 必须锚定到 Device（设备隔离，防跨设备同名合并）
@@ -115,13 +148,23 @@ public class ManualKGInternalController {
                         c.specification    = $spec,
                         c.source           = 'manual',
                         c.source_chunk_uid = $chunkUid,
+                        c.source_chunk_uids = $sourceChunkUids,
                         c.document_id      = $documentId,
+                        c.document_version = $documentVersion,
+                        c.section_id       = $sectionId,
+                        c.page_start      = $pageStart,
+                        c.page_end        = $pageEnd,
                         c.manual_ids       = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         c.created_at       = datetime()
                     ON MATCH SET
                         c.updated_at       = datetime(),
                         c.source_chunk_uid = coalesce($chunkUid, c.source_chunk_uid),
+                        c.source_chunk_uids = CASE WHEN size($sourceChunkUids) = 0 THEN coalesce(c.source_chunk_uids, []) ELSE $sourceChunkUids END,
                         c.document_id      = coalesce($documentId, c.document_id),
+                        c.document_version = coalesce($documentVersion, c.document_version),
+                        c.section_id       = coalesce($sectionId, c.section_id),
+                        c.page_start      = coalesce($pageStart, c.page_start),
+                        c.page_end        = coalesce($pageEnd, c.page_end),
                         c.manual_ids       = CASE
                             WHEN $manualId IS NULL THEN coalesce(c.manual_ids, [])
                             WHEN $manualId IN coalesce(c.manual_ids, []) THEN c.manual_ids
@@ -136,7 +179,12 @@ public class ManualKGInternalController {
                     .bind(spec).to("spec")
                     .bind(manualId).to("manualId")
                     .bind(chunkUid).to("chunkUid")
+                    .bind(sourceChunkUids).to("sourceChunkUids")
                     .bind(documentId).to("documentId")
+                    .bind(documentVersion).to("documentVersion")
+                    .bind(sectionId).to("sectionId")
+                    .bind(pageStart).to("pageStart")
+                    .bind(pageEnd).to("pageEnd")
                     .fetch().first();
 
             Map<String, Object> result = new HashMap<>();
@@ -470,6 +518,28 @@ public class ManualKGInternalController {
     }
 
     /** 宽松转 Long：接受 Number / 数字字符串，无效或 0 返回 null（视为无归属）。 */
+    private static String asText(Object value) {
+        return value == null ? "" : String.valueOf(value).trim();
+    }
+
+    private static List<String> textList(Object value) {
+        if (!(value instanceof Collection<?> values)) {
+            return List.of();
+        }
+        return values.stream()
+                .map(ManualKGInternalController::asText)
+                .filter(item -> !item.isBlank())
+                .distinct()
+                .toList();
+    }
+
+    private static String canonicalIdentity(String name, String model, String manufacturer) {
+        return String.join("|", name, model, manufacturer)
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("\\s+", " ")
+                .trim();
+    }
+
     private static Long toLong(Object v) {
         if (v instanceof Number n) {
             long l = n.longValue();

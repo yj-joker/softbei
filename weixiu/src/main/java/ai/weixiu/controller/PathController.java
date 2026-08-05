@@ -2,6 +2,8 @@ package ai.weixiu.controller;
 
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.query.DiagnosisSearchQuery;
+import ai.weixiu.pojo.query.GraphCandidateQuery;
+import ai.weixiu.pojo.vo.GraphCandidateVO;
 import ai.weixiu.pojo.vo.ComponentDeviceVO;
 import ai.weixiu.pojo.vo.DiagnosisSearchVO;
 import ai.weixiu.service.GraphQueryService;
@@ -24,6 +26,13 @@ public class PathController {
     @Operation(summary = "统一诊断路径查询（支持文本+图片+设备关键词）")
     public Result<DiagnosisSearchVO> searchDiagnosisPaths(@RequestBody DiagnosisSearchQuery query) {
         return Result.success(graphQueryService.searchDiagnosisPaths(query));
+    }
+
+    @PostMapping("/candidates")
+    @Operation(summary = "返回受文档和证据范围约束的反问候选")
+    public Result<List<GraphCandidateVO>> findClarificationCandidates(
+            @RequestBody GraphCandidateQuery query) {
+        return Result.success(graphQueryService.findClarificationCandidates(query));
     }
 
     @GetMapping("/fault-exists")

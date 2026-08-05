@@ -64,10 +64,11 @@ from services.domain_rules import (
 )
 from services.causal_followup import (
     FOLLOW_UP_TOOL_NAME,
-    build_follow_up,
+    build_follow_up,  # 兼容旧扩展点；运行时仅调用 build_evidence_follow_up。
     format_follow_up_message,
     format_resolution_message,
     resolve_follow_up,
+    build_evidence_follow_up,
 )
 from services.llm.service import get_llm_service
 from services.llm.output_style import (
@@ -81,7 +82,10 @@ from services.response_policy import derive_response_policy
 from services.response_style import select_style
 from services.preference_capture import schedule_capture
 from services.retrieval.scope import (
+    IN_SCOPE,
     OUT_OF_SCOPE,
+    UNKNOWN_SCOPE,
+    ScopeDecision,
     decide_scope,
     format_scope_guard_message,
 )
@@ -93,6 +97,8 @@ from services.retrieval.device_identity import (
     load_dynamic_device_catalog,
     query_has_grounded_operation_target,
     query_mentions_unresolved_identity,
+    infer_query_identity_from_catalog,
+    reconcile_query_device_span,
 )
 from services.retrieval.evidence import EvidenceLedger
 from services.retrieval.provenance import canonical_manual_chunk_id, dedupe_and_sort_manual_records
@@ -112,6 +118,7 @@ from services.routing.executor import RouteExecutor
 from services.routing.evidence_gate import EvidenceDocumentGate
 from services.routing.models import RouteAction, RoutePlan
 from services.routing.orchestrator import SemanticRoutingOrchestrator
+from services.routing.graph_candidate_provider import get_graph_candidate_provider
 from services.routing.document_selection import (
     clear_pending_document_selection,
     load_pending_document_selection,
@@ -125,6 +132,12 @@ from services.pending_clarification import (
     remember_pending_clarification,
     resolve_pending_clarification,
 )
+from services.clarification.state import (
+    ClarificationStateStore,
+    ClarificationStatus,
+    ResolvedScope,
+    topic_signature_for_contract,
+)
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from tools.knowledge_inventory_tool import get_knowledge_inventory_tool
 from services.temporary_plan_service import get_temporary_plan_service
@@ -132,6 +145,23 @@ from config.settings import get_settings, validate_auth_tokens
 from schemas.models import AgentMode
 
 logger = logging.getLogger(__name__)
+
+_CLARIFICATION_STATE_STORE: ClarificationStateStore | None = None
+
+
+def _clarification_state_store() -> ClarificationStateStore:
+    global _CLARIFICATION_STATE_STORE
+    if _CLARIFICATION_STATE_STORE is None:
+        _CLARIFICATION_STATE_STORE = ClarificationStateStore(
+            redis_client=_pending_clarification_redis_client()
+            if "_pending_clarification_redis_client" in globals()
+            else None,
+        )
+    return _CLARIFICATION_STATE_STORE
+
+
+def _clarification_mode() -> str:
+    return str(getattr(get_settings(), "clarification_mode", "enforce") or "enforce").strip().lower()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -709,7 +739,23 @@ def _direct_manual_text_supports_query(direct_text: str, query: str) -> bool:
     if _manual_answer_should_refuse_detail_query(query, [{"content": direct_text}]):
         return False
 
-    anchors = _manual_query_anchor_terms(query)
+    # Direction questions ask for the relation, not a literal copy of the
+    # requested orientation. For example, "哪一端朝上" is answered by a
+    # manual statement that the dense end must face down. Strip only the
+    # interrogative suffix and require an explicit directional assertion in
+    # the evidence; this is structural language handling, not a domain term
+    # catalogue.
+    anchor_query = query
+    direction_question = re.search(r"哪(?:一)?(?:端|边|侧|面)", query or "")
+    if direction_question:
+        anchor_query = query[:direction_question.start()]
+    anchors = _manual_query_anchor_terms(anchor_query)
+    if direction_question and not anchors:
+        target = _manual_action_target(query, _manual_query_action(query))
+        target = re.split(r"哪(?:一)?(?:端|边|侧|面)", target or "", maxsplit=1)[0]
+        target = _compact_inventory_text(target)
+        if len(target) >= 2:
+            anchors = [target]
     minimal_anchors = [
         anchor
         for anchor in anchors
@@ -718,10 +764,33 @@ def _direct_manual_text_supports_query(direct_text: str, query: str) -> bool:
             for other in anchors
         )
     ]
-    if not minimal_anchors or not all(
+    if minimal_anchors and not all(
         _manual_anchor_supported_by_text(anchor, evidence)
         for anchor in minimal_anchors
     ):
+        return False
+
+    if direction_question and not re.search(r"(?:朝|向)[\u4e00-\u9fff]", evidence):
+        return False
+
+    if not minimal_anchors:
+        # A route-authorized exact section title is sufficient for a broad
+        # procedure query such as "水泵应该怎样拆装". The title overlap is
+        # derived from the document text itself, so no component catalogue is
+        # needed here.
+        query_text = _compact_inventory_text(query)
+        section_titles = [
+            _compact_inventory_text(match.group(1))
+            for match in re.finditer(
+                r"(?m)^\s*\d+(?:\.\d+)*\s+([^\n]+)",
+                direct_text or "",
+            )
+        ]
+        if (
+            _manual_query_kind(query)
+            and any(title and title in query_text for title in section_titles)
+        ):
+            return True
         return False
 
     action = _manual_query_action(query)
@@ -809,13 +878,13 @@ def _initialized_or_injected_vector_service(*, initialize: bool = False):
     try:
         from services.knowledge import vector_service as vector_service_module
 
+        getter = getattr(vector_service_module, "get_vector_service", None)
+        if callable(getter) and getattr(getter, "__name__", "") != "get_vector_service":
+            return getter()
         service = getattr(vector_service_module, "_vector_service", None)
         if service is not None:
             return service
-        getter = getattr(vector_service_module, "get_vector_service", None)
-        if callable(getter) and (
-            initialize or getattr(getter, "__name__", "") != "get_vector_service"
-        ):
+        if callable(getter) and initialize:
             return getter()
     except Exception:
         pass
@@ -847,8 +916,62 @@ def _sync_pending_clarification_state(session_id: str, metadata: Mapping[str, An
     if isinstance(pending, Mapping) and pending.get("kind") == "evidence_conflict":
         if pending.get("status") == "awaiting_answer":
             remember_pending_clarification(session_id, pending, redis_client=redis_client)
+            candidates = []
+            for item in pending.get("alternatives") or ():
+                if not isinstance(item, Mapping):
+                    continue
+                candidates.append({
+                    **dict(item),
+                    "constraints": {
+                        "selected_value": str(item.get("value") or ""),
+                        "selected_unit": str(item.get("unit") or ""),
+                        "selected_evidence_refs": list(item.get("evidence_refs") or ()),
+                        "selected_source_labels": list(item.get("source_labels") or ()),
+                    },
+                })
+            _clarification_state_store().create(
+                session_id,
+                {
+                    **dict(pending),
+                    "status": "awaiting",
+                    "topic_signature": str(pending.get("topic_signature") or pending.get("original_query") or ""),
+                    "candidates": candidates,
+                },
+                route_snapshot={
+                    "clarification_question": str(pending.get("question") or "请确认适用的证据来源。"),
+                    "legacy_pending": dict(pending),
+                },
+                max_rounds=2,
+            )
         elif pending.get("status") == "resolved":
             clear_pending_clarification(session_id, redis_client=redis_client)
+        return
+    if isinstance(pending, Mapping) and pending.get("kind"):
+        status = str(pending.get("status") or "")
+        if status == "awaiting_answer":
+            candidates = pending.get("candidates") or pending.get("alternatives") or pending.get("options") or ()
+            payload = {
+                **dict(pending),
+                "status": "awaiting",
+                "topic_signature": str(pending.get("topic_signature") or pending.get("originalQuery") or pending.get("original_query") or ""),
+                "original_query": str(pending.get("original_query") or pending.get("originalQuery") or ""),
+                "candidates": [dict(item) for item in candidates if isinstance(item, Mapping)],
+            }
+            state = _clarification_state_store().create(
+                session_id,
+                payload,
+                route_snapshot={
+                    "clarification_question": str(pending.get("question") or "请从候选项中确认一个答案。"),
+                    "legacy_pending": dict(pending),
+                },
+                max_rounds=2,
+            )
+            if isinstance(metadata, dict):
+                metadata["pending_clarification"] = state.to_dict()
+        elif status == "resolved":
+            state = _clarification_state_store().load(session_id)
+            if state and state.status is ClarificationStatus.RESOLVED:
+                return
 
 
 def _register_direct_manual_evidence(
@@ -1096,13 +1219,24 @@ def _try_scope_guard(request: ChatRequest, input_data: AgentInput) -> AgentOutpu
     )
 
 
+def _response_policy_direct_must_defer(context: Mapping[str, Any] | None) -> bool:
+    """已选定章节时，证据不足策略必须让位给章节检索。"""
+    context = context or {}
+    policy = context.get("response_policy")
+    return bool(
+        isinstance(policy, Mapping)
+        and policy.get("mode") == "INSUFFICIENT_EVIDENCE"
+        and _route_plan_authorizes_structural_lookup(context)
+    )
+
+
 async def _try_response_policy_direct(request: ChatRequest, input_data: AgentInput) -> AgentOutput | None:
     """Handle non-retrieval answer modes before ReAct can call knowledge tools."""
     policy = (input_data.context or {}).get("response_policy") or {}
     mode = policy.get("mode")
     if mode not in {"GENERAL_AI", "MAINTENANCE_AI_FALLBACK", "INSUFFICIENT_EVIDENCE"}:
         return None
-    if mode == "INSUFFICIENT_EVIDENCE":
+    if mode == "INSUFFICIENT_EVIDENCE" and not _response_policy_direct_must_defer(input_data.context):
         return AgentOutput(
             agent_name="fix_agent",
             message="当前资料未说明所问的具体参数或操作步骤，因此无法可靠确认。请补充对应手册或其他可验证资料后再核对。",
@@ -1111,6 +1245,17 @@ async def _try_response_policy_direct(request: ChatRequest, input_data: AgentInp
             raw_response={"mode": mode},
         )
     intent = (input_data.context or {}).get("intent_decision") or {}
+    scope_decision = (input_data.context or {}).get("scope_decision") or {}
+    if (
+        mode == "MAINTENANCE_AI_FALLBACK"
+        and intent.get("task_action") == "find_cause"
+        and scope_decision.get("status") != OUT_OF_SCOPE
+    ):
+        # Diagnostic ambiguity can only be assessed after retrieval/graph
+        # candidates exist.  Let the normal agent path gather that evidence;
+        # the finalizer will still use the AI fallback when no candidates are
+        # available.
+        return None
     if mode == "GENERAL_AI" and intent.get("chat_subtype") == "model_information":
         model_name = get_settings().llm_model
         return AgentOutput(
@@ -1243,8 +1388,18 @@ async def _finalize_knowledge_output_with_fallback(
     candidate_message: str | None = None,
 ) -> AgentOutput:
     """Share the same evidence audit and post-retrieval fallback in both APIs."""
+    pending = output.metadata.get("pending_clarification") if isinstance(output.metadata, Mapping) else None
+    route_plan = output.metadata.get("route_plan") if isinstance(output.metadata, Mapping) else None
+    if (
+        isinstance(pending, Mapping)
+        and str(pending.get("status") or "") in {"awaiting", "reasked", "awaiting_answer"}
+    ) or (
+        isinstance(route_plan, Mapping)
+        and route_plan.get("action") in {RouteAction.CLARIFY.value, RouteAction.CLARIFY_DOCUMENT.value}
+    ):
+        return output
     audited = _finalize_knowledge_output(
-        request.message,
+        input_data.user_message,
         output,
         candidate_message=candidate_message,
     )
@@ -1271,7 +1426,32 @@ async def _try_route_plan_direct(request: ChatRequest, input_data: AgentInput) -
     if execution is None:
         return None
     pending_selection = execution.metadata.get("pending_document_selection")
-    if isinstance(pending_selection, dict):
+    pending_clarification = execution.metadata.get("pending_clarification")
+    if isinstance(pending_clarification, Mapping):
+        if _clarification_mode() == "off":
+            return None
+        state = _clarification_state_store().create(
+            request.session_id,
+            {
+                **dict(pending_clarification),
+                "topic_signature": topic_signature_for_contract(plan.query_contract)
+                or str(pending_clarification.get("topic_signature") or ""),
+            },
+            route_snapshot={**plan.to_dict(), "clarification_question": execution.message},
+            max_rounds=int(pending_clarification.get("max_rounds") or 2),
+        )
+        execution.metadata["pending_clarification"] = state.to_dict()
+        execution.metadata["clarification_state_authoritative"] = True
+        if _clarification_mode() == "shadow":
+            return None
+    if (
+        isinstance(pending_selection, dict)
+        and _clarification_mode() == "enforce"
+        and (
+            not isinstance(pending_clarification, Mapping)
+            or str(pending_clarification.get("kind") or "") == "document_selection"
+        )
+    ):
         remember_pending_document_selection(
             request.session_id,
             pending_selection,
@@ -1394,6 +1574,33 @@ async def _try_causal_follow_up_resolution(
 ) -> AgentOutput | None:
     started = time.time()
     context = input_data.context or {}
+    unified_conflict = context.get("resolved_evidence_conflict")
+    if isinstance(unified_conflict, Mapping):
+        restored_query = str(unified_conflict.get("original_query") or request.message).strip()
+        selected_refs = [
+            str(item) for item in unified_conflict.get("selected_evidence_refs") or ()
+            if str(item).strip()
+        ]
+        return AgentOutput(
+            agent_name="fix_agent",
+            message=format_pending_resolution(unified_conflict),
+            intention="knowledge_query",
+            tools_used=[FOLLOW_UP_TOOL_NAME],
+            metadata={
+                "execution_mode": "evidence_conflict_resolved",
+                "deterministic_direct": True,
+                "confidence_source": "user_clarification",
+                "pending_clarification": dict(unified_conflict),
+                "restored_query": restored_query,
+                "selected_evidence_refs": selected_refs,
+                "evidence_constraints": {
+                    "allowed_evidence_refs": selected_refs,
+                    "selection_source": "user_clarification",
+                },
+            },
+            latency_ms=int((time.time() - started) * 1000),
+            raw_response=dict(unified_conflict),
+        )
     pending = context.get("pending_clarification")
     is_awaiting = isinstance(pending, Mapping) and pending.get("status") == "awaiting_answer"
     if is_awaiting and pending.get("kind") == "evidence_conflict":
@@ -1449,6 +1656,31 @@ async def _try_causal_follow_up_resolution(
             latency_ms=int((time.time() - started) * 1000),
             raw_response=dict(pending),
         )
+    if is_awaiting and pending.get("kind") != "evidence_conflict":
+        state = _clarification_state_store().load(request.session_id)
+        if state and state.status in {ClarificationStatus.AWAITING, ClarificationStatus.REASKED}:
+            repeated = _clarification_state_store().reask(
+                request.session_id,
+                expected_version=state.version,
+            )
+            current = repeated or state
+            question = str(current.route_snapshot.get("clarification_question") or pending.get("question") or "请从候选项中确认一个答案。")
+            if current.status is ClarificationStatus.EXHAUSTED:
+                question = "当前信息仍不足以安全确定适用对象，已停止继续猜测。请补充设备型号、文档版本或可验证的现场信息。"
+            return AgentOutput(
+                agent_name="fix_agent",
+                message=question,
+                intention="knowledge_query",
+                tools_used=[FOLLOW_UP_TOOL_NAME],
+                metadata={
+                    "execution_mode": "clarification_repeat",
+                    "deterministic_direct": True,
+                    "pending_clarification": current.to_dict(),
+                    "clarification_state_authoritative": True,
+                },
+                latency_ms=int((time.time() - started) * 1000),
+                raw_response=current.to_dict(),
+            )
     resolved = resolve_follow_up(context, input_data.user_message)
     if not resolved:
         if is_awaiting:
@@ -1696,11 +1928,152 @@ def _clear_document_entity_device_identity(
     return QueryContract.from_mapping(payload, raw_query=contract.raw_query)
 
 
+def _apply_resolved_scope_authority(
+    decision: ScopeDecision,
+    *,
+    resolved_scope: ResolvedScope | None,
+    selected_document_id: str,
+    selected_section_id: str,
+) -> ScopeDecision:
+    """Authorize a server-resolved clarification scope without relaxing conflicts."""
+    if decision.status != UNKNOWN_SCOPE or resolved_scope is None:
+        return decision
+    if not selected_document_id or selected_document_id != resolved_scope.document_id:
+        return decision
+    allowed_sections = set(resolved_scope.allowed_section_ids)
+    if allowed_sections and selected_section_id not in allowed_sections:
+        return decision
+    return ScopeDecision(**{
+        **decision.to_dict(),
+        "status": IN_SCOPE,
+        "source": "resolved_clarification",
+        "reason": "server_authoritative_scope",
+        "document_id": selected_document_id,
+    })
+
+
 async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     raw_message = request.message or ""
     effective_message = raw_message.strip() or IMAGE_ONLY_DEFAULT_MESSAGE
     context = dict(request.context or {})
+    authoritative_query_contract: QueryContract | None = None
     _restore_trusted_pending_context(request.session_id, context)
+    # 统一反问状态优先于客户端上下文；客户端只能提交答案，不能替换候选集合。
+    clarification_state = (
+        _clarification_state_store().load(request.session_id)
+        if _clarification_mode() == "enforce"
+        else None
+    )
+    if clarification_state and clarification_state.status in {
+        ClarificationStatus.AWAITING,
+        ClarificationStatus.REASKED,
+    }:
+        resolved_state = _clarification_state_store().resolve(
+            request.session_id,
+            answer=raw_message,
+            expected_version=clarification_state.version,
+        )
+        if resolved_state is None and clarification_state.kind == "evidence_conflict":
+            legacy_pending = clarification_state.route_snapshot.get("legacy_pending")
+            legacy_resolved = resolve_pending_clarification(
+                {"pending_clarification": legacy_pending},
+                raw_message,
+            ) if isinstance(legacy_pending, Mapping) else None
+            if legacy_resolved:
+                resolved_state = _clarification_state_store().resolve(
+                    request.session_id,
+                    answer=str(legacy_resolved.get("selected_option_id") or ""),
+                    expected_version=clarification_state.version,
+                )
+        if resolved_state and resolved_state.status is ClarificationStatus.RESOLVED:
+            constraints = dict(resolved_state.selected_constraints)
+            resolved_scope = ResolvedScope.from_constraints(constraints)
+            snapshot_contract = resolved_state.route_snapshot.get("query_contract")
+            if isinstance(snapshot_contract, Mapping):
+                authoritative_query_contract = QueryContract.from_mapping(
+                    snapshot_contract,
+                    raw_query=resolved_state.original_query,
+                )
+            if constraints.get("document_id"):
+                context["confirmed_document_id"] = str(constraints["document_id"])
+            if constraints.get("section_id"):
+                context["confirmed_section_id"] = str(constraints["section_id"])
+            elif resolved_scope and len(resolved_scope.allowed_section_ids) == 1:
+                context["confirmed_section_id"] = resolved_scope.allowed_section_ids[0]
+            if resolved_scope:
+                context["resolved_scope"] = resolved_scope.to_dict()
+            context["clarification_constraints"] = constraints
+            context["resolved_clarification"] = resolved_state.to_dict()
+            context["clarification_answer"] = raw_message
+            legacy_pending = resolved_state.route_snapshot.get("legacy_pending")
+            if isinstance(legacy_pending, Mapping):
+                if legacy_pending.get("kind") == "evidence_conflict":
+                    context["resolved_evidence_conflict"] = {
+                        **dict(legacy_pending),
+                        **dict(resolved_state.selected_constraints),
+                        "status": "resolved",
+                        "selected_option_id": resolved_state.selected_option_id,
+                    }
+                else:
+                    context["diagnostic_follow_up"] = dict(legacy_pending)
+                    context["selected_option_id"] = resolved_state.selected_option_id
+            clear_pending_clarification(
+                request.session_id,
+                redis_client=_pending_clarification_redis_client(),
+            )
+            clear_pending_document_selection(request.session_id)
+            raw_message = resolved_state.original_query
+            effective_message = raw_message.strip() or IMAGE_ONLY_DEFAULT_MESSAGE
+        else:
+            new_topic = False
+            try:
+                candidate_decision = await get_intent_router().classify(
+                    raw_message,
+                    images=request.images,
+                    context=context,
+                )
+                candidate_contract = QueryContract.from_mapping(
+                    candidate_decision.model_dump(),
+                    raw_query=raw_message,
+                )
+                candidate_topic = topic_signature_for_contract(candidate_contract)
+                new_topic = bool(
+                    candidate_topic
+                    and clarification_state.topic_signature
+                    and candidate_topic != clarification_state.topic_signature
+                )
+            except Exception as exc:
+                logger.warning("[clarification] topic comparison unavailable: %s", exc)
+            if new_topic:
+                _clarification_state_store().cancel_for_topic(
+                    request.session_id,
+                    candidate_topic,
+                )
+                clear_pending_document_selection(request.session_id)
+                context.pop("pending_clarification", None)
+            else:
+                context["pending_clarification"] = clarification_state.to_dict()
+                pending_plan_payload = clarification_state.route_snapshot
+                if isinstance(pending_plan_payload, Mapping):
+                    context["route_plan"] = dict(pending_plan_payload)
+                context["intent_decision"] = {
+                    "intent": "knowledge_query",
+                    "task_action": "document_explain",
+                    "requires_knowledge_retrieval": False,
+                }
+                context["response_policy"] = {
+                    "mode": "CLARIFICATION",
+                    "source_type": "deterministic_clarification",
+                    "allow_knowledge_retrieval": False,
+                    "allow_ai_fallback": False,
+                }
+                return AgentInput(
+                    user_message=effective_message,
+                    session_id=request.session_id,
+                    images=request.images,
+                    conversation_history=request.conversation_history,
+                    context=context,
+                )
     pending_document_selection = load_pending_document_selection(
         request.session_id,
         client_pending=context.get("pending_document_selection"),
@@ -1783,7 +2156,7 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     )
     context["intent_decision"] = intent_decision.model_dump()
     context["intention"] = intent_decision.intent
-    query_contract = QueryContract.from_mapping(
+    query_contract = authoritative_query_contract or QueryContract.from_mapping(
         intent_decision.model_dump(),
         raw_query=raw_message,
     )
@@ -1796,13 +2169,50 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
             device_catalog = await load_dynamic_device_catalog()
         except Exception as exc:
             logger.error("[scope] dynamic document catalog unavailable: %s", exc)
+        inferred_contract = infer_query_identity_from_catalog(query_contract, device_catalog)
+        if inferred_contract is not query_contract:
+            query_contract = inferred_contract
+            context["query_contract"] = query_contract.to_dict()
         try:
             section_index = SectionTitleIndex.get_instance()
             section_index.build(get_vector_service())
-            section_refs = tuple(section_index.find(raw_message))
+            title_section_refs = tuple(section_index.find(raw_message))
+            find_exact = getattr(section_index, "find_exact", None)
+            find_evidence = getattr(section_index, "find_evidence", None)
+            exact_section_refs = tuple(find_exact(raw_message)) if callable(find_exact) else ()
+            evidence_section_refs = tuple(find_evidence(query_contract)) if callable(find_evidence) else ()
+            if exact_section_refs:
+                section_refs = exact_section_refs
+            elif evidence_section_refs:
+                section_refs = evidence_section_refs
+            else:
+                section_refs = title_section_refs
+            resolved_scope = ResolvedScope.from_constraints(context.get("resolved_scope") or {})
+            confirmed_section_id = str(context.get("confirmed_section_id") or "").strip()
+            allowed_section_ids = (
+                resolved_scope.allowed_section_ids
+                if resolved_scope is not None
+                else ((confirmed_section_id,) if confirmed_section_id else ())
+            )
+            if allowed_section_ids:
+                scoped_refs = tuple(
+                    ref for ref in section_refs
+                    if ref.section_id in allowed_section_ids
+                    and (resolved_scope is None or ref.document_id == resolved_scope.document_id)
+                )
+                if not scoped_refs and resolved_scope is not None:
+                    refs_for_scope = getattr(section_index, "refs_for_scope", None)
+                    if callable(refs_for_scope):
+                        scoped_refs = tuple(refs_for_scope(
+                            document_id=resolved_scope.document_id,
+                            section_ids=allowed_section_ids,
+                        ))
+                section_refs = scoped_refs
         except Exception as exc:
             logger.warning("[routing] dynamic section catalog unavailable: %s", exc)
     if (
+        authoritative_query_contract is None
+        and
         query_contract.has_explicit_device
         and any(
             query_mentions_unresolved_identity(query_contract, document)
@@ -1824,6 +2234,8 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
                     context["query_contract"] = query_contract.to_dict()
             except Exception as exc:
                 logger.warning("[scope] focused identity refinement unavailable: %s", exc)
+    query_contract = reconcile_query_device_span(query_contract, device_catalog)
+    context["query_contract"] = query_contract.to_dict()
     if (
         not query_contract.has_explicit_device
         and any(
@@ -1838,6 +2250,25 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
             raw_query=raw_message,
         )
         context["query_contract"] = query_contract.to_dict()
+    graph_candidates = ()
+    if technical_route:
+        try:
+            graph_scope = ResolvedScope.from_constraints(context.get("resolved_scope") or {})
+            graph_provider = get_graph_candidate_provider()
+            graph_candidates = await graph_provider.fetch_candidates(
+                query_contract,
+                image_urls=list(request.images or ()),
+                allowed_document_ids=(
+                    (graph_scope.document_id,)
+                    if graph_scope is not None and graph_scope.document_id
+                    else ((str(request.document_id),) if str(request.document_id or "").strip() else ())
+                ),
+                allowed_section_ids=graph_scope.allowed_section_ids if graph_scope else (),
+                allowed_source_chunk_uids=graph_scope.allowed_source_chunk_uids if graph_scope else (),
+                allowed_evidence_refs=graph_scope.allowed_evidence_refs if graph_scope else (),
+            )
+        except Exception as exc:
+            logger.info("[routing] graph candidate query unavailable: %s", exc)
     route_plan = await SemanticRoutingOrchestrator().build_plan(
         query=raw_message,
         decision=intent_decision,
@@ -1846,6 +2277,7 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
         request_document_id=str(request.document_id or ""),
         session_document_id=str(session_document_id or ""),
         query_contract=query_contract,
+        graph_candidates=graph_candidates,
     )
     query_contract = route_plan.query_contract
     context["query_contract"] = query_contract.to_dict()
@@ -1860,9 +2292,45 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
         query_contract=query_contract,
         catalog=device_catalog,
     )
+    resolved_scope = ResolvedScope.from_constraints(context.get("resolved_scope") or {})
+    scope_decision = _apply_resolved_scope_authority(
+        scope_decision,
+        resolved_scope=resolved_scope,
+        selected_document_id=selected_document_id,
+        selected_section_id=route_plan.selected_section_id,
+    )
     context["scope_decision"] = scope_decision.to_dict()
+    context["graph_scope"] = dict(route_plan.graph_scope)
     context["retrieval_scope"] = (
-        {"document_id": selected_document_id, "device_type": ""}
+        {
+            "document_id": selected_document_id,
+            "device_type": "",
+            **(
+                {"parent_section_id": route_plan.selected_section_id}
+                if route_plan.selected_section_id
+                else {}
+            ),
+            **(
+                {
+                    "allowed_section_ids": list(resolved_scope.allowed_section_ids),
+                    "allowed_evidence_refs": list(resolved_scope.allowed_evidence_refs),
+                    "allowed_source_chunk_uids": list(resolved_scope.allowed_source_chunk_uids),
+                    "pages": list(resolved_scope.pages),
+                }
+                if resolved_scope is not None
+                else {}
+            ),
+            **(
+                {
+                    "graph_scope": dict(route_plan.graph_scope),
+                    "allowed_source_chunk_uids": list(
+                        route_plan.graph_scope.get("allowed_source_chunk_uids") or ()
+                    ),
+                }
+                if route_plan.graph_scope
+                else {}
+            ),
+        }
         if (
             route_plan.action == RouteAction.GROUNDED_RETRIEVAL
             and selected_document_id
@@ -2079,6 +2547,41 @@ def _is_inventory_table_query(message: str) -> bool:
     return any(keyword in text for keyword in _INVENTORY_QUERY_KEYWORDS)
 
 
+def _structured_contract_requests_table_lookup(metadata: dict | None) -> bool:
+    route_plan = (metadata or {}).get("route_plan")
+    if not isinstance(route_plan, dict):
+        return False
+    query_contract = route_plan.get("query_contract")
+    if not isinstance(query_contract, dict):
+        return False
+    task_action = str(
+        route_plan.get("task_action")
+        or query_contract.get("task_action")
+        or ""
+    ).strip()
+    if task_action != "parameter_lookup":
+        return False
+    targets = [
+        item for item in query_contract.get("targets") or []
+        if isinstance(item, dict)
+    ]
+    has_target = bool(
+        str(query_contract.get("part_spec") or "").strip()
+        or str(query_contract.get("component") or "").strip()
+        or any(
+            str(item.get("part_spec") or item.get("component") or "").strip()
+            for item in targets
+        )
+    )
+    requested_fields = list(query_contract.get("requested_fields") or [])
+    requested_fields.extend(
+        field
+        for item in targets
+        for field in item.get("requested_fields") or []
+    )
+    return has_target and any(str(field or "").strip() for field in requested_fields)
+
+
 def _inventory_cell(value) -> str:
     return str(value or "").replace("\n", " ").strip().strip("|").strip()
 
@@ -2119,24 +2622,53 @@ def _inventory_row_from_cells(headers: list[str], cells: list[str]) -> dict | No
         return None
     if name == quantity:
         quantity = ""
+    remark = pick(remark_index)
+    mapped_indexes = {
+        index
+        for index in (seq_index, name_index, quantity_index, remark_index)
+        if index is not None
+    }
+    extra_fields = []
+    for index, value in enumerate(cells):
+        if index in mapped_indexes or not value:
+            continue
+        header = _inventory_cell(headers[index]) if index < len(headers) else ""
+        extra_fields.append(f"{header} {value}".strip())
+    if extra_fields:
+        remark = " ".join(value for value in (remark, *extra_fields) if value)
     return {
         "seq": pick(seq_index),
         "name": name,
         "quantity": quantity,
-        "remark": pick(remark_index),
+        "remark": remark,
     }
 
 
 def _inventory_row_from_key_values(content: str) -> dict | None:
     fields: dict[str, str] = {}
+    current_key = ""
     for part in re.split(r"[；;]\s*", content or ""):
-        if "=" in part:
-            key, value = part.split("=", 1)
-        elif "：" in part:
-            key, value = part.split("：", 1)
-        else:
-            continue
-        fields[_inventory_cell(key)] = _inventory_cell(value)
+        # Table-row chunks may serialize a cell's value over several physical
+        # lines.  Once the remark/tool cell has started, keep those continuation
+        # lines attached to that field instead of silently dropping parameters.
+        for line in str(part).splitlines():
+            line = _inventory_cell(line)
+            if not line:
+                continue
+            if "=" in line:
+                key, value = line.split("=", 1)
+            elif "：" in line:
+                key, value = line.split("：", 1)
+            else:
+                if current_key and any(
+                    marker in current_key for marker in ("备注", "说明", "工具")
+                ):
+                    fields[current_key] = (
+                        f"{fields.get(current_key, '').strip()} {line}"
+                    ).strip()
+                continue
+            current_key = _inventory_cell(key)
+            fields[current_key] = _inventory_cell(value)
 
     if not fields:
         return None
@@ -2215,14 +2747,29 @@ def _inventory_rows_from_table_full(table_full) -> list[dict]:
 
 
 def _dedupe_inventory_rows(rows: list[dict]) -> list[dict]:
-    seen: set[tuple[str, str]] = set()
+    seen: dict[tuple[str, str], dict] = {}
     deduped: list[dict] = []
     for row in rows:
         key = (row.get("seq") or "", row.get("name") or "")
-        if key in seen:
+        existing = seen.get(key)
+        if existing is not None:
+            # The same table row can arrive through the direct section lookup
+            # and the semantic trace.  Prefer the union of their fields so a
+            # truncated row cannot hide continuation parameters from a richer
+            # evidence record.
+            for field in ("seq", "name", "quantity"):
+                if not str(existing.get(field) or "").strip() and str(row.get(field) or "").strip():
+                    existing[field] = row[field]
+            incoming_remark = str(row.get("remark") or "").strip()
+            existing_remark = str(existing.get("remark") or "").strip()
+            if incoming_remark and incoming_remark not in existing_remark:
+                existing["remark"] = " ".join(
+                    value for value in (existing_remark, incoming_remark) if value
+                )
             continue
-        seen.add(key)
-        deduped.append(row)
+        copied = dict(row)
+        seen[key] = copied
+        deduped.append(copied)
     return deduped
 
 
@@ -2505,13 +3052,44 @@ def _inventory_row_query_score(
     return total, name_score, remark_score
 
 
-def _filter_inventory_rows_for_query(message: str, rows: list[dict]) -> list[dict]:
+def _structured_inventory_part_specs(metadata: dict | None) -> tuple[str, ...]:
+    route_plan = metadata.get("route_plan") if isinstance(metadata, dict) else None
+    query_contract = route_plan.get("query_contract") if isinstance(route_plan, dict) else None
+    if not isinstance(query_contract, dict):
+        return ()
+    values = [query_contract.get("part_spec")]
+    for target in query_contract.get("targets") or []:
+        if isinstance(target, dict):
+            values.append(target.get("part_spec"))
+    return tuple(dict.fromkeys(
+        normalized
+        for value in values
+        if (normalized := _compact_inventory_text(value)) and len(normalized) >= 2
+    ))
+
+
+def _filter_inventory_rows_for_query(
+    message: str,
+    rows: list[dict],
+    metadata: dict | None = None,
+) -> list[dict]:
     """For targeted inventory questions, return only matching rows.
 
     Full-list questions still return the whole table.  This keeps the
     deterministic BOM path useful for "展示清单", while avoiding unrelated row
     quantities/torques when the user asks about a specific part.
     """
+    structured_specs = _structured_inventory_part_specs(metadata)
+    if structured_specs:
+        exact_rows = [
+            row for row in rows
+            if any(
+                spec in _compact_inventory_text(row.get("name") or "")
+                for spec in structured_specs
+            )
+        ]
+        if exact_rows:
+            return exact_rows
     if len(rows) <= 1 or not _inventory_query_requests_specific_rows(message):
         return rows
     all_names = [str(row.get("name") or "") for row in rows]
@@ -2564,7 +3142,10 @@ def _format_inventory_table_answer_from_metadata(
     extra_items: list[dict] | None = None,
 ) -> str | None:
     """从检索 trace 中的表格证据直接生成清单回答，避免 LLM 把已命中的表格说成未找到。"""
-    if not _is_inventory_table_query(message):
+    if not (
+        _is_inventory_table_query(message)
+        or _structured_contract_requests_table_lookup(metadata)
+    ):
         return None
 
     items = list(_iter_trace_result_items(metadata))
@@ -2722,7 +3303,7 @@ def _format_inventory_table_answer_from_metadata(
         for value in (best.get("full_table_declarations") or {}).values()
         if _inventory_int(value) is not None and int(value) > 0
     )
-    filtered_rows = _filter_inventory_rows_for_query(message, rows)
+    filtered_rows = _filter_inventory_rows_for_query(message, rows, metadata)
     if not filtered_rows:
         return None
     rows_were_filtered = len(filtered_rows) < len(rows)
@@ -2859,6 +3440,65 @@ def _manual_query_action(message: str) -> str:
     return ""
 
 
+def _manual_focus_records_to_structured_action(
+    records: list[dict],
+    metadata: dict,
+) -> tuple[list[dict], bool]:
+    """Focus an open-vocabulary procedure action from the semantic contract.
+
+    The legacy renderer knows a small set of operation families for ordered
+    install/remove flows.  Other actions must not be added to that list one by
+    one.  Instead, use the router's structured action and component as exact
+    evidence constraints, and keep the legacy group only when no record proves
+    that structured action.
+    """
+    route_plan = (metadata or {}).get("route_plan")
+    if not isinstance(route_plan, Mapping):
+        return records, False
+    query_contract = route_plan.get("query_contract")
+    if not isinstance(query_contract, Mapping):
+        return records, False
+    structured_action = _compact_inventory_text(query_contract.get("action") or "")
+    if len(structured_action) < 2:
+        return records, False
+
+    action_hits = [
+        record
+        for record in records
+        if structured_action in _compact_inventory_text(record.get("content") or "")
+    ]
+    if not action_hits:
+        return records, False
+
+    targets = [
+        item for item in query_contract.get("targets") or []
+        if isinstance(item, Mapping)
+    ]
+    component_anchors = tuple(dict.fromkeys(
+        value
+        for value in (
+            _compact_inventory_text(query_contract.get("component") or ""),
+            *(
+                _compact_inventory_text(item.get("component") or "")
+                for item in targets
+            ),
+        )
+        if len(value) >= 2
+    ))
+    if component_anchors:
+        component_hits = [
+            record
+            for record in action_hits
+            if any(
+                anchor in _compact_inventory_text(record.get("content") or "")
+                for anchor in component_anchors
+            )
+        ]
+        if component_hits:
+            return component_hits, True
+    return action_hits, True
+
+
 def _manual_content_has_action(text: str, action: str) -> bool:
     return bool(action and any(word in (text or "") for word in _MANUAL_ACTION_SYNONYMS.get(action, ())))
 
@@ -2880,11 +3520,14 @@ def _manual_action_target(message: str, action: str) -> str:
     _, _, matched_alias = min(matches)
     head, tail = text.split(matched_alias, 1)
     tail = re.split(r"[时的，,？?：:；;、\s]", tail, 1)[0]
-    target = tail.strip()
+    target = re.sub(r"(?:是什么|是怎样|是怎么|怎么|如何|怎样)$", "", tail.strip())
+    target = target.strip()
     if target and target not in _MANUAL_ACTION_DESCRIPTOR_TERMS:
         return target
     head = re.sub(r"(?:怎么|如何|怎样|怎么进行|如何进行)$", "", head).strip()
     head = re.sub(r"[，,？?：:；;、\s]+$", "", head).strip()
+    head = re.sub(r"^(?:这个|该|此)", "", head).strip()
+    head = re.sub(r"的$", "", head).strip()
     return head
 
 
@@ -3995,11 +4638,16 @@ def _manual_expand_page_boundary_records(
     document_id = str((best_group[0].get("metadata") or {}).get("document_id") or "")
     if not document_id or document_id != selected_document_id:
         return best_group
-    titles = [
-        _compact_inventory_text((record.get("metadata") or {}).get("section_title") or "")
-        for record in best_group
-    ]
-    titles = [title for title in dict.fromkeys(titles) if len(title) >= 4]
+    title_bindings: list[tuple[str, str, str]] = []
+    for source_record in best_group:
+        source_meta = source_record.get("metadata") or {}
+        source_title = str(source_meta.get("section_title") or "").strip()
+        compact_title = _compact_inventory_text(source_title)
+        source_section_id = str(source_meta.get("parent_section_id") or "").strip()
+        binding = (compact_title, source_section_id, source_title)
+        if len(compact_title) >= 4 and binding not in title_bindings:
+            title_bindings.append(binding)
+    titles = [binding[0] for binding in title_bindings]
     if not titles:
         return best_group
     pages: list[int] = []
@@ -4042,6 +4690,33 @@ def _manual_expand_page_boundary_records(
             compact_content = _compact_inventory_text(content)
             if not any(title and title in compact_content for title in titles):
                 continue
+            # A page-boundary chunk can carry the next section's literal title
+            # while its imported metadata still points to the previous section.
+            # Rebind only when the source text starts with the already-selected
+            # title; a later mention of that title is not sufficient.  This lets
+            # downstream procedure grouping keep the record inside the resolved
+            # section without introducing any domain vocabulary.
+            matching_bindings = [
+                binding
+                for binding in title_bindings
+                if binding[0] and compact_content.startswith(binding[0])
+            ]
+            if matching_bindings:
+                _, target_section_id, target_title = max(
+                    matching_bindings,
+                    key=lambda binding: len(binding[0]),
+                )
+                record_meta = dict(record.get("metadata") or {})
+                current_section_id = str(record_meta.get("parent_section_id") or "").strip()
+                current_title = str(record_meta.get("section_title") or "").strip()
+                if target_section_id and current_section_id != target_section_id:
+                    record_meta.setdefault("original_parent_section_id", current_section_id)
+                    record_meta.setdefault("original_section_title", current_title)
+                    record_meta["parent_section_id"] = target_section_id
+                    record_meta["section_title"] = target_title
+                    record_meta["section_match_ids"] = [target_section_id]
+                    record_meta["embedded_heading_rebound"] = True
+                    record["metadata"] = record_meta
             if record_id and record_id in seen_ids:
                 continue
             if content and content in seen_content:
@@ -4125,32 +4800,60 @@ def _manual_records_for_scoped_document(records: list[dict], metadata: dict) -> 
     if scoped_document_id and route_document_id and scoped_document_id != route_document_id:
         return []
     scoped_document_id = scoped_document_id or route_document_id
-    if not scoped_document_id:
-        return records
-    return [
-        record for record in records
-        if str((record.get("metadata") or {}).get("document_id") or "") == scoped_document_id
-    ]
+    retrieval_scope = (metadata or {}).get("retrieval_scope") or {}
+    allowed_section_ids = {
+        str(value).strip()
+        for value in retrieval_scope.get("allowed_section_ids") or []
+        if str(value).strip()
+    } if isinstance(retrieval_scope, Mapping) else set()
+    filtered = []
+    for record in records:
+        record_metadata = record.get("metadata") or {}
+        if (
+            scoped_document_id
+            and str(record_metadata.get("document_id") or "") != scoped_document_id
+        ):
+            continue
+        if (
+            allowed_section_ids
+            and str(record_metadata.get("parent_section_id") or "") not in allowed_section_ids
+        ):
+            continue
+        filtered.append(record)
+    return filtered
 
 
 def _manual_append_unique_records(records: list[dict], extra_records: list[dict]) -> list[dict]:
     if not extra_records:
         return records
-    merged = list(records)
-    seen_ids = {str(item.get("id") or item.get("doc_id") or "") for item in merged}
-    seen_content = {str(item.get("content") or "") for item in merged}
+    merged = [dict(item) for item in records]
+    by_id = {
+        str(item.get("id") or item.get("doc_id") or ""): item
+        for item in merged
+        if str(item.get("id") or item.get("doc_id") or "")
+    }
+    by_content = {
+        str(item.get("content") or ""): item
+        for item in merged
+        if str(item.get("content") or "")
+    }
     for record in extra_records:
         record_id = str(record.get("id") or record.get("doc_id") or "")
         content = str(record.get("content") or "")
-        if record_id and record_id in seen_ids:
+        existing = by_id.get(record_id) if record_id else None
+        if existing is None and content:
+            existing = by_content.get(content)
+        if existing is not None:
+            existing_metadata = dict(existing.get("metadata") or {})
+            existing_metadata.update(record.get("metadata") or {})
+            existing["metadata"] = existing_metadata
             continue
-        if content and content in seen_content:
-            continue
+        copied = dict(record)
+        merged.append(copied)
         if record_id:
-            seen_ids.add(record_id)
+            by_id[record_id] = copied
         if content:
-            seen_content.add(content)
-        merged.append(record)
+            by_content[content] = copied
     return merged
 
 
@@ -4178,6 +4881,90 @@ def _manual_best_section_records(message: str, kind: str, metadata: dict) -> lis
         for record in title_match_records
         if (record.get("metadata") or {}).get("parent_section_id")
     }
+    # A resolved clarification is already bound to server-owned section IDs.
+    # The user's second message usually contains only the original component
+    # and therefore cannot title-match the selected section again. Recover that
+    # exact section directly from the vector store instead of reopening search.
+    if route_authorizes_lookup:
+        route_plan = (metadata or {}).get("route_plan") or {}
+        retrieval_scope = (metadata or {}).get("retrieval_scope") or {}
+        selected_section_ids = {
+            str(value).strip()
+            for value in (
+                retrieval_scope.get("allowed_section_ids")
+                if isinstance(retrieval_scope, Mapping)
+                else ()
+            ) or ()
+            if str(value).strip()
+        }
+        selected_section_id = str(route_plan.get("selected_section_id") or "").strip()
+        if selected_section_id:
+            selected_section_ids.add(selected_section_id)
+        if selected_section_ids and route_document_id:
+            vector_service = _initialized_or_injected_vector_service(initialize=True)
+            scoped_records: list[dict] = []
+            if vector_service is not None:
+                retrieval_scope = (metadata or {}).get("retrieval_scope") or {}
+                authorized_record_ids = [
+                    str(value).strip()
+                    for value in (
+                        retrieval_scope.get("allowed_evidence_refs")
+                        if isinstance(retrieval_scope, Mapping)
+                        else ()
+                    ) or ()
+                    if str(value).strip()
+                ]
+                # The selected evidence IDs are server-owned and survive the
+                # clarification turn.  Read them directly before falling back
+                # to RediSearch, whose indexed section query can be transiently
+                # empty while concurrent requests are using the same index.
+                if authorized_record_ids and hasattr(vector_service, "get_vector_records"):
+                    try:
+                        raw_records = vector_service.get_vector_records(authorized_record_ids)
+                    except Exception:
+                        raw_records = []
+                    for raw in raw_records or ():
+                        record = _manual_record_from_raw(raw)
+                        if not record:
+                            continue
+                        record_metadata = dict(record.get("metadata") or {})
+                        if (
+                            str(record_metadata.get("document_id") or "") != route_document_id
+                            or str(record_metadata.get("parent_section_id") or "") not in selected_section_ids
+                        ):
+                            continue
+                        record_metadata[_STRUCTURAL_RECOVERY_LOOKUP_SOURCE] = "record_id_lookup"
+                        record_metadata["section_match_ids"] = list(selected_section_ids)
+                        record["metadata"] = record_metadata
+                        scoped_records.append(record)
+                for section_id in selected_section_ids:
+                    if scoped_records:
+                        break
+                    try:
+                        raw_records = vector_service.get_section_records(
+                            route_document_id,
+                            section_id,
+                            limit=80,
+                            chunk_type=None,
+                        )
+                    except Exception:
+                        continue
+                    for raw in raw_records or ():
+                        record = _manual_record_from_raw(raw)
+                        if not record:
+                            continue
+                        record_metadata = dict(record.get("metadata") or {})
+                        if (
+                            str(record_metadata.get("document_id") or "") != route_document_id
+                            or str(record_metadata.get("parent_section_id") or "") != section_id
+                        ):
+                            continue
+                        record_metadata[_STRUCTURAL_RECOVERY_LOOKUP_SOURCE] = "section_text_lookup"
+                        record_metadata["section_match_ids"] = [section_id]
+                        record["metadata"] = record_metadata
+                        scoped_records.append(record)
+            title_match_records = _manual_append_unique_records(title_match_records, scoped_records)
+            title_match_section_ids.update(selected_section_ids)
     section_match_ids = retrieval_section_match_ids | title_match_section_ids
     scoring_section_match_ids = (
         title_match_section_ids
@@ -4229,8 +5016,19 @@ def _manual_best_section_records(message: str, kind: str, metadata: dict) -> lis
                 metadata["_deterministic_answer_procedure_scope_id"] = selected_scope.scope_id
                 metadata["_deterministic_answer_procedure_action"] = selected_scope.action
                 metadata["_deterministic_answer_procedure_target"] = selected_scope.target
+    elif kind == "procedure":
+        best_group, subflow_focused = _manual_focus_records_to_structured_action(
+            best_group,
+            metadata,
+        )
+        if subflow_focused:
+            metadata["_deterministic_answer_procedure_action"] = str(
+                (((metadata or {}).get("route_plan") or {}).get("query_contract") or {}).get("action")
+                or ""
+            ).strip()
     if kind == "procedure" or subflow_focused:
-        best_group = _manual_recover_numbered_steps_from_context(best_group, action=action)
+        if not (subflow_focused and not action):
+            best_group = _manual_recover_numbered_steps_from_context(best_group, action=action)
     if action and _manual_should_trim_to_action(message, kind) and not subflow_focused:
         best_group = _manual_trim_records_to_target_action(best_group, message, action)
         action_hits = [
@@ -4530,11 +5328,49 @@ def _route_plan_authorizes_structural_lookup(metadata: dict) -> bool:
     if not isinstance(route_plan, dict):
         return False
     selected_document_id = route_plan.get("selected_document_id")
-    return bool(
+    base_authorized = bool(
         route_plan.get("action") == RouteAction.GROUNDED_RETRIEVAL.value
-        and route_plan.get("entity_role") == "document_component"
         and isinstance(selected_document_id, str)
         and selected_document_id.strip()
+    )
+    if not base_authorized:
+        return False
+    if route_plan.get("entity_role") == "document_component":
+        return True
+
+    # A section clarification starts from an explicit device query, so the
+    # semantic entity role can remain ``device_identity`` after the user picks
+    # one option.  The selected section and its evidence boundary are still
+    # server-owned and are a stronger authorization signal than that original
+    # role.  Require the complete resolved scope so an unbounded device route
+    # cannot promote reference-only evidence into answer evidence.
+    selected_section_id = str(route_plan.get("selected_section_id") or "").strip()
+    retrieval_scope = metadata.get("retrieval_scope")
+    if not selected_section_id or not isinstance(retrieval_scope, Mapping):
+        return False
+    scope_document_id = str(retrieval_scope.get("document_id") or "").strip()
+    allowed_section_ids = {
+        str(value).strip()
+        for value in retrieval_scope.get("allowed_section_ids") or []
+        if str(value).strip()
+    }
+    allowed_evidence_refs = {
+        str(value).strip()
+        for value in retrieval_scope.get("allowed_evidence_refs") or []
+        if str(value).strip()
+    }
+    return bool(
+        scope_document_id == selected_document_id.strip()
+        and selected_section_id in allowed_section_ids
+        and allowed_evidence_refs
+    )
+
+
+def _manual_overrides_blocked_by_low_confidence(metadata: dict) -> bool:
+    """低语义置信度不应屏蔽已授权的章节结构化恢复。"""
+    return bool(
+        metadata.get("low_confidence_retrieval")
+        and not _route_plan_authorizes_structural_lookup(metadata)
     )
 
 
@@ -4573,7 +5409,7 @@ def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -
     )
     has_structural_lookup_records = any(
         (record.get("metadata") or {}).get(_STRUCTURAL_RECOVERY_LOOKUP_SOURCE)
-        == "section_text_lookup"
+        in {"section_text_lookup", "record_id_lookup"}
         for record in records
     )
     if (
@@ -4587,11 +5423,20 @@ def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -
         and not source_has_qualified_evidence
         and not source_has_exact_section_match
     ):
-        route_direct_text = "\n".join(
-            "\n".join(filter(None, (
-                str((record.get("metadata") or {}).get("section_title") or ""),
+        def structural_support_text(record: dict) -> str:
+            record_metadata = record.get("metadata") or {}
+            return "\n".join(filter(None, (
+                str(record_metadata.get("section_title") or ""),
+                str(record_metadata.get("toc_path") or ""),
+                str(record_metadata.get("procedure_action") or ""),
+                str(record_metadata.get("procedure_target") or ""),
+                str(record_metadata.get("assembly_context") or ""),
+                str(record_metadata.get("orientation") or ""),
                 str(record.get("content") or ""),
             )))
+
+        route_direct_text = "\n".join(
+            structural_support_text(record)
             for record in records
         )
         if not _direct_manual_text_supports_query(route_direct_text, message):
@@ -4765,7 +5610,10 @@ def _extract_evidence_images(metadata: dict) -> List[EvidenceImage]:
 
 async def _collect_direct_section_table_items(message: str, metadata: dict) -> list[dict]:
     """清单直取通道：按确定性章节补全同节全部表格，解决跨页 BOM 只召回一页的问题。"""
-    if not _is_inventory_table_query(message):
+    if not (
+        _is_inventory_table_query(message)
+        or _structured_contract_requests_table_lookup(metadata)
+    ):
         return []
     if not _route_plan_authorizes_structural_lookup(metadata):
         return []
@@ -4780,14 +5628,25 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
         vector_service = None
         route_plan = (metadata or {}).get("route_plan") or {}
         route_document_id = str(route_plan.get("selected_document_id") or "").strip()
+        route_section_id = str(route_plan.get("selected_section_id") or "").strip()
+        retrieval_scope = (metadata or {}).get("retrieval_scope") or {}
+        resolved_section_ids = [
+            str(value).strip()
+            for value in retrieval_scope.get("allowed_section_ids") or []
+            if str(value).strip()
+        ] if isinstance(retrieval_scope, Mapping) else []
+        structured_parameter_lookup = _structured_contract_requests_table_lookup(metadata)
         document_id = route_document_id
         query_contract = route_plan.get("query_contract") or {}
         query_component = str(query_contract.get("component") or "").strip()
         query_action = str(query_contract.get("action") or "").strip()
+        query_part_specs = _structured_inventory_part_specs(metadata)
 
         def append_unique(values: List[str], value: str) -> None:
             if value and value not in values:
                 values.append(value)
+
+        append_unique(section_match_ids, route_section_id)
 
         for key in ("original_user_message", "user_message", "message"):
             value = str((metadata or {}).get(key) or "").strip()
@@ -4824,6 +5683,23 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
                     vector_service = get_vector_service()
                 section_index = SectionTitleIndex.get_instance()
                 section_index.build(vector_service)
+                if structured_parameter_lookup and hasattr(section_index, "find_evidence"):
+                    contract = QueryContract.from_mapping(
+                        query_contract,
+                        raw_query=message,
+                    )
+                    for ref in section_index.find_evidence(contract):
+                        ref_document_id = str(getattr(ref, "document_id", "") or "")
+                        if ref_document_id != route_document_id:
+                            continue
+                        ref_section_id = str(getattr(ref, "section_id", "") or "")
+                        if not ref_section_id:
+                            continue
+                        append_unique(title_section_ids, ref_section_id)
+                        append_unique(section_match_ids, ref_section_id)
+                        ref_title = f"{getattr(ref, 'core_title', '')} {getattr(ref, 'full_title', '')}".strip()
+                        if ref_title:
+                            section_titles_by_id.setdefault(ref_section_id, ref_title)
                 for query in lookup_queries:
                     for ref in section_index.find(query):
                         ref_document_id = str(getattr(ref, "document_id", "") or "")
@@ -4858,12 +5734,18 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
         if title_section_ids and not plan_intent:
             plan_intent = "outline"
 
-        if plan_intent not in ("outline", "procedure"):
+        if plan_intent not in ("outline", "procedure") and not structured_parameter_lookup:
             return []
 
         target_section_ids: List[str] = []
-        for sid in title_section_ids:
-            append_unique(target_section_ids, sid)
+        if structured_parameter_lookup:
+            for sid in title_section_ids:
+                append_unique(target_section_ids, sid)
+            append_unique(target_section_ids, route_section_id)
+        else:
+            append_unique(target_section_ids, route_section_id)
+            for sid in title_section_ids:
+                append_unique(target_section_ids, sid)
         if not target_section_ids:
             for sid in evidence_section_ids:
                 if section_match_ids and sid not in section_match_ids:
@@ -4872,6 +5754,13 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
         if not target_section_ids and section_match_ids:
             # 清单标题匹配通常把目标清单节排在首位。
             target_section_ids = section_match_ids[:1]
+        if resolved_section_ids:
+            resolved_set = set(resolved_section_ids)
+            target_section_ids = [
+                sid for sid in target_section_ids if sid in resolved_set
+            ]
+            for sid in resolved_section_ids:
+                append_unique(target_section_ids, sid)
         if not document_id or not target_section_ids:
             return []
 
@@ -4881,13 +5770,60 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
 
         table_items: list[dict] = []
         seen_ids: set[str] = set()
+        authorized_records_by_section: dict[str, list[dict]] | None = None
+
+        def authorized_table_records() -> dict[str, list[dict]]:
+            nonlocal authorized_records_by_section
+            if authorized_records_by_section is not None:
+                return authorized_records_by_section
+            authorized_records_by_section = {}
+            if not isinstance(retrieval_scope, Mapping):
+                return authorized_records_by_section
+            record_ids = [
+                str(value).strip()
+                for value in retrieval_scope.get("allowed_evidence_refs") or []
+                if str(value).strip()
+            ]
+            get_records = getattr(vector_service, "get_vector_records", None)
+            if not record_ids or not callable(get_records):
+                return authorized_records_by_section
+            try:
+                records = get_records(record_ids)
+            except Exception:
+                return authorized_records_by_section
+            allowed_sections = set(resolved_section_ids or target_section_ids)
+            for raw_record in records or []:
+                record = (
+                    raw_record.model_dump()
+                    if hasattr(raw_record, "model_dump")
+                    else dict(raw_record)
+                )
+                meta = dict(record.get("metadata") or {})
+                record_document_id = str(meta.get("document_id") or "").strip()
+                record_section_id = str(meta.get("parent_section_id") or "").strip()
+                chunk_type = str(meta.get("chunk_type") or meta.get("source_chunk_type") or "")
+                if (
+                    record_document_id != route_document_id
+                    or record_section_id not in allowed_sections
+                    or chunk_type != "table"
+                ):
+                    continue
+                record_id = str(record.get("id") or record.get("doc_id") or "").strip()
+                if record_id:
+                    record["id"] = record_id
+                record.setdefault("content", record.get("text") or "")
+                authorized_records_by_section.setdefault(record_section_id, []).append(record)
+            return authorized_records_by_section
+
         for sid in target_section_ids[:3]:
             try:
                 records = vector_service.get_section_records(
                     document_id, sid, limit=200, chunk_type="table",
                 )
             except Exception:
-                continue
+                records = []
+            if not records:
+                records = authorized_table_records().get(sid, [])
             for rec in records:
                 rec = rec.model_dump() if hasattr(rec, "model_dump") else dict(rec)
                 rec_id = str(rec.get("id") or rec.get("doc_id") or "")
@@ -4914,7 +5850,13 @@ async def _collect_direct_section_table_items(message: str, metadata: dict) -> l
                 )))
                 compact_support = _compact_inventory_text(support_text)
                 compact_component = _compact_inventory_text(query_component)
-                if compact_component and compact_component not in compact_support:
+                compact_specs = tuple(
+                    _compact_inventory_text(spec) for spec in query_part_specs
+                    if _compact_inventory_text(spec)
+                )
+                if compact_specs and not any(spec in compact_support for spec in compact_specs):
+                    continue
+                if not compact_specs and compact_component and compact_component not in compact_support:
                     continue
                 if not compact_component and sid not in title_section_ids:
                     continue
@@ -6631,6 +7573,15 @@ def _apply_final_image_contract(
     images: List[EvidenceImage],
     metadata: dict,
 ) -> tuple[str, List[EvidenceImage]]:
+    route_plan = metadata.get("route_plan") if isinstance(metadata.get("route_plan"), dict) else {}
+    if (
+        metadata.get("blocked_for_insufficient_evidence") is True
+        or route_plan.get("action") == RouteAction.INSUFFICIENT_EVIDENCE.value
+        or metadata.get("execution_mode") == "maintenance_ai_fallback_after_retrieval"
+        or metadata.get("evidence_status") == "no_evidence"
+        or metadata.get("execution_mode") == "generic_guidance"
+    ):
+        images = []
     policy = metadata.get("response_policy") if isinstance(metadata.get("response_policy"), dict) else {}
     if (
         policy
@@ -6651,13 +7602,21 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
     """执行 RAG -> 单次 LLM 生成的轻量链路；失败时返回 None 交给 ReAct 回退。"""
     total_t0 = time.time()
     retrieval_t0 = time.time()
+    effective_query = input_data.user_message or request.message
     scope = (input_data.context or {}).get("retrieval_scope") or {}
-    retrieval = await get_knowledge_retrieval_tool().run(
-        query=request.message,
-        top_k=5,
-        document_id=scope.get("document_id"),
-        device_type=scope.get("device_type"),
-    )
+    retrieval_kwargs = {
+        "query": effective_query,
+        "top_k": 5,
+        "document_id": scope.get("document_id"),
+        "device_type": scope.get("device_type"),
+    }
+    if scope.get("parent_section_id"):
+        retrieval_kwargs["parent_section_id"] = scope["parent_section_id"]
+    if scope.get("allowed_section_ids"):
+        retrieval_kwargs["allowed_section_ids"] = list(scope["allowed_section_ids"])
+    if scope.get("allowed_evidence_refs"):
+        retrieval_kwargs["allowed_evidence_refs"] = list(scope["allowed_evidence_refs"])
+    retrieval = await get_knowledge_retrieval_tool().run(**retrieval_kwargs)
     retrieval_ms = int((time.time() - retrieval_t0) * 1000)
     if not retrieval.success or not retrieval.data:
         logger.warning(
@@ -6675,19 +7634,19 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
         "duration_ms": retrieval_ms,
         "tool_calls": [{
             "name": "knowledge_retrieval",
-            "arguments": {"query": request.message, "top_k": 5, **scope},
+            "arguments": {"query": effective_query, "top_k": 5, **scope},
             "result_summary": str(evidence_items)[:200],
             "result_data": [item.model_dump() if hasattr(item, "model_dump") else item for item in evidence_items],
         }],
     }]
     table_metadata = {
         "react_trace": trace,
-        "user_message": request.message,
+        "user_message": effective_query,
         "original_user_message": request.message,
     }
-    direct_table_items = await _collect_direct_section_table_items(request.message, table_metadata)
+    direct_table_items = await _collect_direct_section_table_items(effective_query, table_metadata)
     table_answer = _format_inventory_table_answer_from_metadata(
-        request.message,
+        effective_query,
         table_metadata,
         direct_table_items,
     )
@@ -6731,7 +7690,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
             latency_ms=total_ms,
             raw_response={"content": table_answer},
         )
-        return _finalize_knowledge_output(request.message, output)
+        return _finalize_knowledge_output(effective_query, output)
 
     evidence_text = "\n\n".join(
         _evidence_item_to_text(item, idx)
@@ -6753,7 +7712,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
         {
             "role": "user",
             "content": (
-                f"用户问题：{request.message}\n\n"
+                f"用户问题：{effective_query}\n\n"
                 f"知识库证据：\n{evidence_text}\n\n"
                 "请用中文回答，必要时列出依据和不确定点。"
                 "如果回答包含截止时间、比赛流程、注意事项等多个信息块，请使用清晰小段落和逐行编号。"
@@ -6792,7 +7751,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
         latency_ms=total_ms,
         raw_response=response,
     )
-    return _finalize_knowledge_output(request.message, output)
+    return _finalize_knowledge_output(effective_query, output)
 
 
 @app.post("/ai/chat", response_model=ChatResponse)
@@ -6850,6 +7809,8 @@ async def chat(request: ChatRequest) -> ChatResponse:
             fix_result.metadata.setdefault("response_policy", input_data.context["response_policy"])
         if input_data.context and input_data.context.get("route_plan"):
             fix_result.metadata.setdefault("route_plan", input_data.context["route_plan"])
+        if input_data.context and input_data.context.get("retrieval_scope"):
+            fix_result.metadata.setdefault("retrieval_scope", input_data.context["retrieval_scope"])
         fix_result = _enforce_route_document_gate(fix_result, input_data)
         fix_phase_ms = int((time.time() - fix_t0) * 1000)
         logger.info(
@@ -6900,22 +7861,44 @@ async def chat(request: ChatRequest) -> ChatResponse:
             if isinstance(final_result.metadata.get("response_policy"), dict)
             else {}
         )
+        route_payload = final_result.metadata.get("route_plan")
+        is_clarification_output = bool(
+            isinstance(route_payload, Mapping)
+            and route_payload.get("action") in {
+                RouteAction.CLARIFY.value,
+                RouteAction.CLARIFY_DOCUMENT.value,
+            }
+        ) or bool(
+            isinstance(final_result.metadata.get("pending_clarification"), Mapping)
+            and final_result.metadata["pending_clarification"].get("status") in {"awaiting", "reasked", "awaiting_answer"}
+        )
         structural_recovery_allowed = _route_plan_authorizes_structural_lookup(
             final_result.metadata
         )
         manual_overrides_allowed = (
+            not is_clarification_output
+            and
             response_policy.get("mode") == "PENDING_RETRIEVAL"
             or response_policy.get("manual_citation_allowed") is not False
             or structural_recovery_allowed
         )
         direct_table_items = (
-            await _collect_direct_section_table_items(request.message, final_result.metadata)
+            await _collect_direct_section_table_items(input_data.user_message, final_result.metadata)
             if manual_overrides_allowed
             else []
         )
 
         # 低置信度检索时，跳过表格答案覆盖，保留 review 后的原始答案+声明
-        low_confidence = final_result.metadata.get("low_confidence_retrieval", False)
+        low_confidence = _manual_overrides_blocked_by_low_confidence(final_result.metadata)
+        logger.info(
+            "[chat][manual_override] session=%s allowed=%s structural=%s low_conf=%s mode=%s route=%s",
+            request.session_id,
+            manual_overrides_allowed,
+            structural_recovery_allowed,
+            low_confidence,
+            response_policy.get("mode"),
+            (route_payload or {}).get("action") if isinstance(route_payload, Mapping) else "",
+        )
         if low_confidence:
             response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
             verification = final_result.metadata.get("verification", {})
@@ -6924,7 +7907,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             manual_evidence_answer = None
             table_answer = (
                 _format_inventory_table_answer_from_metadata(
-                    request.message,
+                    input_data.user_message,
                     final_result.metadata,
                     direct_table_items,
                 )
@@ -6941,7 +7924,7 @@ async def chat(request: ChatRequest) -> ChatResponse:
             else:
                 manual_evidence_answer = (
                     _format_manual_evidence_answer_from_metadata(
-                        request.message,
+                        input_data.user_message,
                         final_result.metadata,
                     )
                     if manual_overrides_allowed
@@ -6957,7 +7940,11 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 else:
                     response_message, diagnosis_items = _extract_structured_chat_payload(final_result.message)
             if not table_answer and not manual_evidence_answer and not _is_deterministic_direct_output(final_result):
-                follow_up = build_follow_up(input_data.user_message, diagnosis_items, final_result.metadata)
+                follow_up = build_evidence_follow_up(
+                    input_data.user_message,
+                    final_result.metadata,
+                    diagnosis_items=diagnosis_items,
+                )
                 if follow_up:
                     final_result.metadata["execution_mode"] = "causal_follow_up_question"
                     final_result.metadata["confidence_source"] = "causal_follow_up"
@@ -6970,6 +7957,12 @@ async def chat(request: ChatRequest) -> ChatResponse:
                     diagnosis_items = None
                     verification = {}
                     has_issues = False
+            logger.info(
+                "[chat][manual_override] session=%s evidence_answer=%s table_answer=%s",
+                request.session_id,
+                bool(manual_evidence_answer),
+                bool(table_answer),
+            )
         evidence_images = _extract_evidence_images(final_result.metadata)
         # 直取通道：procedure 意图下，按确定性章节查库补图
         if manual_overrides_allowed:
@@ -6981,12 +7974,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
                 evidence_images = _merge_evidence_images(evidence_images, page_images)
 
         pre_audit_message = response_message
-        final_result = await _finalize_knowledge_output_with_fallback(
-            request,
-            input_data,
-            final_result,
-            candidate_message=response_message,
-        )
+        if not is_clarification_output:
+            final_result = await _finalize_knowledge_output_with_fallback(
+                request,
+                input_data,
+                final_result,
+                candidate_message=response_message,
+            )
+        else:
+            evidence_images = []
         response_message = final_result.message
         if (
             final_result.metadata.get("execution_mode") == "maintenance_ai_fallback_after_retrieval"
@@ -7412,6 +8408,11 @@ async def chat_stream(request: ChatRequest):
                     },
                     latency_ms=fix_latency
                 )
+                if input_data.context and input_data.context.get("retrieval_scope"):
+                    fix_output.metadata.setdefault(
+                        "retrieval_scope",
+                        input_data.context["retrieval_scope"],
+                    )
                 fix_output = _enforce_route_document_gate(fix_output, input_data)
 
                 # 运行3层确定性校验（~300ms），获取内联标记位置
@@ -7424,6 +8425,11 @@ async def chat_stream(request: ChatRequest):
                 verified_output.metadata.setdefault("user_message", input_data.user_message)
                 verified_output.metadata.setdefault("original_user_message", request.message)
                 stream_metadata = {**stream_metadata, **verified_output.metadata}
+                if input_data.context and input_data.context.get("retrieval_scope"):
+                    stream_metadata.setdefault(
+                        "retrieval_scope",
+                        input_data.context["retrieval_scope"],
+                    )
                 verification = verified_output.metadata.get("verification", {})
                 has_issues = verified_output.metadata.get("verification_has_issues", False)
                 evidence_images = _extract_evidence_images(verified_output.metadata)
@@ -7459,9 +8465,9 @@ async def chat_stream(request: ChatRequest):
                 "original_user_message": request.message,
             }
             diagnostic_follow_up = None
-            direct_table_items = await _collect_direct_section_table_items(request.message, table_metadata)
+            direct_table_items = await _collect_direct_section_table_items(input_data.user_message, table_metadata)
             table_answer = _format_inventory_table_answer_from_metadata(
-                request.message,
+                input_data.user_message,
                 table_metadata,
                 direct_table_items,
             )
@@ -7492,7 +8498,7 @@ async def chat_stream(request: ChatRequest):
                     "original_user_message": request.message,
                 }
                 manual_evidence_answer = _format_manual_evidence_answer_from_metadata(
-                    request.message,
+                    input_data.user_message,
                     manual_metadata,
                 )
                 if manual_evidence_answer:
@@ -7514,10 +8520,10 @@ async def chat_stream(request: ChatRequest):
                     markers = []
 
             if not table_answer and not stream_metadata.get("deterministic_manual_evidence_answer"):
-                diagnostic_follow_up = build_follow_up(
+                diagnostic_follow_up = build_evidence_follow_up(
                     input_data.user_message,
-                    diagnosis_items,
                     {**stream_metadata, "react_trace": stream_react_trace},
+                    diagnosis_items=diagnosis_items,
                 )
                 if diagnostic_follow_up:
                     stream_metadata["execution_mode"] = "causal_follow_up_question"

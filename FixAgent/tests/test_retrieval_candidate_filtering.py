@@ -742,3 +742,26 @@ if __name__ == "__main__":
     test_page_selector_scores_images_with_same_section_context_only()
     test_page_selector_uses_authoritative_page_records_instead_of_selected_context_spillover()
     print("test_retrieval_candidate_filtering.py OK")
+def test_resolved_scope_filter_never_reopens_other_sections_or_records():
+    candidates = [
+        {
+            "doc_id": "chunk-a",
+            "metadata": {"parent_section_id": "section-a", "source_chunk_id": "source-a"},
+        },
+        {
+            "doc_id": "chunk-b",
+            "metadata": {"parent_section_id": "section-b", "source_chunk_id": "source-b"},
+        },
+        {
+            "doc_id": "chunk-a-image",
+            "metadata": {"parent_section_id": "section-a", "source_chunk_id": "source-foreign"},
+        },
+    ]
+
+    filtered = KnowledgeRetrievalTool._filter_to_resolved_scope(
+        candidates,
+        allowed_section_ids=("section-a",),
+        allowed_evidence_refs=("source-a", "chunk-a-image"),
+    )
+
+    assert [item["doc_id"] for item in filtered] == ["chunk-a", "chunk-a-image"]

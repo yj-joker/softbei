@@ -88,6 +88,43 @@ def _span_contains_multiple_component_terms(contract: QueryContract) -> bool:
     return sum(len(term) for term in terms) / len(span) >= 0.35
 
 
+def _span_is_composed_from_structured_part_fields(contract: QueryContract) -> bool:
+    """Prove that a proposed device span is actually a structured part span.
+
+    This exact structural check has no knowledge of device, component, or
+    specification vocabulary. The normalized structured fields must jointly
+    cover the complete proposed identity span without a gap.
+    """
+    span = _normalized(contract.raw_device_span)
+    anchors = tuple(dict.fromkeys(
+        value
+        for value in (
+            _normalized(contract.part_spec),
+            _normalized(contract.raw_component_span),
+            _normalized(contract.component),
+        )
+        if len(value) >= 2
+    ))
+    if len(anchors) < 2 or not span or not all(anchor in span for anchor in anchors):
+        return False
+
+    intervals: list[tuple[int, int]] = []
+    for anchor in anchors:
+        start = span.find(anchor)
+        while start >= 0:
+            intervals.append((start, start + len(anchor)))
+            start = span.find(anchor, start + 1)
+    intervals.sort()
+    covered_until = 0
+    for start, end in intervals:
+        if start > covered_until:
+            break
+        covered_until = max(covered_until, end)
+        if covered_until == len(span):
+            return True
+    return False
+
+
 def _resolve_compound_dynamic_identity(
     contract: QueryContract,
     catalog: DeviceCatalog,
@@ -149,6 +186,49 @@ def _resolve_compound_dynamic_identity(
     return next(iter(canonical_contracts.values())), document_ids
 
 
+def _resolve_section_suffix_dynamic_identity(
+    contract: QueryContract,
+    catalog: DeviceCatalog,
+    sections: tuple[SectionRef, ...],
+) -> tuple[QueryContract, tuple[str, ...]] | None:
+    """Recover identity/component boundaries from imported document and section names."""
+    raw_span = str(contract.raw_device_span or "").strip()
+    if not raw_span or contract.component:
+        return None
+    resolved: list[tuple[QueryContract, str]] = []
+    for document in catalog.documents:
+        document_sections = tuple(section for section in sections if section.document_id == document.document_id)
+        if not document_sections:
+            continue
+        for raw_name in (document.device_name, *document.aliases):
+            name = str(raw_name or "").strip()
+            if not name or not raw_span.casefold().startswith(name.casefold()):
+                continue
+            remainder = raw_span[len(name):].strip()
+            if not remainder or not any(_section_matches_span(remainder, section) for section in document_sections):
+                continue
+            payload = contract.to_dict()
+            payload.update({
+                "raw_device_span": document.device_name,
+                "device_name": document.device_name,
+                "component": remainder,
+                "raw_component_span": remainder,
+            })
+            canonical = QueryContract.from_mapping(payload, raw_query=contract.raw_query)
+            comparison = next(
+                (item for item in catalog.match(canonical) if item.document.document_id == document.document_id),
+                None,
+            )
+            if comparison is not None and comparison.relation == MATCHED:
+                resolved.append((canonical, document.document_id))
+            break
+    document_ids = tuple(dict.fromkeys(document_id for _, document_id in resolved))
+    contracts = {item.raw_device_span: item for item, _ in resolved}
+    if len(document_ids) != 1 or len(contracts) != 1:
+        return None
+    return next(iter(contracts.values())), document_ids
+
+
 class EntityResolver:
     """Validate whether the extracted span represents a device or a section object."""
 
@@ -181,6 +261,16 @@ class EntityResolver:
                 matched_section_document_ids=section_document_ids,
             )
 
+        section_suffix_identity = _resolve_section_suffix_dynamic_identity(contract, catalog, sections)
+        if section_suffix_identity is not None:
+            canonical_contract, matched_document_ids = section_suffix_identity
+            return EntityResolution(
+                contract=canonical_contract,
+                entity_role="device_identity",
+                reason="resolved_section_suffix_dynamic_identity",
+                matched_section_document_ids=matched_document_ids,
+            )
+
         compound_identity = _resolve_compound_dynamic_identity(contract, catalog, sections)
         if compound_identity is not None:
             canonical_contract, matched_document_ids = compound_identity
@@ -191,21 +281,44 @@ class EntityResolver:
                 matched_section_document_ids=matched_document_ids,
             )
 
-        has_identity_qualifier = bool(
-            contract.carrier_or_application or contract.manufacturer or contract.model
-        )
         matching_sections = tuple(
             section for section in sections if _section_matches_span(contract.raw_device_span, section)
         )
         operation_target = _is_operation_target(contract)
+        structured_part_role = _span_is_composed_from_structured_part_fields(contract)
+        component_span_overlap = bool(
+            _span_matches_extracted_component(contract)
+            or _span_contains_multiple_component_terms(contract)
+        )
+        normalized_model = _normalized(contract.model)
+        normalized_part_spec = _normalized(contract.part_spec)
+        model_is_part_field = bool(
+            normalized_model
+            and (
+                component_span_overlap
+                or (
+                    normalized_part_spec
+                    and normalized_model == normalized_part_spec
+                )
+            )
+        )
+        has_identity_qualifier = bool(
+            contract.carrier_or_application
+            or contract.manufacturer
+            or (contract.model and not model_is_part_field)
+        )
         component_role = bool(
             section_document_ids
             and (
-                _span_matches_extracted_component(contract)
-                or _span_contains_multiple_component_terms(contract)
+                component_span_overlap
+                or structured_part_role
             )
         )
-        if matching_sections or ((operation_target or component_role) and not has_identity_qualifier):
+        if (
+            matching_sections
+            or (operation_target and not has_identity_qualifier)
+            or (component_role and (not has_identity_qualifier or structured_part_role))
+        ):
             payload = contract.to_dict()
             for field in (
                 "raw_device_span",

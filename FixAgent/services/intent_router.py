@@ -77,10 +77,17 @@ class IntentDecision(BaseModel):
     manufacturer: str = ""
     model: str = ""
     component: str = ""
+    raw_component_span: str = ""
+    part_spec: str = ""
+    assembly_context: str = ""
     action: str = ""
     orientation: str = ""
     risk_level: str = ""
     identity_resolution: str = ""
+    requested_fields: List[str] = Field(default_factory=list)
+    symptoms: List[str] = Field(default_factory=list)
+    operating_conditions: List[str] = Field(default_factory=list)
+    targets: List[Dict[str, Any]] = Field(default_factory=list)
     allowed_tools: List[str] = Field(default_factory=list)
     preferred_tools: List[str] = Field(default_factory=list)
     forbidden_tools: List[str] = Field(default_factory=list)
@@ -306,8 +313,11 @@ class IntentRouter:
             "confidence 为 0 到 1。不要生成用户回答，只判断用户当前想做什么。"
             "同一次 JSON 中还要提取当前轮查询契约：raw_device_span 必须逐字复制用户消息中连续出现的设备短语，"
             "没有明确设备时必须为空；device_name、device_category、carrier_or_application、manufacturer、model、"
-            "component、action、orientation、risk_level 分别表示设备名、设备类别、载体或应用、制造商、型号、"
-            "部件、动作、左右方向和风险等级。不得从历史或常识补写用户本轮未提到的设备。"
+            "component、raw_component_span、part_spec、assembly_context、action、orientation、risk_level 分别表示"
+            "部件、部件原文跨度、规格、装配上下文、动作、方向和风险等级。"
+            "多对象查询必须输出 targets 数组，每项含 target_id、raw_component_span、component、part_spec、"
+            "assembly_context、action、orientation、requested_fields；同时输出 requested_fields、symptoms、"
+            "operating_conditions。不得从历史或常识补写用户本轮未提到的设备或部件。"
             "knowledge_inventory 仅用于用户明确询问知识库本身的文件、文档、上传、导入或入库状态。"
             "如果用户要求从知识库、手册或资料中查找、返回、展示图片、照片、示例图、结构图、示意图，"
             "这属于 document_content 的 knowledge_query，不属于 knowledge_inventory。"
@@ -356,9 +366,16 @@ class IntentRouter:
             manufacturer=query_contract.manufacturer,
             model=query_contract.model,
             component=query_contract.component,
+            raw_component_span=query_contract.raw_component_span,
+            part_spec=query_contract.part_spec,
+            assembly_context=query_contract.assembly_context,
             action=query_contract.action,
             orientation=query_contract.orientation,
             risk_level=query_contract.risk_level,
+            requested_fields=list(query_contract.requested_fields),
+            symptoms=list(query_contract.symptoms),
+            operating_conditions=list(query_contract.operating_conditions),
+            targets=[target.to_dict() for target in query_contract.targets],
         )
 
     async def _extract_query_contract_with_llm(self, text: str) -> QueryContract:
@@ -366,10 +383,14 @@ class IntentRouter:
             "你是当前问题的设备身份抽取器，只输出 JSON，并且必须输出全部指定字段。"
             "raw_device_span 必须逐字复制当前问题中连续出现的、能区分设备身份的最长设备短语；"
             "短语应包含用户明确说出的载体或应用与设备类别。"
+            "用户明确说出‘载体或应用范围+设备类别’时，整段就是设备身份，即使没有品牌型号也不能降为 component；"
+            "component 只能填写设备内部部件，不能用完整设备短语替代 raw_device_span。"
             "如果当前问题只说部件、故障或操作，没有明确设备身份，raw_device_span 必须为空字符串。"
             "不得从常识、对话历史、候选文档或知识库补写用户本轮没有说出的身份。"
             "返回字段 raw_device_span、device_name、device_category、carrier_or_application、"
-            "manufacturer、model、component、action、orientation、risk_level；未知字段使用空字符串。"
+            "manufacturer、model、component、raw_component_span、part_spec、assembly_context、action、orientation、"
+            "risk_level、requested_fields、symptoms、operating_conditions、targets；未知字符串字段使用空字符串，"
+            "未知数组字段使用空数组。targets 中的部件跨度必须逐字来自当前问题。"
         )
         response = await self.llm_service.chat(
             [
@@ -402,6 +423,9 @@ class IntentRouter:
             "manufacturer",
             "model",
             "component",
+            "raw_component_span",
+            "part_spec",
+            "assembly_context",
             "action",
             "orientation",
             "risk_level",
@@ -409,6 +433,12 @@ class IntentRouter:
             value = getattr(contract, field)
             if value:
                 data[field] = value
+        for field in ("requested_fields", "symptoms", "operating_conditions"):
+            value = list(getattr(contract, field))
+            if value:
+                data[field] = value
+        if contract.targets:
+            data["targets"] = [target.to_dict() for target in contract.targets]
         return IntentDecision(**data)
 
     def _classify_by_rules(self, text: str, images: List[str]) -> IntentDecision:

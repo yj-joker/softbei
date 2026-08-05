@@ -120,10 +120,13 @@ FIX_AGENT_RESPONSE_CONTRACTS = {
         '  "message": "一句话总体判断",\n'
         '  "diagnosisItems": [\n'
         '    {"priority": "一级", "faultPart": "故障部位", "rootCause": "根本原因",\n'
-        '     "knowledgeBasis": "依据（手册/图谱/常识，常识需注明待现场确认）"}\n'
+        '     "knowledgeBasis": "依据（手册/图谱/常识，常识需注明待现场确认）",\n'
+        '     "distinguishingFeature": "可由用户观察、用于区分该根因的现场特征",\n'
+        '     "suggestedCheck": "用于验证该根因的低风险检查"}\n'
         "  ]\n"
         "}\n"
-        "priority、faultPart、rootCause、knowledgeBasis 四个字段都要有。"
+        "priority、faultPart、rootCause、knowledgeBasis、distinguishingFeature、suggestedCheck 六个字段都要有；"
+        "后两个字段必须来自当前证据或对候选根因的可观察区分，不得编造精确参数。"
         "若证据不足以支撑结论、或需要用户补充信息，不要套这个 JSON，改用自然语言追问或说明。"
     ),
     "step": (
@@ -336,6 +339,12 @@ class FixAgent(BaseAgent):
                 kwargs["device_type"] = scope["device_type"]
             if scope.get("document_id"):
                 kwargs["document_id"] = scope["document_id"]
+            if scope.get("parent_section_id"):
+                kwargs["parent_section_id"] = scope["parent_section_id"]
+            if scope.get("allowed_section_ids"):
+                kwargs["allowed_section_ids"] = list(scope["allowed_section_ids"])
+            if scope.get("allowed_evidence_refs"):
+                kwargs["allowed_evidence_refs"] = list(scope["allowed_evidence_refs"])
         return kwargs
 
     async def _run_with_react_contextual(
@@ -416,12 +425,19 @@ class FixAgent(BaseAgent):
             return None
         scope = run_context.retrieval_scope or {}
         try:
-            retrieval = await get_knowledge_retrieval_tool().run(
-                query=query,
-                top_k=5,
-                document_id=scope.get("document_id"),
-                device_type=scope.get("device_type"),
-            )
+            retrieval_kwargs = {
+                "query": query,
+                "top_k": 5,
+                "document_id": scope.get("document_id"),
+                "device_type": scope.get("device_type"),
+            }
+            if scope.get("parent_section_id"):
+                retrieval_kwargs["parent_section_id"] = scope["parent_section_id"]
+            if scope.get("allowed_section_ids"):
+                retrieval_kwargs["allowed_section_ids"] = list(scope["allowed_section_ids"])
+            if scope.get("allowed_evidence_refs"):
+                retrieval_kwargs["allowed_evidence_refs"] = list(scope["allowed_evidence_refs"])
+            retrieval = await get_knowledge_retrieval_tool().run(**retrieval_kwargs)
         except Exception as exc:
             logger.warning("[fix_agent][forced_retrieval] 检索异常: %s", exc)
             # 检索本身报错：无法验证证据，evidence-required 意图不能放行可能编造的原答案

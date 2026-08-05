@@ -1,14 +1,8 @@
-"""Lightweight causal follow-up questions for diagnostic uncertainty.
-
-This module intentionally keeps the first version small: it does not try to
-build a full causal graph engine. Instead, it recognizes high-value demo
-scenarios, compares a few candidate root causes, asks one discriminating
-question, and reranks candidates when the user answers.
-"""
+"""Evidence-bound causal follow-up questions for diagnostic uncertainty."""
 
 from __future__ import annotations
 
-import copy
+import math
 import re
 from typing import Any, Mapping
 
@@ -20,81 +14,12 @@ MIN_CANDIDATES = 2
 MAX_OPTIONS = 4
 
 
-_BLUE_SMOKE_SCENARIO = {
-    "id": "engine_blue_smoke_timing",
-    "match_terms": ("冒蓝烟", "蓝烟", "烧机油"),
-    "question": "蓝烟主要在什么时候更明显？",
-    "reason": "气门油封老化和活塞环磨损都会导致冒蓝烟、烧机油，但蓝烟出现时机是区分根因的关键现场特征。",
-    "hypotheses": [
-        {
-            "id": "valve_seal_aging",
-            "faultPart": "气门油封",
-            "rootCause": "气门油封老化",
-            "confidence": 0.62,
-            "distinguishingFeature": "冷启动或长时间怠速后蓝烟更明显",
-            "suggestedCheck": "检查气门油封密封状态，观察冷启动后短时间排烟变化。",
-        },
-        {
-            "id": "piston_ring_wear",
-            "faultPart": "活塞环",
-            "rootCause": "活塞环磨损",
-            "confidence": 0.59,
-            "distinguishingFeature": "加速、负载或高转速时蓝烟更明显",
-            "suggestedCheck": "做气缸压力或漏气量检查，确认活塞环与缸壁密封情况。",
-        },
-        {
-            "id": "crankcase_vent_abnormal",
-            "faultPart": "曲轴箱通风系统",
-            "rootCause": "曲轴箱通风异常",
-            "confidence": 0.47,
-            "distinguishingFeature": "伴随怠速不稳、机油消耗异常或通风管路堵塞",
-            "suggestedCheck": "检查曲轴箱通风管路、单向阀和油气分离状态。",
-        },
-    ],
-    "options": [
-        {
-            "id": "A",
-            "text": "冷启动或怠速后更明显",
-            "boost": {"valve_seal_aging": 0.23, "piston_ring_wear": -0.07},
-            "interpretation": "冷启动或怠速后蓝烟明显，更支持气门油封老化。",
-        },
-        {
-            "id": "B",
-            "text": "加速或负载时更明显",
-            "boost": {"piston_ring_wear": 0.24, "valve_seal_aging": -0.08},
-            "interpretation": "加速或负载时蓝烟明显，更支持活塞环磨损。",
-        },
-        {
-            "id": "C",
-            "text": "一直都有，并伴随怠速不稳",
-            "boost": {"crankcase_vent_abnormal": 0.20},
-            "interpretation": "持续冒蓝烟且怠速不稳，需要重点排查曲轴箱通风异常，同时保留机械磨损可能。",
-        },
-        {
-            "id": "D",
-            "text": "不确定",
-            "boost": {},
-            "interpretation": "现场现象仍不充分，建议先按低成本检查顺序验证。",
-        },
-    ],
-}
-
-
-SCENARIOS = (_BLUE_SMOKE_SCENARIO,)
-
-
 def _compact(value: Any) -> str:
     return re.sub(r"\s+", "", str(value or "")).lower()
 
 
 def _round_score(value: float) -> float:
     return round(max(0.0, min(0.99, value)), 2)
-
-
-def _scenario_matches(scenario: Mapping[str, Any], query: str) -> bool:
-    compact_query = _compact(query)
-    terms = [_compact(term) for term in scenario.get("match_terms") or []]
-    return any(term and term in compact_query for term in terms)
 
 
 def _public_hypotheses(hypotheses: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -104,17 +29,6 @@ def _public_hypotheses(hypotheses: list[dict[str, Any]]) -> list[dict[str, Any]]
         copied["confidence"] = _round_score(float(copied.get("confidence") or 0.0))
         result.append(copied)
     return sorted(result, key=lambda item: item.get("confidence", 0), reverse=True)
-
-
-def _public_options(options: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [
-        {
-            "id": option.get("id"),
-            "label": f"{option.get('id')}. {option.get('text')}",
-            "text": option.get("text"),
-        }
-        for option in options[:MAX_OPTIONS]
-    ]
 
 
 def _option_by_answer(options: list[dict[str, Any]], answer_text: str, selected_id: Any = None) -> dict[str, Any] | None:
@@ -135,36 +49,172 @@ def build_follow_up(
     diagnosis_items: list[dict[str, Any]] | None = None,
     metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Return one discriminating question when the diagnostic query is ambiguous."""
-    del diagnosis_items, metadata
-    for scenario in SCENARIOS:
-        if not _scenario_matches(scenario, query):
+    """Compatibility wrapper around the evidence-bound implementation."""
+    return build_evidence_follow_up(query, metadata, diagnosis_items=diagnosis_items)
+
+
+def build_evidence_follow_up(
+    query: str,
+    metadata: Mapping[str, Any] | None,
+    *,
+    diagnosis_items: list[dict[str, Any]] | None = None,
+) -> dict[str, Any] | None:
+    """仅根据本轮检索/图谱返回的结构化候选生成诊断反问。
+
+    该入口不读取固定场景、设备或部件词表；候选不足时直接返回 None。
+    """
+    source = metadata if isinstance(metadata, Mapping) else {}
+    raw_candidates = source.get("diagnostic_candidates") or source.get("cause_candidates") or ()
+    candidates = [dict(item) for item in raw_candidates if isinstance(item, Mapping)]
+    candidates.extend(
+        dict(item) for item in (diagnosis_items or ()) if isinstance(item, Mapping)
+    )
+    candidates.extend(_graph_candidates_from_trace(source))
+    candidates = _normalize_candidates(candidates)
+    if len(candidates) < MIN_CANDIDATES:
+        return None
+    candidates = candidates[:MAX_OPTIONS]
+    discriminator = _best_discriminator(candidates)
+    if discriminator is None:
+        return None
+    dimension, question, groups = discriminator
+    alternatives = []
+    for index, (label, grouped) in enumerate(groups):
+        option_id = chr(ord("A") + index)
+        alternatives.append({
+            "id": option_id,
+            "label": f"{option_id}. {label}",
+            "text": label,
+            "constraints": {
+                "diagnostic_candidate_ids": [item["id"] for item in grouped],
+                "diagnostic_dimension": dimension,
+                "diagnostic_value": label,
+            },
+        })
+    hypotheses = _public_hypotheses(candidates)
+    clarification = build_diagnostic_clarification(
+        scenario_id="evidence",
+        query=query,
+        subject="故障原因",
+        question=question,
+        alternatives=alternatives,
+    )
+    return {
+        **clarification,
+        "id": "evidence",
+        "status": "awaiting_answer",
+        "question": question,
+        "question_dimension": dimension,
+        "hypotheses": hypotheses,
+        "options": alternatives,
+        "originalQuery": query,
+    }
+
+
+def _graph_candidates_from_trace(metadata: Mapping[str, Any]) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    for step in metadata.get("react_trace") or ():
+        if not isinstance(step, Mapping):
             continue
-        hypotheses = _public_hypotheses(copy.deepcopy(scenario["hypotheses"]))
-        if len(hypotheses) < MIN_CANDIDATES:
-            return None
-        top_gap = hypotheses[0]["confidence"] - hypotheses[1]["confidence"]
-        if top_gap > 0.18:
-            return None
-        public_options = _public_options(copy.deepcopy(scenario["options"]))
-        clarification = build_diagnostic_clarification(
-            scenario_id=scenario["id"],
-            query=query,
-            subject="发动机冒蓝烟候选根因",
-            question=scenario["question"],
-            alternatives=public_options,
+        for call in step.get("tool_calls") or ():
+            if not isinstance(call, Mapping) or call.get("name") != "java_graph_diagnosis_path":
+                continue
+            result = call.get("result_data") or call.get("data") or call.get("result") or {}
+            if isinstance(result, Mapping) and isinstance(result.get("data"), Mapping):
+                result = result["data"]
+            records = result.get("raw_records") if isinstance(result, Mapping) else ()
+            for record in records or ():
+                if not isinstance(record, Mapping):
+                    continue
+                score = record.get("faultScore") or record.get("componentScore")
+                if score is None:
+                    match_score = float(record.get("matchScore") or 0.0)
+                    score = min(0.95, 0.50 + 0.10 * match_score)
+                solutions = [
+                    item for item in record.get("solutions") or () if isinstance(item, Mapping)
+                ]
+                candidates.append({
+                    "id": str(record.get("faultId") or record.get("id") or ""),
+                    "faultPart": str(record.get("componentName") or ""),
+                    "rootCause": str(record.get("faultName") or ""),
+                    "confidence": score,
+                    "suggestedCheck": str(
+                        record.get("suggestedCheck")
+                        or record.get("distinguishingFeature")
+                        or (solutions[0].get("title") if solutions else "")
+                        or ""
+                    ),
+                    "distinguishingFeature": str(record.get("distinguishingFeature") or ""),
+                })
+    return candidates
+
+
+def _normalize_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, candidate in enumerate(candidates, start=1):
+        root_cause = str(candidate.get("rootCause") or candidate.get("root_cause") or "").strip()
+        fault_part = str(candidate.get("faultPart") or candidate.get("fault_part") or "").strip()
+        if not root_cause:
+            continue
+        key = (root_cause.casefold(), fault_part.casefold())
+        if key in seen:
+            continue
+        seen.add(key)
+        try:
+            confidence = float(candidate.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
+        normalized.append({
+            "id": str(candidate.get("id") or f"candidate-{index}"),
+            "faultPart": fault_part,
+            "rootCause": root_cause,
+            "confidence": _round_score(confidence),
+            "distinguishingFeature": str(
+                candidate.get("distinguishingFeature")
+                or candidate.get("distinguishing_feature")
+                or ""
+            ).strip(),
+            "suggestedCheck": str(
+                candidate.get("suggestedCheck")
+                or candidate.get("suggested_check")
+                or ""
+            ).strip(),
+        })
+    return normalized
+
+
+def _best_discriminator(
+    candidates: list[dict[str, Any]],
+) -> tuple[str, str, list[tuple[str, list[dict[str, Any]]]]] | None:
+    definitions = (
+        ("distinguishingFeature", "请补充最符合现场情况的现象，或直接选择选项："),
+        ("faultPart", "异常更接近下列哪个部位？"),
+        ("suggestedCheck", "下列哪项检查结果或处置线索更符合现场情况？"),
+    )
+    scored = []
+    total = len(candidates)
+    base_entropy = math.log2(total) if total > 1 else 0.0
+    for tie_rank, (dimension, question) in enumerate(definitions):
+        grouped: dict[str, list[dict[str, Any]]] = {}
+        for candidate in candidates:
+            value = str(candidate.get(dimension) or "").strip()
+            if value:
+                grouped.setdefault(value, []).append(candidate)
+        covered = sum(len(items) for items in grouped.values())
+        if len(grouped) < 2 or covered != total:
+            continue
+        residual = sum(
+            (len(items) / total) * math.log2(len(items))
+            for items in grouped.values()
+            if len(items) > 1
         )
-        return {
-            **clarification,
-            "id": scenario["id"],
-            "status": "awaiting_answer",
-            "question": scenario["question"],
-            "reason": scenario["reason"],
-            "hypotheses": hypotheses,
-            "options": public_options,
-            "originalQuery": query,
-        }
-    return None
+        information_gain = 1.0 if base_entropy == 0 else (base_entropy - residual) / base_entropy
+        scored.append((information_gain, -tie_rank, dimension, question, list(grouped.items())))
+    if not scored:
+        return None
+    _, _, dimension, question, groups = max(scored, key=lambda item: (item[0], item[1]))
+    return dimension, question, groups[:MAX_OPTIONS]
 
 
 def resolve_follow_up(context: Mapping[str, Any] | None, answer_text: str) -> dict[str, Any] | None:
@@ -179,56 +229,44 @@ def resolve_follow_up(context: Mapping[str, Any] | None, answer_text: str) -> di
     if not isinstance(pending, Mapping) or pending.get("status") != "awaiting_answer":
         return None
 
-    scenario = next((item for item in SCENARIOS if item["id"] == pending.get("id")), None)
-    if scenario is None:
+    if str(pending.get("id") or "") != "evidence":
         return None
-
+    options = [
+        dict(item)
+        for item in pending.get("options") or pending.get("alternatives") or ()
+        if isinstance(item, Mapping)
+    ]
     option = _option_by_answer(
-        copy.deepcopy(scenario["options"]),
+        options,
         answer_text,
         selected_id=context.get("selected_option_id") or context.get("selected_clarification_option_id"),
     )
     if option is None:
         return None
-
-    hypotheses = copy.deepcopy(pending.get("hypotheses") or scenario["hypotheses"])
-    boosts = option.get("boost") or {}
-    for item in hypotheses:
-        item["confidence"] = _round_score(float(item.get("confidence") or 0.0) + float(boosts.get(item.get("id"), 0.0)))
-
-    ranked = _public_hypotheses(hypotheses)
-    top = ranked[0]
-    second = ranked[1] if len(ranked) > 1 else None
-    diagnosis_items = [
-        {
+    hypotheses = [
+        dict(item) for item in pending.get("hypotheses") or () if isinstance(item, Mapping)
+    ]
+    constraints = option.get("constraints") if isinstance(option.get("constraints"), Mapping) else {}
+    selected_ids = {
+        str(value) for value in constraints.get("diagnostic_candidate_ids") or () if str(value)
+    }
+    selected = [item for item in hypotheses if str(item.get("id") or "") in selected_ids]
+    remaining = [item for item in hypotheses if item not in selected]
+    ranked = selected + remaining
+    top = ranked[0] if ranked else {}
+    return {
+        "id": "evidence",
+        "status": "resolved",
+        "question": pending.get("question", ""),
+        "selectedOption": dict(option),
+        "interpretation": str(option.get("text") or option.get("label") or ""),
+        "hypotheses": ranked,
+        "diagnosisItems": ([{
             "priority": "一级",
             "faultPart": top.get("faultPart", ""),
             "rootCause": top.get("rootCause", ""),
-            "knowledgeBasis": option.get("interpretation", "") + " 建议结合现场检查确认。",
-        }
-    ]
-    if second:
-        diagnosis_items.append(
-            {
-                "priority": "二级",
-                "faultPart": second.get("faultPart", ""),
-                "rootCause": second.get("rootCause", ""),
-                "knowledgeBasis": f"作为备选根因保留，当前置信度 {second.get('confidence'):.2f}。",
-            }
-        )
-
-    return {
-        "id": pending.get("id"),
-        "status": "resolved",
-        "question": pending.get("question", scenario["question"]),
-        "selectedOption": {
-            "id": option.get("id"),
-            "label": f"{option.get('id')}. {option.get('text')}",
-            "text": option.get("text"),
-        },
-        "interpretation": option.get("interpretation", ""),
-        "hypotheses": ranked,
-        "diagnosisItems": diagnosis_items,
+            "knowledgeBasis": str(option.get("text") or option.get("label") or ""),
+        }] if top else []),
         "originalQuery": pending.get("originalQuery", ""),
     }
 

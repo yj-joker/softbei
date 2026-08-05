@@ -6,6 +6,7 @@ import json
 import pytest
 
 from agents.base_agent import AgentInput
+from agents.base_agent import AgentOutput
 from api import main
 from schemas.request import ChatRequest
 
@@ -93,6 +94,73 @@ def test_non_stream_pending_conflict_precedes_general_ai_and_restores_query(monk
     assert response.metadata["pending_clarification"]["status"] == "resolved"
 
 
+def test_non_stream_deterministic_renderers_use_restored_business_query(monkeypatch) -> None:
+    request = ChatRequest(session_id="clarify-restored-render", message="A")
+    original_query = "星门耦联簇的校准参数是多少？"
+    input_data = AgentInput(
+        user_message=original_query,
+        session_id=request.session_id,
+        context={
+            "response_policy": {"mode": "PENDING_RETRIEVAL", "manual_citation_allowed": True},
+            "retrieval_scope": {
+                "document_id": "manual-a",
+                "allowed_section_ids": ["section-a"],
+                "allowed_evidence_refs": ["chunk-a"],
+            },
+            "route_plan": {
+                "action": "grounded_retrieval",
+                "entity_role": "document_component",
+                "selected_document_id": "manual-a",
+            },
+        },
+    )
+    routed = AgentOutput(
+        agent_name="fix_agent",
+        message="模型未能稳定组织证据。",
+        tools_used=["knowledge_retrieval"],
+        metadata={"deterministic_direct": True},
+    )
+    seen: list[tuple[str, str]] = []
+
+    async def _no_causal(*args, **kwargs):
+        return None
+
+    async def _route(*args, **kwargs):
+        return routed
+
+    async def _collect(query: str, metadata: dict):
+        seen.append(("collect", query))
+        return []
+
+    def _format_table(query: str, metadata: dict, extra_items=None):
+        seen.append(("table", query))
+        return "确定性证据答案"
+
+    async def _finalize(request, input_data, output, *, candidate_message=None):
+        output.message = str(candidate_message or output.message)
+        return output
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _no_causal)
+    monkeypatch.setattr(main, "_try_route_plan_direct", _route)
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _collect)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", _format_table)
+    monkeypatch.setattr(
+        main,
+        "_format_manual_evidence_answer_from_metadata",
+        lambda *args: pytest.fail("table answer should already be deterministic"),
+    )
+    monkeypatch.setattr(main, "_collect_direct_section_images", _empty_async)
+    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", lambda *args: [])
+    monkeypatch.setattr(main, "_finalize_knowledge_output_with_fallback", _finalize)
+
+    response = asyncio.run(main.chat(request))
+
+    assert response.message == "确定性证据答案"
+    assert seen == [("collect", original_query), ("table", original_query)]
+    assert response.metadata["retrieval_scope"] == input_data.context["retrieval_scope"]
+
+
 def test_stream_unresolved_clarification_repeats_same_question_before_general_ai(monkeypatch) -> None:
     request = ChatRequest(session_id="clarify-stream", message="我不确定")
     input_data = _prepared_input(request, "我不确定")
@@ -143,3 +211,38 @@ def test_stream_done_metadata_preserves_full_pending_clarification() -> None:
     )
 
     assert event["data"]["metadata"]["pending_clarification"] == pending
+
+
+def test_pending_diagnostic_question_is_terminal_before_evidence_finalizer(monkeypatch) -> None:
+    pending = {
+        "kind": "diagnostic_cause",
+        "status": "awaiting_answer",
+        "question": "请补充最符合现场情况的现象。",
+        "alternatives": [
+            {"id": "A", "label": "现象甲"},
+            {"id": "B", "label": "现象乙"},
+        ],
+    }
+    output = AgentOutput(
+        agent_name="fix_agent",
+        message=pending["question"],
+        metadata={"pending_clarification": pending},
+    )
+    request = ChatRequest(session_id="diagnostic-terminal", message="设备存在异常")
+    input_data = AgentInput(user_message=request.message, session_id=request.session_id)
+
+    monkeypatch.setattr(
+        main,
+        "_finalize_knowledge_output",
+        lambda *args, **kwargs: pytest.fail("clarification must bypass evidence finalizer"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_try_post_retrieval_ai_fallback",
+        lambda *args, **kwargs: pytest.fail("clarification must bypass AI fallback"),
+    )
+
+    result = asyncio.run(main._finalize_knowledge_output_with_fallback(request, input_data, output))
+
+    assert result.message == pending["question"]
+    assert result.metadata["pending_clarification"] == pending

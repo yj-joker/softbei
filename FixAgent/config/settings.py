@@ -60,6 +60,8 @@ class Settings:
     minio_public_image_bucket = os.getenv("MINIO_PUBLIC_IMAGE_BUCKET", minio_bucket)
     minio_secure = os.getenv("MINIO_SECURE", "false").lower() == "true"
     image_summary_llm_enabled = os.getenv("IMAGE_SUMMARY_LLM_ENABLED", "false").lower() == "true"
+    _clarification_mode = os.getenv("CLARIFICATION_MODE", "enforce").strip().lower()
+    clarification_mode = _clarification_mode if _clarification_mode in {"enforce", "shadow", "off"} else "enforce"
 
     # MySQL metadata database used for structured knowledge inventory queries.
     mysql_host = os.getenv("MYSQL_HOST", "localhost")
@@ -67,6 +69,10 @@ class Settings:
     mysql_database = os.getenv("MYSQL_DATABASE", "fix")
     mysql_user = os.getenv("MYSQL_USER", "root")
     mysql_password = os.getenv("MYSQL_PASSWORD", "1234")
+
+    def __init__(self) -> None:
+        mode = os.getenv("CLARIFICATION_MODE", "enforce").strip().lower()
+        self.clarification_mode = mode if mode in {"enforce", "shadow", "off"} else "enforce"
 
 
 _settings = None

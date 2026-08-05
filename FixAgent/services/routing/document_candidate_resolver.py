@@ -54,18 +54,29 @@ class DocumentCandidateResolver:
                 return self._clarify(matched, "multiple_identity_matches")
             return self._fallback("no_matching_device_document")
 
+        if session and catalog.document(session) is not None:
+            return self._grounded((session,), "session_document")
+
         section_documents = tuple(dict.fromkeys(
             section.document_id
             for section in section_refs
             if section.document_id and catalog.document(section.document_id) is not None
         ))
+        # Present document options in the authoritative catalog order. Section
+        # index scan order is an implementation detail and may change after
+        # re-indexing, which would make a user's ordinal answer select a
+        # different manual on the same query.
+        section_document_set = set(section_documents)
+        section_documents = tuple(
+            document.document_id
+            for document in catalog.documents
+            if document.document_id in section_document_set
+        )
         if len(section_documents) == 1:
             return self._grounded(section_documents, "unique_section_match")
         if len(section_documents) > 1:
             return self._clarify(section_documents, "multiple_section_matches")
 
-        if session and catalog.document(session) is not None:
-            return self._grounded((session,), "session_document")
         return self._fallback("no_matching_document")
 
     @staticmethod

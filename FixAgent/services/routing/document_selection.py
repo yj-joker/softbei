@@ -102,6 +102,12 @@ def resolve_pending_document_selection(
         if 0 <= index < len(alternatives):
             selected = alternatives[index]
     if selected is None:
+        letter_match = re.fullmatch(r"([A-Z])", answer.upper())
+        if letter_match:
+            index = ord(letter_match.group(1)) - ord("A")
+            if 0 <= index < len(alternatives):
+                selected = alternatives[index]
+    if selected is None:
         compact = re.sub(r"\s+", "", answer).casefold()
         matches = [
             item for item in alternatives

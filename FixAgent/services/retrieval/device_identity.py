@@ -41,6 +41,13 @@ def _normalized(value: Any) -> str:
     return re.sub(r"[\s_\-—–·,，。:：/\\()（）\[\]【】]+", "", text)
 
 
+def _tuple_texts(value: Any) -> tuple[str, ...]:
+    if value in (None, ""):
+        return ()
+    values = value if isinstance(value, (list, tuple, set)) else (value,)
+    return tuple(dict.fromkeys(_text(item) for item in values if _text(item)))
+
+
 def _is_grounded_operation_target(raw_query: str, action: str, raw_span: str) -> bool:
     """Whether the extracted span is the grammatical target of an operation.
 
@@ -65,6 +72,63 @@ def _is_grounded_operation_target(raw_query: str, action: str, raw_span: str) ->
 
 
 @dataclass(frozen=True)
+class QueryTarget:
+    target_id: str
+    raw_component_span: str
+    component: str
+    part_spec: str = ""
+    assembly_context: str = ""
+    action: str = ""
+    orientation: str = ""
+    requested_fields: tuple[str, ...] = ()
+
+    @classmethod
+    def from_mapping(
+        cls,
+        payload: Mapping[str, Any] | None,
+        *,
+        raw_query: str,
+        fallback_id: str,
+    ) -> "QueryTarget | None":
+        data = dict(payload or {})
+        query = _text(raw_query)
+        raw_span = _text(data.get("raw_component_span"))
+        component = _text(data.get("component"))
+        if raw_span and raw_span.casefold() not in query.casefold():
+            return None
+        if not raw_span:
+            if component and component.casefold() in query.casefold():
+                raw_span = component
+            else:
+                return None
+        part_spec = _text(data.get("part_spec"))
+        if part_spec and part_spec.casefold() not in query.casefold():
+            part_spec = ""
+        return cls(
+            target_id=_text(data.get("target_id")) or fallback_id,
+            raw_component_span=raw_span,
+            component=component or raw_span,
+            part_spec=part_spec,
+            assembly_context=_text(data.get("assembly_context")),
+            action=_text(data.get("action")),
+            orientation=_text(data.get("orientation")),
+            requested_fields=_tuple_texts(data.get("requested_fields")),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "target_id": self.target_id,
+            "raw_component_span": self.raw_component_span,
+            "component": self.component,
+            "part_spec": self.part_spec,
+            "assembly_context": self.assembly_context,
+            "action": self.action,
+            "orientation": self.orientation,
+            "requested_fields": list(self.requested_fields),
+        }
+
+
+@dataclass(frozen=True)
 class QueryContract:
     raw_query: str
     intent: str = ""
@@ -76,10 +140,17 @@ class QueryContract:
     manufacturer: str = ""
     model: str = ""
     component: str = ""
+    raw_component_span: str = ""
+    part_spec: str = ""
+    assembly_context: str = ""
     action: str = ""
     orientation: str = ""
     risk_level: str = ""
     identity_resolution: str = ""
+    requested_fields: tuple[str, ...] = ()
+    symptoms: tuple[str, ...] = ()
+    operating_conditions: tuple[str, ...] = ()
+    targets: tuple[QueryTarget, ...] = ()
 
     @classmethod
     def from_mapping(
@@ -94,12 +165,29 @@ class QueryContract:
         span_is_grounded = bool(raw_span and raw_span.casefold() in query.casefold())
         component = _text(data.get("component"))
         orientation = _text(data.get("orientation"))
+        raw_component_span = _text(data.get("raw_component_span"))
+        if raw_component_span and raw_component_span.casefold() not in query.casefold():
+            raw_component_span = ""
+        part_spec = _text(data.get("part_spec"))
+        if part_spec and part_spec.casefold() not in query.casefold():
+            part_spec = ""
         component_forms = {
             value
             for value in (
                 _normalized(component),
                 _normalized(orientation + component),
                 _normalized(component + orientation),
+            )
+            if value
+        }
+        operation_target_forms = {
+            value
+            for value in (
+                _normalized(raw_component_span),
+                _normalized(part_spec + raw_component_span),
+                _normalized(raw_component_span + part_spec),
+                _normalized(part_spec + component),
+                _normalized(component + part_spec),
             )
             if value
         }
@@ -114,6 +202,7 @@ class QueryContract:
             and not has_identity_qualifier
             and (
                 normalized_span in component_forms
+                or normalized_span in operation_target_forms
                 or _is_grounded_operation_target(query, data.get("action"), raw_span)
             )
         ):
@@ -124,8 +213,47 @@ class QueryContract:
             for field in ("device_name", *_IDENTITY_FIELDS):
                 data[field] = ""
         identity_resolution = _text(data.get("identity_resolution"))
-        if identity_resolution != "confirmed_absent" or raw_span:
+        if identity_resolution not in {"confirmed_absent", "catalog_exact"} or (
+            raw_span and identity_resolution == "confirmed_absent"
+        ):
             identity_resolution = ""
+        raw_targets = data.get("targets") if isinstance(data.get("targets"), (list, tuple)) else ()
+        targets = tuple(
+            target
+            for index, raw_target in enumerate(raw_targets, start=1)
+            if isinstance(raw_target, Mapping)
+            and (
+                target := QueryTarget.from_mapping(
+                    raw_target,
+                    raw_query=query,
+                    fallback_id=f"target-{index}",
+                )
+            ) is not None
+        )
+        if not targets and (raw_component_span or component):
+            legacy_target = QueryTarget.from_mapping(
+                {
+                    "target_id": "target-1",
+                    "raw_component_span": raw_component_span,
+                    "component": component,
+                    "part_spec": part_spec,
+                    "assembly_context": data.get("assembly_context"),
+                    "action": data.get("action"),
+                    "orientation": orientation,
+                    "requested_fields": data.get("requested_fields"),
+                },
+                raw_query=query,
+                fallback_id="target-1",
+            )
+            if legacy_target is not None:
+                targets = (legacy_target,)
+        requested_fields = _tuple_texts(data.get("requested_fields"))
+        if not requested_fields:
+            requested_fields = tuple(dict.fromkeys(
+                field
+                for target in targets
+                for field in target.requested_fields
+            ))
         return cls(
             raw_query=query,
             intent=_text(data.get("intent")),
@@ -136,18 +264,27 @@ class QueryContract:
             carrier_or_application=_text(data.get("carrier_or_application")),
             manufacturer=_text(data.get("manufacturer")),
             model=_text(data.get("model")),
-            component=_text(data.get("component")),
+            component=_text(data.get("component")) or (targets[0].component if targets else ""),
+            raw_component_span=raw_component_span or (targets[0].raw_component_span if len(targets) == 1 else ""),
+            part_spec=part_spec or (targets[0].part_spec if len(targets) == 1 else ""),
+            assembly_context=_text(data.get("assembly_context")) or (
+                targets[0].assembly_context if len(targets) == 1 else ""
+            ),
             action=_text(data.get("action")),
             orientation=_text(data.get("orientation")),
             risk_level=_text(data.get("risk_level")),
             identity_resolution=identity_resolution,
+            requested_fields=requested_fields,
+            symptoms=_tuple_texts(data.get("symptoms")),
+            operating_conditions=_tuple_texts(data.get("operating_conditions")),
+            targets=targets,
         )
 
     @property
     def has_explicit_device(self) -> bool:
         return bool(self.raw_device_span)
 
-    def to_dict(self) -> dict[str, str]:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "raw_query": self.raw_query,
             "intent": self.intent,
@@ -159,10 +296,17 @@ class QueryContract:
             "manufacturer": self.manufacturer,
             "model": self.model,
             "component": self.component,
+            "raw_component_span": self.raw_component_span,
+            "part_spec": self.part_spec,
+            "assembly_context": self.assembly_context,
             "action": self.action,
             "orientation": self.orientation,
             "risk_level": self.risk_level,
             "identity_resolution": self.identity_resolution,
+            "requested_fields": list(self.requested_fields),
+            "symptoms": list(self.symptoms),
+            "operating_conditions": list(self.operating_conditions),
+            "targets": [target.to_dict() for target in self.targets],
         }
 
 
@@ -244,6 +388,97 @@ class DeviceCatalog:
 
     def match(self, query: QueryContract) -> tuple[IdentityComparison, ...]:
         return tuple(compare_query_to_document(query, document) for document in self.documents)
+
+
+def infer_query_identity_from_catalog(
+    query: QueryContract,
+    catalog: DeviceCatalog,
+) -> QueryContract:
+    """Bind a unique complete imported identity that is literally present in the query.
+
+    This is a data-driven recovery for an intent model that omitted ``raw_device_span``.
+    Only full names or aliases from ready manifests participate; generic category heads
+    are deliberately excluded, and multiple matching documents remain unresolved.
+    """
+    if query.has_explicit_device or not query.raw_query or not catalog.documents:
+        return query
+
+    normalized_query = _normalized(query.raw_query)
+    matches: list[tuple[DocumentIdentity, str]] = []
+    for document in catalog.documents:
+        names = (document.device_name, *document.aliases)
+        for name in names:
+            normalized_name = _normalized(name)
+            if len(normalized_name) >= 2 and normalized_name in normalized_query:
+                matches.append((document, name))
+                break
+
+    matched_documents = {document.document_id: document for document, _name in matches}
+    if len(matched_documents) != 1:
+        return query
+
+    document = next(iter(matched_documents.values()))
+    matched_name = max(
+        (name for matched_document, name in matches if matched_document.document_id == document.document_id),
+        key=lambda value: len(_normalized(value)),
+    )
+    payload = query.to_dict()
+    payload.update({
+        "raw_device_span": matched_name,
+        "device_name": document.device_name,
+        "device_category": document.device_category,
+        "carrier_or_application": document.carrier_or_application,
+        "manufacturer": document.manufacturer,
+        "model": document.model,
+        "identity_resolution": "catalog_exact",
+    })
+    return QueryContract.from_mapping(payload, raw_query=query.raw_query)
+
+
+def reconcile_query_device_span(
+    query: QueryContract,
+    catalog: DeviceCatalog,
+) -> QueryContract:
+    """用动态文档目录纠正“设备跨度吞入部件跨度”的模型抽取误差。
+
+    只有剥离后的跨度增加了真实目录匹配数时才采用，因而不会形成静态设备白名单。
+    """
+    device_span = _text(query.raw_device_span)
+    component_span = _text(query.raw_component_span or query.component)
+    if not device_span or not component_span:
+        return query
+    if not device_span.casefold().endswith(component_span.casefold()):
+        return query
+    prefix = device_span[: len(device_span) - len(component_span)].strip(" \t-_/、，,")
+    if not prefix or _normalized(prefix) == _normalized(device_span):
+        return query
+
+    original_document_ids = {
+        comparison.document.document_id
+        for comparison in catalog.match(query)
+        if comparison.relation == MATCHED
+    }
+    payload = query.to_dict()
+    payload["raw_device_span"] = prefix
+    payload["device_name"] = prefix
+    candidate = QueryContract.from_mapping(payload, raw_query=query.raw_query)
+    candidate_document_ids = {
+        comparison.document.document_id
+        for comparison in catalog.match(candidate)
+        if comparison.relation == MATCHED
+    }
+    prefix_is_imported_identity = any(
+        _normalized(prefix) in {
+            _normalized(document.device_name),
+            *(_normalized(alias) for alias in document.aliases),
+        }
+        for document in catalog.documents
+    )
+    return candidate if (
+        candidate_document_ids
+        and prefix_is_imported_identity
+        and candidate_document_ids.issuperset(original_document_ids)
+    ) else query
 
 
 def document_identity_heads(document: DocumentIdentity) -> tuple[str, ...]:
