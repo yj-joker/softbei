@@ -83,6 +83,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     private final WebClient webClient;
     private final ExpirationService expirationService;
     private final TaskCompletionTransitionService completionTransitionService;
+    private final TaskEvidenceBundleService taskEvidenceBundleService;
     @org.springframework.beans.factory.annotation.Autowired
     private TaskGraphExtractionCandidateMapper taskCandidateMapper;
     @org.springframework.beans.factory.annotation.Autowired
@@ -650,7 +651,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         task.setResolutionStatus(dto.getResolutionStatus()).setFinalFaultCause(dto.getFinalFaultCause())
                 .setEffectiveMeasure(dto.getEffectiveMeasure()).setCompletionSummary(dto.getCompletionSummary())
                 .setResolvedAt(LocalDateTime.now()).setEvidenceVersion(task.getEvidenceVersion() == null ? 1 : task.getEvidenceVersion() + 1)
-                .setEvidenceBundle(new TaskEvidenceBundleService().build(task, steps)).setExtractionStatus("PENDING")
+                .setEvidenceBundle(taskEvidenceBundleService.build(task, steps)).setExtractionStatus("PENDING")
                 .setExtractionError(null).setExtractionRequestId("task-" + task.getId() + "-v" + (task.getEvidenceVersion() == null ? 1 : task.getEvidenceVersion()) + "-a1")
                 .setExtractionRequestedAt(LocalDateTime.now()).setStatus("CLOSED").setUpdatedAt(LocalDateTime.now());
         MaintenanceTask update = new MaintenanceTask()
@@ -825,6 +826,8 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         List<Map<String, Object>> components = (List<Map<String, Object>>) graphData.getOrDefault("components", List.of());
         List<Map<String, Object>> faults = (List<Map<String, Object>>) graphData.getOrDefault("faults", List.of());
         List<Map<String, Object>> solutions = (List<Map<String, Object>>) graphData.getOrDefault("solutions", List.of());
+        Long sourceCandidateId = graphData.get("sourceCandidateId") instanceof Number number ? number.longValue() : null;
+        Integer sourceEvidenceVersion = graphData.get("evidenceVersion") instanceof Number number ? number.intValue() : null;
 
         // component name → neo4j id 映射
         Map<String, String> componentIdMap = new HashMap<>();
@@ -847,7 +850,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             String severity = (String) fault.getOrDefault("severity", "一般");
             String relatedComp = (String) fault.get("relatedComponent");
 
-            String faultId = createFaultNode(faultName, severity, task.getFaultDescription());
+            String faultId = createFaultNode(faultName, severity, task.getFaultDescription(), taskId, sourceCandidateId, sourceEvidenceVersion);
             faultIdMap.put(faultName, faultId);
 
             // 关联 Component → Fault (CAUSES)，并把部件-故障关系描述写到边上
@@ -872,7 +875,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
             String summary = (String) sol.getOrDefault("summary", "");
             String relatedFault = (String) sol.get("relatedFault");
 
-            String solId = createSolutionNode(solTitle, summary, procedureId, taskId);
+            String solId = createSolutionNode(solTitle, summary, procedureId, taskId, sourceCandidateId, sourceEvidenceVersion);
             newSolIdList.add(solId);
 
             // 关联 Fault → Solution (HAS_SOLUTION)
@@ -970,27 +973,37 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         .one()
         .orElseThrow(() -> new RuntimeException("创建部件节点失败: " + compName));
     }
-    private String createFaultNode(String name, String severity, String description) {
+    private String createFaultNode(String name, String severity, String description, Long sourceTaskId,
+                                   Long sourceCandidateId, Integer evidenceVersion) {
         return neo4jClient.query(
-                "CREATE (f:Fault {id: randomUUID(), name: $name, severity: $severity, description: $description, created_at: datetime()}) " +
+                "CREATE (f:Fault {id: randomUUID(), name: $name, severity: $severity, description: $description, " +
+                        "source_task_id: $sourceTaskId, source_candidate_id: $sourceCandidateId, " +
+                        "evidence_version: $evidenceVersion, created_at: datetime()}) " +
                 "RETURN f.id AS id"
         ).bind(name).to("name")
         .bind(severity).to("severity")
         .bind(description).to("description")
+        .bind(sourceTaskId).to("sourceTaskId")
+        .bind(sourceCandidateId).to("sourceCandidateId")
+        .bind(evidenceVersion).to("evidenceVersion")
         .fetchAs(String.class)
         .one()
         .orElseThrow(() -> new RuntimeException("创建故障节点失败: " + name));
     }
 
-    private String createSolutionNode(String title, String summary, Long procedureId, Long sourceTaskId) {
+    private String createSolutionNode(String title, String summary, Long procedureId, Long sourceTaskId,
+                                      Long sourceCandidateId, Integer evidenceVersion) {
         return neo4jClient.query(
                 "CREATE (s:Solution {id: randomUUID(), title: $title, description: $summary, verified: true, " +
-                "procedure_id: $procedureId, source_task_id: $sourceTaskId, created_at: datetime()}) " +
+                "procedure_id: $procedureId, source_task_id: $sourceTaskId, source_candidate_id: $sourceCandidateId, " +
+                        "evidence_version: $evidenceVersion, created_at: datetime()}) " +
                 "RETURN s.id AS id"
         ).bind(title).to("title")
         .bind(summary).to("summary")
         .bind(procedureId).to("procedureId")
         .bind(sourceTaskId).to("sourceTaskId")
+        .bind(sourceCandidateId).to("sourceCandidateId")
+        .bind(evidenceVersion).to("evidenceVersion")
         .fetchAs(String.class)
         .one()
         .orElseThrow(() -> new RuntimeException("创建解决方案节点失败: " + title));

@@ -7,6 +7,11 @@ export function searchDevices(keyword = '', limit = 30) {
   return request({ url: '/weixiu/device/search', method: 'GET', params: { keyword, limit } })
 }
 
+/** 按来源任务加载本次沉淀的精确子图（仅管理员）。 */
+export function getTaskSourceGraph(taskId) {
+  return request({ url: `/weixiu/graph/by-source-task/${taskId}`, method: 'GET', throwOnError: true })
+}
+
 /** 设备概览（含部件数 / 故障数） */
 
 // 注：后端这三个分页查询是「0 基页码」，且 page/size 不可为 null（否则 NPE），
