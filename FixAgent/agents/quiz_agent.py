@@ -12,6 +12,7 @@
 import asyncio
 import json
 import logging
+import math
 import re
 from typing import List, Dict, Any, Optional
 
@@ -43,6 +44,7 @@ QUIZ_GEN_PROMPT = """你是设备检修知识出题专家。根据给定主题�
 5. 多选题 correct_answer 用逗号分隔且升序，如 "A,C"。
 6. 每题给出 explanation（解析）。
 7. **题干必须是完整、自然、可独立作答的考题**，直接描述设备/故障/操作情景。**严禁在题干或解析里出现"根据图谱证据链""根据证据链""根据现有证据""根据参考资料/资料""根据履历/知识库"等指向出题依据或资料来源的措辞**——参考资料只是你内部的出题依据，绝不能泄漏进题面或解析。解析就事论事讲清为什么对/错即可，不要提"图谱/证据链/路径"等内部术语。
+8. 用户请求 N 道题时尽量返回 N 道，题目之间不得重复；每道题仍必须满足以上来源和格式要求。
 
 ## 输出 JSON（严格）
 {{
@@ -68,7 +70,11 @@ class QuizAgent:
 
     async def generate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
-            target = int(payload.get("targetCount") or 5)
+            try:
+                target = int(payload.get("targetCount") or 5)
+            except (TypeError, ValueError):
+                target = 5
+            target = max(1, target)
             portrait = payload.get("portrait") or []
             mastery = payload.get("mastery") or []
             task_history = payload.get("taskHistory") or []
@@ -79,33 +85,63 @@ class QuizAgent:
             if not topics:
                 return {"success": False, "error": "无法从画像规划出题主题"}
 
-            # ② + ③ 逐主题检索 + 出题（并发执行，检索门控不变）
-            #    各主题相互独立，用 gather 并发；信号量限流，避免一次性打爆 LLM/检索服务。
+            # ② 先完成检索门控，再按有效主题分配题数。
+            #    之前每个主题固定只请求 1 题，导致只有两个有资料的主题时最多返回 2 题。
             sem = asyncio.Semaphore(6)
 
-            async def _one_topic(t: dict) -> List[dict]:
+            async def _collect_topic(t: dict):
+                if not isinstance(t, dict):
+                    return None
                 topic = (t.get("topic") or "").strip()
                 if not topic:
-                    return []
-                async with sem:
-                    evidence = await self._collect_evidence(topic, task_history)
+                    return None
+                try:
+                    async with sem:
+                        evidence = await self._collect_evidence(topic, task_history)
                     if not evidence.get("has_source"):
                         logger.info("[QuizAgent] 主题无源，跳过: %s", topic)
-                        return []
-                    return await self._gen_questions(topic, evidence, want=1)
+                        return None
+                    return topic, evidence
+                except Exception as e:
+                    logger.warning("[QuizAgent] 主题检索异常 topic=%s: %s", topic, e)
+                    return None
 
-            results = await asyncio.gather(
-                *[_one_topic(t) for t in topics], return_exceptions=True
-            )
-            all_questions: List[dict] = []
-            for r in results:
-                if isinstance(r, Exception):
-                    logger.warning("[QuizAgent] 主题处理异常: %s", r)
-                    continue
-                all_questions.extend(r)
+            topic_results = await asyncio.gather(*(_collect_topic(t) for t in topics))
+            source_topics = [r for r in topic_results if r is not None]
+            if not source_topics:
+                return {"success": False, "error": "知识库内容不足，未能生成可溯源题目"}
+
+            async def _generate_for_topics(want: int) -> List[dict]:
+                async def _one_topic(item) -> List[dict]:
+                    topic, evidence = item
+                    try:
+                        async with sem:
+                            return await self._gen_questions(topic, evidence, want=want)
+                    except Exception as e:
+                        logger.warning("[QuizAgent] 主题出题异常 topic=%s: %s", topic, e)
+                        return []
+
+                results = await asyncio.gather(*(_one_topic(item) for item in source_topics))
+                questions: List[dict] = []
+                for result in results:
+                    if isinstance(result, list):
+                        questions.extend(result)
+                return questions
+
+            # 题目均匀分摊到有资料的主题；主题少时单主题请求多题，确保目标数量不再受主题数限制。
+            per_topic = max(1, math.ceil(target / len(source_topics)))
+            all_questions = await _generate_for_topics(per_topic)
 
             # ④ 校验
-            valid = [q for q in all_questions if self._valid(q)]
+            valid = self._unique_valid(all_questions)
+            # 模型可能少返回或返回重复题，最多补两轮，直到达到目标或资料确实不足。
+            retry_round = 0
+            while len(valid) < target and retry_round < 2:
+                retry_round += 1
+                valid.extend(self._unique_valid(
+                    await _generate_for_topics(target - len(valid)),
+                    existing=valid,
+                ))
             if not valid:
                 return {"success": False, "error": "知识库内容不足，未能生成可溯源题目"}
             return {"success": True, "questions": valid[:target]}
@@ -180,6 +216,8 @@ class QuizAgent:
 
     @staticmethod
     def _valid(q: dict) -> bool:
+        if not isinstance(q, dict):
+            return False
         if not q.get("stem") or not q.get("correct_answer"):
             return False
         if not q.get("sources"):
@@ -188,6 +226,21 @@ class QuizAgent:
         keys = {str(o.get("key", "")).strip().upper() for o in opts}
         ans = {a.strip().upper() for a in str(q["correct_answer"]).split(",") if a.strip()}
         return bool(ans) and ans.issubset(keys)
+
+    @classmethod
+    def _unique_valid(cls, questions: List[dict], existing: Optional[List[dict]] = None) -> List[dict]:
+        """保留可溯源且题干不重复的题，避免补题把同一道题重复落库。"""
+        result = list(existing or [])
+        seen = {str(q.get("stem", "")).strip() for q in result if isinstance(q, dict)}
+        for q in questions or []:
+            if not cls._valid(q):
+                continue
+            stem = str(q.get("stem", "")).strip()
+            if not stem or stem in seen:
+                continue
+            seen.add(stem)
+            result.append(q)
+        return result[len(existing or []):]
 
     @staticmethod
     def _loads(content: Optional[str]) -> Optional[dict]:
