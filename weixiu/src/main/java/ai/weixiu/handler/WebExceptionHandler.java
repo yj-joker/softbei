@@ -7,12 +7,19 @@ import ai.weixiu.pojo.Result;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.bind.MethodArgumentNotValidException;
+import org.springframework.web.bind.MissingServletRequestParameterException;
 
 
 @RestControllerAdvice
 @Slf4j
 public class WebExceptionHandler {
     private static final String SERVER_ERROR_MESSAGE = "\u670d\u52a1\u6682\u65f6\u4e0d\u53ef\u7528\uff0c\u8bf7\u7a0d\u540e\u518d\u8bd5";
+
+    @ExceptionHandler({MethodArgumentNotValidException.class, MissingServletRequestParameterException.class})
+    public Result handleValidation(Exception e) {
+        return Result.error("400", "请求参数校验失败");
+    }
 
     @ExceptionHandler(NullException.class)
     public Result handler(NullException e) {

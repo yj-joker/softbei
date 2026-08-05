@@ -17,6 +17,7 @@ import ai.weixiu.pojo.dto.TaskVoiceTurnDTO;
 import ai.weixiu.pojo.dto.VoiceTaskAgentDecision;
 import ai.weixiu.pojo.vo.TaskStepRecordVO;
 import ai.weixiu.pojo.vo.TaskVoiceTurnVO;
+import ai.weixiu.service.TaskCompletionTransitionService;
 import ai.weixiu.service.MaintenanceTaskService;
 import ai.weixiu.service.MaintenanceTaskVoiceService;
 import ai.weixiu.service.MemoryPreferenceService;
@@ -54,6 +55,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
     private final MaintenanceVoiceEventMapper voiceEventMapper;
     private final UserMapper userMapper;
     private final MaintenanceTaskService taskService;
+    private final TaskCompletionTransitionService completionTransitionService;
     private final MemoryRecallService memoryRecallService;
     private final MemoryPreferenceService memoryPreferenceService;
     private final WebClient webClient;
@@ -216,6 +218,13 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         if (step == null) {
             return ExecutionOutcome.rejected(currentStepId, "TARGET_STEP_NOT_FOUND", "没有找到要完成的步骤", "我没确定你要完成哪一步，请说清楚步骤序号或步骤名称。");
         }
+        TaskCompletionTransitionService.LockedTaskAndSteps locked =
+                completionTransitionService.lockTaskAndSteps(task.getId());
+        task = locked.task();
+        step = locked.stepById(step.getId());
+        if (task == null || step == null) {
+            return ExecutionOutcome.rejected(currentStepId, "TARGET_STEP_NOT_FOUND", "没有找到要完成的步骤", "我没确定你要完成哪一步，请说清楚步骤序号或步骤名称。");
+        }
         // 需要确认且未确认 → 挂起，并强制覆盖 AI 回复，避免 AI 说"进入下一步了"但实际未执行
         if (Boolean.TRUE.equals(decision.getNeedsConfirmation())
                 && !Boolean.TRUE.equals(dto.getConfirmed())
@@ -272,7 +281,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         step.setCompletedAt(LocalDateTime.now());
         stepMapper.updateById(step);
 
-        checkAllStepsCompleted(task);
+        completionTransitionService.advanceIfAllStepsDone(task.getId());
         TaskStepRecord next = nextIncompleteStep(loadSteps(task.getId()), step.getId());
         Long newStepId = next != null ? next.getId() : step.getId();
         return ExecutionOutcome.done(newStepId, overrideFlag ? "FORCE_COMPLETED" : "COMPLETED",
@@ -317,10 +326,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
             return ExecutionOutcome.rejected(step.getId(), "UNDO_NOT_ALLOWED",
                     "只有 COMPLETED 状态支持语音撤销", "这一步当前不是普通已完成状态，我不能直接撤销。");
         }
-        step.setStatus("PENDING");
-        step.setCompletedAt(null);
-        step.setNote(appendNote(step.getNote(), "[语音撤销完成状态]"));
-        stepMapper.updateById(step);
+        taskService.reopenStep(step.getTaskId(), step.getId(), "语音撤销完成状态");
         return ExecutionOutcome.done(step.getId(), "COMPLETION_UNDONE", "已撤销步骤完成状态", false);
     }
 
@@ -650,17 +656,6 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
         User user = userMapper.selectById(userId);
         if (user != null && Objects.equals(user.getType(), 1)) return;
         throw new ForbiddenException("无权操作该检修任务");
-    }
-
-    private void checkAllStepsCompleted(MaintenanceTask task) {
-        Long count = stepMapper.selectCount(new LambdaQueryWrapper<TaskStepRecord>()
-                .eq(TaskStepRecord::getTaskId, task.getId())
-                .notIn(TaskStepRecord::getStatus, "COMPLETED", "AI_PASSED", "SKIPPED"));
-        if (count == 0) {
-            task.setStatus("CLOSED");
-            task.setUpdatedAt(LocalDateTime.now());
-            taskMapper.updateById(task);
-        }
     }
 
     private boolean missingRequiredEvidence(TaskStepRecord step, TaskVoiceTurnDTO dto) {

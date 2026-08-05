@@ -7,6 +7,7 @@ import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.MaintenanceTaskDTO;
 import ai.weixiu.pojo.dto.StepExecuteDTO;
+import ai.weixiu.pojo.dto.TaskResolutionDTO;
 import ai.weixiu.pojo.query.MaintenanceTaskQuery;
 import ai.weixiu.pojo.vo.MaintenanceTaskVO;
 import ai.weixiu.pojo.vo.TaskStepRecordVO;
@@ -88,7 +89,14 @@ public class MaintenanceTaskController {
         return Result.success(vo);
     }
 
-    /** 查询任务详情（含步骤列表） */
+    @PostMapping("/{taskId}/resolution")
+    public Result<MaintenanceTaskVO> confirmResolution(@PathVariable Long taskId,
+                                                        @RequestBody TaskResolutionDTO dto) {
+        verifyAccess(taskId);
+        return Result.success(taskService.confirmResolution(taskId, dto));
+    }
+
+
     @PostMapping("/{taskId}/steps/{stepId}/reopen")
     public Result<TaskStepRecordVO> reopenStep(
             @PathVariable Long taskId,

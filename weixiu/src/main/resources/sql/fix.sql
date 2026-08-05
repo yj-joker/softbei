@@ -4,6 +4,7 @@
 -- =============================================
 
 CREATE DATABASE IF NOT EXISTS fix DEFAULT CHARSET = utf8mb4;
+USE fix;
 
 -- =============================================
 -- 1. 用户表
@@ -63,7 +64,6 @@ CREATE TABLE IF NOT EXISTS `ai_message` (
     INDEX `idx_session_consolidated` (`ai_session_id`, `consolidated`),
     INDEX `idx_question_message`     (`question_message_id`)
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = 'AI消息历史表';
-
 
 -- =============================================
 -- 4. 记忆系统 - 事实记忆表
@@ -151,7 +151,19 @@ CREATE TABLE IF NOT EXISTS `maintenance_task` (
     `report_images`       JSON         DEFAULT NULL COMMENT '报修图片URL列表',
     `procedure_id`        BIGINT       DEFAULT NULL COMMENT '关联的标准规程ID（从规程创建时不为空）',
     `maintenance_level`   VARCHAR(20)  DEFAULT NULL COMMENT '检修等级: ROUTINE=日常保养, MINOR=小修, MAJOR=大修',
-    `status`              VARCHAR(30)  NOT NULL DEFAULT 'CREATED' COMMENT '任务状态: CREATED=已创建, GENERATING=步骤生成中, GENERATED=步骤已生成, GENERATE_FAILED=生成失败, EXECUTING=执行中, CLOSED=已关闭',
+    `status`              VARCHAR(30)  NOT NULL DEFAULT 'CREATED' COMMENT '任务状态: CREATED=已创建, GENERATING=步骤生成中, GENERATED=步骤已生成, GENERATE_FAILED=生成失败, EXECUTING=执行中, RESOLUTION_PENDING=待确认维修结果, CLOSED=已关闭',
+    `resolution_status`   VARCHAR(32)  DEFAULT NULL COMMENT '最终维修结果: RESOLVED/PARTIALLY_RESOLVED/UNRESOLVED',
+    `final_fault_cause`   TEXT         NULL COMMENT '最终故障原因',
+    `effective_measure`   TEXT         NULL COMMENT '有效措施',
+    `completion_summary`   TEXT         NULL COMMENT '完工总结',
+    `resolved_at`          DATETIME     NULL COMMENT '结果确认时间',
+    `evidence_bundle`     JSON         NULL COMMENT '最终执行证据快照',
+    `evidence_version`    INT          NOT NULL DEFAULT 0 COMMENT '证据快照版本',
+    `extraction_status`   VARCHAR(24)  NOT NULL DEFAULT 'NOT_REQUESTED' COMMENT '抽取状态',
+    `extraction_error`    TEXT         NULL COMMENT '抽取错误',
+    `extraction_request_id` VARCHAR(128) NULL COMMENT '抽取请求ID',
+    `extraction_requested_at` DATETIME  NULL COMMENT '抽取请求时间',
+    `extraction_completed_at` DATETIME  NULL COMMENT '抽取完成时间',
     `generate_mode`       VARCHAR(20)  DEFAULT NULL COMMENT '生成模式: PROCEDURE_COPY=直接拷贝规程, AI_ADAPT=AI基于规程微调, AI_GENERATE=AI从零生成',
     `step_count`          INT          NOT NULL DEFAULT 0 COMMENT '步骤总数（冗余字段）',
     `reporter_id`         BIGINT       DEFAULT NULL COMMENT '报修人ID',
@@ -218,9 +230,38 @@ CREATE TABLE IF NOT EXISTS `maintenance_task_focus` (
 ) ENGINE = InnoDB DEFAULT CHARSET = utf8mb4 COMMENT = '检修任务当前聚焦步骤表';
 
 
+
 -- =============================================
--- 11. 标准作业规程表
--- =============================================
+CREATE TABLE IF NOT EXISTS `task_graph_extraction_candidate` (
+    `id` BIGINT NOT NULL COMMENT '主键',
+    `task_id` BIGINT NOT NULL,
+    `evidence_version` INT NOT NULL,
+    `request_id` VARCHAR(128) NOT NULL,
+    `candidate_json` JSON NULL,
+    `evidence_json` JSON NULL,
+    `warnings` JSON NULL,
+    `model_name` VARCHAR(128) NULL,
+    `model_request_id` VARCHAR(128) NULL,
+    `attempt` INT NOT NULL DEFAULT 1,
+    `extraction_status` VARCHAR(24) NOT NULL,
+    `review_status` VARCHAR(24) NOT NULL DEFAULT 'PENDING',
+    `reviewed_by` BIGINT NULL,
+    `review_comment` TEXT NULL,
+    `reviewed_at` DATETIME NULL,
+    `edited_by` BIGINT NULL,
+    `edited_at` DATETIME NULL,
+    `edit_comment` VARCHAR(500) NULL,
+    `row_version` INT NOT NULL DEFAULT 0,
+    `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (`id`),
+    UNIQUE KEY `uk_candidate_task_version` (`task_id`, `evidence_version`),
+    UNIQUE KEY `uk_candidate_request_id` (`request_id`),
+    KEY `idx_candidate_extraction_status` (`extraction_status`),
+    KEY `idx_candidate_review_status` (`review_status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='检修任务执行证据抽取候选';
+
+
 CREATE TABLE IF NOT EXISTS `standard_procedure` (
     `id`                BIGINT       NOT NULL COMMENT '雪花ID',
     `name`              VARCHAR(200) NOT NULL COMMENT '规程名称',

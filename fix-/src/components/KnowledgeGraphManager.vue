@@ -1,12 +1,18 @@
 <script setup>
 import { ref, reactive, shallowRef, onMounted, onBeforeUnmount } from 'vue'
+import { useRoute } from 'vue-router'
 import { Graph } from '@antv/g6'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  searchDevices, getDeviceComponents, getComponentFaults, getFaultSolutions,
+  searchDevices, getTaskSourceGraph, getDeviceComponents, getComponentFaults, getFaultSolutions,
   deviceApi, componentApi, faultApi, solutionApi, createRelation,
 } from '../api/graph'
 import { uploadImage } from '@/api/user'
+
+const route = useRoute()
+const taskContext = {
+  taskId: String(route.query.taskId || ''),
+}
 
 /* ---------- 视觉编码（与浏览页一致：浅色圆形节点） ---------- */
 const TYPE = {
@@ -261,6 +267,26 @@ async function loadDevices() {
   } catch (err) { ElMessage.error('设备检索失败：' + (err.message || '')) }
   finally { ui.loading = false }
 }
+async function loadTaskContextGraph() {
+  if (!taskContext.taskId) return loadDevices()
+  ui.loading = true
+  try {
+    clearAll()
+    const res = await getTaskSourceGraph(taskContext.taskId)
+    const nodes = Array.isArray(res?.data?.nodes) ? res.data.nodes : []
+    const edges = Array.isArray(res?.data?.edges) ? res.data.edges : []
+    if (!nodes.length) throw new Error('本次任务尚未产生可定位的图谱节点')
+    nodes.forEach((node) => addNode(node.type, node.rawId, node.label, { id: node.rawId, sourceTaskId: taskContext.taskId }))
+    edges.forEach((edge) => {
+      if (nodeMap.has(edge.source) && nodeMap.has(edge.target)) addEdge(edge.source, edge.target, edge.type)
+    })
+    syncGraph(true)
+  } catch (err) {
+    ElMessage.error('加载任务图谱失败：' + (err.message || '请求异常'))
+  } finally {
+    ui.loading = false
+  }
+}
 function fitView() { graph.value?.fitView() }
 function relayout() { graph.value?.layout() }
 function clearAll() {
@@ -416,7 +442,7 @@ function detailRows() {
   return (map[d.type] || []).filter(([, v]) => v != null && v !== '')
 }
 
-onMounted(() => { buildGraph(); loadDevices() })
+onMounted(() => { buildGraph(); loadTaskContextGraph() })
 onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 </script>
 
@@ -438,6 +464,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
       <aside class="kg-console">
         <div class="panel">
           <div class="panel-h">设备入口</div>
+          <div v-if="taskContext.taskId" class="task-context">来源任务 {{ taskContext.taskId }}</div>
           <el-input v-model="ui.deviceKw" placeholder="设备名 / 编码 / 型号（空=全部）" size="small"
                     @keyup.enter="loadDevices" clearable />
           <button class="hud-btn" :disabled="ui.loading" @click="loadDevices">检索设备</button>
@@ -619,6 +646,7 @@ onBeforeUnmount(() => { cancelAnimationFrame(raf); graph.value?.destroy() })
 .panel{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px;display:flex;flex-direction:column;gap:9px;box-shadow:var(--shadow)}
 .panel-h{font-size:12px;font-weight:700;letter-spacing:.5px}
 .panel-h::before{content:'';display:inline-block;width:3px;height:12px;background:var(--primary);border-radius:2px;margin-right:7px;vertical-align:-1px}
+.task-context{padding:8px 9px;border:1px solid var(--plaza-border);border-radius:7px;background:var(--plaza-bg-card);color:var(--plaza-text-muted);font-size:11px;line-height:1.55;overflow-wrap:anywhere}
 .ops{flex-direction:row;gap:8px}
 .hud-btn{background:var(--primary);color:#fff;border:1px solid var(--primary);border-radius:8px;padding:9px;font-weight:600;font-size:13px;letter-spacing:.5px;cursor:pointer;transition:.18s;box-shadow:0 2px 8px var(--plaza-accent-soft-strong)}
 .hud-btn:hover{background:var(--plaza-accent-hover)}

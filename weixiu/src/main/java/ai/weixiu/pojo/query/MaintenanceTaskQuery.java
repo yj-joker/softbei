@@ -8,6 +8,8 @@ import lombok.EqualsAndHashCode;
 public class MaintenanceTaskQuery extends PageQuery {
     /** 按状态过滤 */
     private String status;
+    private String taskNumber;
+    private String resolutionStatus;
     /** 按设备名称模糊搜索 */
     private String deviceName;
     /** 按规程沉淀状态过滤: PENDING / PROMOTED / SKIPPED */
