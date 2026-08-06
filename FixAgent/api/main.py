@@ -9234,11 +9234,12 @@ async def manual_upgrade_sync(request: Request):
         device_type=device_type,
         manual_id=manual_id,
     )
+    sync_success = not bool(summary.errors)
 
     return {
-        "success": True,
-        "message": "操作成功",
-        "code": 200,
+        "success": sync_success,
+        "message": "操作成功" if sync_success else "同步存在错误，旧版本资源保留",
+        "code": 200 if sync_success else 500,
         "data": {
             "deleted_count": summary.deleted_count,
             "deprecated_count": summary.deprecated_count,

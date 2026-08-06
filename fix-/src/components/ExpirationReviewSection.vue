@@ -8,6 +8,9 @@ import { getReviewList, approveReview, rejectReview } from '@/api/expiration'
 const TRIGGER_MAP = {
   task_promotion: { label: '任务沉淀', color: '#5e8c3e', bg: '#f1f5e6' },
   manual_upgrade: { label: '手册更新', color: '#4c7db8', bg: '#eaf1f9' },
+  manual_deleted_chunk: { label: '手册删除段落', color: '#4c7db8', bg: '#eaf1f9' },
+  manual_modified_chunk: { label: '手册修改段落', color: '#4c7db8', bg: '#eaf1f9' },
+  manual_added_chunk_replace: { label: '手册替换方案', color: '#4c7db8', bg: '#eaf1f9' },
 }
 
 /* ========== 判定结果标签 ========== */

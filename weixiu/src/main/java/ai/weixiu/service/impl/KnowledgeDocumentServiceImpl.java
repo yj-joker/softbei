@@ -238,47 +238,38 @@ public class KnowledgeDocumentServiceImpl
                 TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
                     @Override
                     public void afterCommit() {
-                        // 1. 清理旧版本资源（仅升级替换场景，首次导入跳过）
-                        if (finalOldDocumentId != null) {
-                            try {
-                                knowledgeImportProducer.sendDeleteTask(finalOldDocumentId);
-                                log.info("已发送旧版本向量删除任务: oldDocumentId={}", finalOldDocumentId);
-                            } catch (Exception e) {
-                                log.warn("发送旧版本向量删除消息失败: oldDocumentId={}", finalOldDocumentId, e);
-                            }
-                        }
-                        if (finalOldMinioObjectName != null) {
-                            try {
-                                mioIOUpLoadService.delete(finalOldMinioObjectName, BucketEnum.PRIVATE);
-                                log.info("已删除旧版本 MinIO 文件: {}", finalOldMinioObjectName);
-                            } catch (Exception e) {
-                                log.warn("删除旧版本 MinIO 文件失败: {}", finalOldMinioObjectName, e);
-                            }
-                        }
-
                         // 2. 触发图谱知识过期判定 + chunk 级别 KG 同步
                         // finalOldDocumentId 已有：用于 chunk diff；无旧版本时只做文档级过期判定
                         try {
+                            String deviceHint = resolveDeviceHint(doc.getManualId());
                             expirationService.checkManualUpgradeAsync(
                                     doc.getManualId(),
                                     documentId,
-                                    finalOldDocumentId,   // 可为 null，无旧版本时只做文档级过期判定
+                                    finalOldDocumentId,
                                     manual.getManualName(),
-                                    "");
+                                    deviceHint,
+                                    () -> {
+                                        if (finalOldDocumentId == null) return;
+                                        try {
+                                            knowledgeImportProducer.sendDeleteTask(finalOldDocumentId);
+                                            log.info("已发送旧版本向量删除任务: oldDocumentId={}", finalOldDocumentId);
+                                        } catch (Exception e) {
+                                            log.warn("发送旧版本向量删除消息失败: oldDocumentId={}", finalOldDocumentId, e);
+                                        }
+                                        if (finalOldMinioObjectName != null) {
+                                            try {
+                                                mioIOUpLoadService.delete(finalOldMinioObjectName, BucketEnum.PRIVATE);
+                                                log.info("已删除旧版本 MinIO 文件: {}", finalOldMinioObjectName);
+                                            } catch (Exception e) {
+                                                log.warn("删除旧版本 MinIO 文件失败: {}", finalOldMinioObjectName, e);
+                                            }
+                                        }
+                                    });
                         } catch (Exception e) {
                             log.warn("触发图谱过期判定失败（非阻塞）: manualId={}, err={}",
                                     doc.getManualId(), e.getMessage());
                         }
 
-                        // 3. 触发 KG 实体抽取（手册→图谱节点）——每次导入都执行
-                        // 用户在上传时选择的"适用设备"作为图谱设备锚点：抽取锚定到该设备，
-                        // 同设备的多本手册会 MERGE 复用节点（用户主动决定关联，而非 LLM 自行识别导致误合并）。
-                        try {
-                            String deviceHint = resolveDeviceHint(doc.getManualId());
-                            expirationService.triggerKGExtractAsync(documentId, doc.getManualId(), deviceHint, manual.getManualName());
-                        } catch (Exception e) {
-                            log.warn("触发KG抽取失败（非阻塞）: manualId={}, err={}", doc.getManualId(), e.getMessage());
-                        }
                     }
                 });
             }

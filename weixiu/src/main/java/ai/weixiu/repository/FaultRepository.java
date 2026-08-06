@@ -18,7 +18,8 @@ public interface FaultRepository extends Neo4jRepository<Fault, String> {
     * */
     @Query("""
         MATCH (f:Fault {id: $faultId})-[:HAS_SOLUTION]->(s:Solution)
-        WHERE $solutionTitle IS NULL OR $solutionTitle = '' OR s.title CONTAINS $solutionTitle
+        WHERE (s.status IS NULL OR s.status <> 'deprecated')
+          AND ($solutionTitle IS NULL OR $solutionTitle = '' OR s.title CONTAINS $solutionTitle)
         RETURN s.id AS id,
                s.code AS code,
                s.title AS title,
@@ -44,7 +45,8 @@ public interface FaultRepository extends Neo4jRepository<Fault, String> {
     * */
     @Query("""
         MATCH (f:Fault {id: $faultId})-[:HAS_SOLUTION]->(s:Solution)
-        WHERE $solutionTitle IS NULL OR $solutionTitle = '' OR s.title CONTAINS $solutionTitle
+        WHERE (s.status IS NULL OR s.status <> 'deprecated')
+          AND ($solutionTitle IS NULL OR $solutionTitle = '' OR s.title CONTAINS $solutionTitle)
         RETURN count(s) AS total
         """)
     Long getSolutionTotal(
@@ -57,7 +59,7 @@ public interface FaultRepository extends Neo4jRepository<Fault, String> {
     @Query(""" 
 CALL db.index.vector.queryNodes('fault_embedding_index', $limit, $embedding)
 YIELD node AS f, score
-WHERE score >= $minScore
+WHERE score >= $minScore AND (f.status IS NULL OR f.status <> 'deprecated')
 RETURN f.id AS id,
        f.name AS name,
        f.description AS description,
@@ -78,7 +80,7 @@ ORDER BY score DESC
     @Query("""
         CALL db.index.vector.queryNodes('fault_multimodal_index', $limit, $embedding)
         YIELD node AS f, score
-        WHERE score >= $minScore
+        WHERE score >= $minScore AND (f.status IS NULL OR f.status <> 'deprecated')
         RETURN f.id AS id,
                f.name AS name,
                f.description AS description,
