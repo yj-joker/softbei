@@ -195,6 +195,23 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         );
         int limit = Math.max(1, Math.min(request.getLimit(), 50));
         double minScore = Math.max(0.0, Math.min(request.getMinScore(), 1.0));
+        boolean deviceFilterActive = hasText(contract.getDeviceIdentity());
+        List<String> deviceIds = List.of();
+        if (deviceFilterActive) {
+            try {
+                deviceIds = deviceRepository.getDevices(contract.getDeviceIdentity(), 0, limit).stream()
+                        .map(DeviceVO::getId)
+                        .filter(Objects::nonNull)
+                        .distinct()
+                        .toList();
+            } catch (Exception e) {
+                log.info("图谱候选设备范围查询不可用: {}", e.getMessage());
+                return List.of();
+            }
+            if (deviceIds.isEmpty()) {
+                return List.of();
+            }
+        }
 
         Map<String, Double> componentScores = new HashMap<>();
         Map<String, Double> faultScores = new HashMap<>();
@@ -224,6 +241,9 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         params.put("faultIds", new ArrayList<>(faultScores.keySet()));
         params.put("componentScores", componentScores);
         params.put("faultScores", faultScores);
+        params.put("deviceFilter", deviceFilterActive);
+        params.put("deviceIds", deviceIds);
+        params.put("faultRequired", "find_cause".equals(contract.getTaskAction()));
         params.put("limit", limit);
 
         List<String> matchConditions = new ArrayList<>();
@@ -248,6 +268,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 MATCH (d:Device)-[:OWNS]->(c:Component)
                 OPTIONAL MATCH (c)-[:CAUSES]->(f:Fault)
                 WHERE (%s)
+                  AND ($deviceFilter = false OR d.id IN $deviceIds)
+                  AND ($faultRequired = false OR f IS NOT NULL)
                   AND ($documentFilter = false OR coalesce(c.document_id, d.document_id, f.document_id) IN $allowedDocumentIds)
                   AND ($sectionFilter = false OR coalesce(c.section_id, f.section_id) IN $allowedSectionIds)
                   AND ($chunkFilter = false OR c.source_chunk_uid IN $allowedSourceChunkUids OR f.source_chunk_uid IN $allowedSourceChunkUids OR any(uid IN coalesce(c.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids) OR any(uid IN coalesce(f.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids))

@@ -6,6 +6,7 @@ import re
 import subprocess
 import tempfile
 import time
+from dataclasses import replace
 from collections.abc import Mapping
 from functools import partial
 from pathlib import Path
@@ -138,6 +139,7 @@ from services.clarification.state import (
     ResolvedScope,
     topic_signature_for_contract,
 )
+from services.clarification.llm_fallback import LLMClarificationService
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from tools.knowledge_inventory_tool import get_knowledge_inventory_tool
 from services.temporary_plan_service import get_temporary_plan_service
@@ -1250,6 +1252,7 @@ async def _try_response_policy_direct(request: ChatRequest, input_data: AgentInp
         mode == "MAINTENANCE_AI_FALLBACK"
         and intent.get("task_action") == "find_cause"
         and scope_decision.get("status") != OUT_OF_SCOPE
+        and not (input_data.context or {}).get("post_retrieval_fallback")
     ):
         # Diagnostic ambiguity can only be assessed after retrieval/graph
         # candidates exist.  Let the normal agent path gather that evidence;
@@ -1340,6 +1343,7 @@ async def _try_post_retrieval_ai_fallback(
         return None
 
     fallback_context = dict(input_data.context or {})
+    fallback_context["post_retrieval_fallback"] = True
     fallback_context["response_policy"] = dict(policy)
     fallback_context["scope_decision"] = (
         audited_output.metadata.get("scope_decision")
@@ -1437,7 +1441,7 @@ async def _try_route_plan_direct(request: ChatRequest, input_data: AgentInput) -
                 "topic_signature": topic_signature_for_contract(plan.query_contract)
                 or str(pending_clarification.get("topic_signature") or ""),
             },
-            route_snapshot={**plan.to_dict(), "clarification_question": execution.message},
+            route_snapshot=plan.to_dict(),
             max_rounds=int(pending_clarification.get("max_rounds") or 2),
         )
         execution.metadata["pending_clarification"] = state.to_dict()
@@ -1952,6 +1956,109 @@ def _apply_resolved_scope_authority(
     })
 
 
+def _apply_llm_clarification_constraints(
+    contract: QueryContract,
+    constraints: Mapping[str, Any] | None,
+) -> QueryContract:
+    """Merge a user-confirmed LLM option as a search hint, never as evidence scope."""
+    source = constraints if isinstance(constraints, Mapping) else {}
+    if source.get("clarification_source") != "llm_fallback":
+        return contract
+    payload = contract.to_dict()
+    component = str(source.get("component") or "").strip()
+    if component:
+        payload["component"] = component
+    for field in ("symptoms", "operating_conditions"):
+        current = payload.get(field) if isinstance(payload.get(field), list) else []
+        added = source.get(field) if isinstance(source.get(field), (list, tuple)) else []
+        payload[field] = list(dict.fromkeys(
+            str(value).strip() for value in (*current, *added) if str(value).strip()
+        ))
+    return QueryContract.from_mapping(payload, raw_query=contract.raw_query)
+
+
+def _clarified_query_text(contract: QueryContract) -> str:
+    """Expose confirmed observable details to retrieval and the final Agent turn."""
+    query = str(contract.raw_query or "").strip()
+    additions: list[str] = []
+    if contract.component and contract.component not in query:
+        additions.append(f"部件线索：{contract.component}")
+    for label, values in (
+        ("现场现象", contract.symptoms),
+        ("发生工况", contract.operating_conditions),
+    ):
+        fresh = [str(value) for value in values if str(value) and str(value) not in query]
+        if fresh:
+            additions.append(f"{label}：{'、'.join(fresh)}")
+    return f"{query}；用户已确认：{'；'.join(additions)}" if additions else query
+
+
+def _llm_clarification_round(context: Mapping[str, Any]) -> int:
+    constraints = context.get("clarification_constraints")
+    if not isinstance(constraints, Mapping):
+        return 0
+    if constraints.get("clarification_source") != "llm_fallback":
+        return 0
+    try:
+        return max(0, int(constraints.get("clarification_round") or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+async def _maybe_apply_llm_clarification(
+    plan: RoutePlan,
+    *,
+    intent_decision: IntentDecision,
+    graph_candidates: tuple,
+    context: Mapping[str, Any],
+) -> RoutePlan:
+    """Ask the LLM for one safe observable discriminator after graph miss."""
+    graph_route_is_usable = bool(
+        plan.selected_graph_candidate_id
+        or plan.graph_scope
+        or plan.action == RouteAction.CLARIFY
+    )
+    if (
+        _clarification_mode() == "off"
+        or intent_decision.intent != "fault_diagnosis"
+        or intent_decision.task_action != "find_cause"
+        or not (
+            plan.query_contract.symptoms
+            or plan.query_contract.operating_conditions
+        )
+        or plan.action not in {RouteAction.AI_FALLBACK, RouteAction.GROUNDED_RETRIEVAL}
+        or graph_route_is_usable
+    ):
+        return plan
+    previous_round = _llm_clarification_round(context)
+    if previous_round >= 2:
+        return plan
+    draft = await LLMClarificationService(get_llm_service()).build(
+        query=plan.query_contract.raw_query,
+        query_contract=plan.query_contract.to_dict(),
+        confirmed_constraints=context.get("clarification_constraints")
+        if isinstance(context.get("clarification_constraints"), Mapping)
+        else None,
+        round_count=previous_round + 1,
+    )
+    if draft is None:
+        return plan
+    return replace(
+        plan,
+        action=RouteAction.CLARIFY,
+        allowed_tools=(),
+        answer_source="llm_clarification",
+        allow_ai_fallback=False,
+        reason="llm_clarification_after_graph_miss",
+        clarification_options=draft.options,
+        clarification_kind="llm_slot_clarification",
+        clarification_question=draft.question,
+        selected_section_id="",
+        graph_scope={},
+        selected_graph_candidate_id="",
+    )
+
+
 async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     raw_message = request.message or ""
     effective_message = raw_message.strip() or IMAGE_ONLY_DEFAULT_MESSAGE
@@ -2160,6 +2267,13 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
         intent_decision.model_dump(),
         raw_query=raw_message,
     )
+    query_contract = _apply_llm_clarification_constraints(
+        query_contract,
+        context.get("clarification_constraints")
+        if isinstance(context.get("clarification_constraints"), Mapping)
+        else None,
+    )
+    effective_message = _clarified_query_text(query_contract) or effective_message
     context["query_contract"] = query_contract.to_dict()
     technical_route = intent_decision.intent not in {"chat_social", "knowledge_inventory"}
     device_catalog = DeviceCatalog(())
@@ -2279,6 +2393,12 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
         query_contract=query_contract,
         graph_candidates=graph_candidates,
     )
+    route_plan = await _maybe_apply_llm_clarification(
+        route_plan,
+        intent_decision=intent_decision,
+        graph_candidates=tuple(graph_candidates or ()),
+        context=context,
+    )
     query_contract = route_plan.query_contract
     context["query_contract"] = query_contract.to_dict()
     context["route_plan"] = route_plan.to_dict()
@@ -2348,6 +2468,14 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
         response_policy.update({
             "mode": "KNOWLEDGE_INVENTORY",
             "source_type": "inventory_tool",
+            "allow_knowledge_retrieval": False,
+            "allow_ai_fallback": False,
+            "disclaimer_required": False,
+        })
+    elif route_plan.action == RouteAction.CLARIFY:
+        response_policy.update({
+            "mode": "CLARIFICATION",
+            "source_type": route_plan.answer_source,
             "allow_knowledge_retrieval": False,
             "allow_ai_fallback": False,
             "disclaimer_required": False,

@@ -1279,7 +1279,10 @@ def test_post_retrieval_unsupported_fault_diagnosis_uses_safe_ai_fallback(monkey
         user_message=query,
         session_id=request.session_id,
         context={
-            "intent_decision": {"intent": "fault_diagnosis"},
+            "intent_decision": {
+                "intent": "fault_diagnosis",
+                "task_action": "find_cause",
+            },
             "scope_decision": {"status": "in_scope"},
             "response_policy": {
                 "mode": "PENDING_RETRIEVAL",

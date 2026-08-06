@@ -155,7 +155,16 @@ def build_graph_candidates(
         features = _texts(_value(record, "distinguishingFeatures", "distinguishing_features"))
         actions = _texts(_value(record, "verificationActions", "verification_actions"))
 
-        match_score = _float(_value(record, "retrievalScore", "retrieval_score"), 0.0)
+        match_score = _float(
+            _value(
+                record,
+                "retrievalScore",
+                "retrieval_score",
+                "graphScore",
+                "graph_score",
+            ),
+            0.0,
+        )
         if not match_score:
             # matchScore is an integer dimension count in the current Java API;
             # normalize it without treating it as a semantic confidence.

@@ -23,7 +23,7 @@ def _decision():
     )
 
 
-def test_orchestrator_emits_one_generic_clarify_action_for_multi_document_sections():
+def test_orchestrator_emits_document_clarification_for_multi_document_sections():
     refs = (
         SectionRef("sec-a", "doc-a", "离合器", "6.1 离合器"),
         SectionRef("sec-b", "doc-b", "离合器", "6.1 离合器"),
@@ -32,7 +32,7 @@ def test_orchestrator_emits_one_generic_clarify_action_for_multi_document_sectio
         query="如何安装离合器", decision=_decision(), catalog=_catalog(), section_refs=refs,
         query_contract=QueryContract.from_mapping(_decision().model_dump(), raw_query="如何安装离合器"),
     ))
-    assert plan.action is RouteAction.CLARIFY
+    assert plan.action is RouteAction.CLARIFY_DOCUMENT
     assert plan.clarification_kind == "document_selection"
     assert len(plan.clarification_options) == 2
 

@@ -140,6 +140,7 @@ def test_orchestrator_uses_graph_candidates_when_sections_are_unavailable() -> N
 
     assert plan.action == RouteAction.CLARIFY
     assert plan.clarification_kind == "graph_scope"
+    assert plan.clarification_question == "请确认当前需要检修的是哪台设备？"
     assert len(plan.clarification_options) == 2
 
 
@@ -196,4 +197,6 @@ def test_graph_candidate_preserves_section_and_provenance_status() -> None:
     assert candidate.source_chunk_uids == ("chunk-23", "chunk-24")
     assert candidate.pages == (23, 24)
     assert candidate.graph_score == 0.91
+    assert candidate.retrieval_score == 0.91
+    assert candidate.target_score == 0.91
     assert candidate.provenance_status == "complete"
