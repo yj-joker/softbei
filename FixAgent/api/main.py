@@ -408,10 +408,10 @@ app.mount(_settings.file_public_base_url, StaticFiles(directory=_settings.local_
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_settings.cors_allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Api-Token", "X-Internal-Token"],
 )
 
 
@@ -425,7 +425,10 @@ async def verify_api_token_middleware(request: Request, call_next):
     if (
         request.method == "OPTIONS"
         or path in ("/health", "/docs", "/redoc", "/openapi.json")
-        or path.startswith(_settings.file_public_base_url + "/")
+        or (
+            path.startswith(_settings.file_public_base_url + "/")
+            and path[len(_settings.file_public_base_url) + 1:].startswith(("rendered_pages/", "public/", "images/"))
+        )
     ):
         return await call_next(request)
 

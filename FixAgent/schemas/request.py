@@ -46,6 +46,7 @@ ChatRequest request = ChatRequest.builder()
 """
 
 from typing import Optional, List
+import json
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 from schemas.models import AgentMode, CaseStatus
 
@@ -67,9 +68,9 @@ class ChatRequest(BaseModel):
 
     【字段说明】
     - session_id: Java 生成，用于追踪对话历史和日志
-    - message: 用户输入（1~2000字符）
+    - message: 用户输入（最多4000字符，可在仅上传图片时为空）
     - mode: Agent 运行模式（默认 CHAT）
-    - images: 可选的故障图片 URL 列表（最多10张）
+    - images: 可选的故障图片 URL 列表（最多5张）
     - stream: 是否流式输出（默认 True）
 
     【mode 与接口的对应关系】
@@ -84,7 +85,7 @@ class ChatRequest(BaseModel):
     【images 使用场景】
     - 故障图片：用户上传设备故障照片
     - 维修前后对比：用于判断维修效果
-    - 最多10张：防止单次请求过大
+    - 最多5张：防止单次请求过大
 
     【Java 对应类】
     ```java
@@ -97,12 +98,12 @@ class ChatRequest(BaseModel):
     }
     ```
     """
-    session_id: str = Field(..., description="会话ID，用于追踪对话历史")
-    message: str = Field(default="", max_length=50000, description="用户消息（当前轮纯文本，可在仅上传图片时为空）")
+    session_id: str = Field(..., min_length=1, max_length=128, description="会话ID，用于追踪对话历史")
+    message: str = Field(default="", max_length=4000, description="用户消息（当前轮纯文本，可在仅上传图片时为空）")
     mode: AgentMode = Field(default=AgentMode.CHAT, description="运行模式")
-    images: Optional[List[str]] = Field(default=None, description="图片URL列表")
+    images: Optional[List[str]] = Field(default=None, max_length=5, description="图片URL列表")
     stream: bool = Field(default=True, description="是否启用流式输出")
-    conversation_history: Optional[List[dict]] = Field(default=None, description="多轮对话历史，格式：[{'role':'user','content':'...'},{'role':'assistant','content':'...'}]")
+    conversation_history: Optional[List[dict]] = Field(default=None, max_length=40, description="多轮对话历史，格式：[{'role':'user','content':'...'},{'role':'assistant','content':'...'}]")
     context: Optional[dict] = Field(default=None, description="结构化上下文（摘要、事实、偏好、待办）")
     device_type: Optional[str] = Field(default=None, description="检索范围限定的设备型号（会话绑定，缺省=不限定，退回全库检索）")
     document_id: Optional[str] = Field(default=None, description="检索范围限定的单本手册ID（可选，比 device_type 更严）")
@@ -110,9 +111,30 @@ class ChatRequest(BaseModel):
     @field_validator('images')
     @classmethod
     def validate_images(cls, v):
-        """校验图片数量不超过10张"""
-        if v and len(v) > 10:
-            raise ValueError("最多支持10张图片")
+        """限制图片数量和单项长度，避免请求体耗尽内存。"""
+        if v:
+            if len(v) > 5:
+                raise ValueError("最多支持5张图片")
+            if any(not isinstance(item, str) or len(item) > 2 * 1024 * 1024 for item in v):
+                raise ValueError("单张图片地址不能超过2MB")
+        return v
+
+    @field_validator('conversation_history')
+    @classmethod
+    def validate_history(cls, v):
+        if v:
+            for item in v:
+                if not isinstance(item, dict) or item.get("role") not in {"user", "assistant", "system"}:
+                    raise ValueError("conversation_history 格式不正确")
+                if len(str(item.get("content", ""))) > 4000:
+                    raise ValueError("历史消息单条不能超过4000个字符")
+        return v
+
+    @field_validator('context')
+    @classmethod
+    def validate_context(cls, v):
+        if v is not None and len(json.dumps(v, ensure_ascii=False)) > 20000:
+            raise ValueError("context 过大")
         return v
 
     @model_validator(mode="after")

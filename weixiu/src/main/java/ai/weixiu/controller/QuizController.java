@@ -31,6 +31,7 @@ public class QuizController {
     public Result<Map<String, Object>> practice(@RequestBody(required = false) Map<String, Object> body) {
         int count = body != null && body.get("count") != null
                 ? Integer.parseInt(String.valueOf(body.get("count"))) : 5;
+        count = Math.min(20, Math.max(1, count));
         return Result.success(quizService.practice(BaseContext.getCurrentId(), count));
     }
 

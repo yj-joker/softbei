@@ -3,6 +3,7 @@ package ai.weixiu.utils;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import ai.weixiu.config.MinioProperties;
+import ai.weixiu.enumerate.BucketEnum;
 import io.minio.GetObjectArgs;
 import io.minio.MinioClient;
 import lombok.extern.slf4j.Slf4j;
@@ -17,12 +18,17 @@ import reactor.netty.http.client.HttpClient;
 
 import java.io.InputStream;
 import java.net.URI;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.stream.Collectors;
+import java.util.Arrays;
 
 /**
  * 多模态向量化工具（不融合）
@@ -46,15 +52,20 @@ public class MultimodalEmbeddingUtils {
     private final MinioClient minioClient;
     private final URI minioEndpointUri;
     private final String apiToken;
+    private final Set<String> allowedExternalHosts;
 
     private static final Duration TIMEOUT = Duration.ofSeconds(120);
+    private static final int MAX_IMAGES = 5;
+    private static final int MAX_URL_LENGTH = 2 * 1024 * 1024;
+    private static final int MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
     public MultimodalEmbeddingUtils(
             @Value("${ai.python-service-url:http://localhost:8000}") String pythonServiceUrl,
             @Value("${ai.api-token}") String apiToken,
             ObjectMapper objectMapper,
             MinioClient minioClient,
-            MinioProperties minioProperties
+            MinioProperties minioProperties,
+            @Value("${weixiu.media.allowed-hosts:}") String allowedHosts
     ) {
         this.apiToken = apiToken;
         HttpClient httpClient = HttpClient.create()
@@ -73,6 +84,9 @@ public class MultimodalEmbeddingUtils {
         this.objectMapper = objectMapper;
         this.minioClient = minioClient;
         this.minioEndpointUri = URI.create(minioProperties.getEndpoint());
+        this.allowedExternalHosts = Arrays.stream(allowedHosts.split(","))
+                .map(String::trim).filter(s -> !s.isBlank())
+                .map(String::toLowerCase).collect(Collectors.toUnmodifiableSet());
     }
 
     /**
@@ -149,13 +163,31 @@ public class MultimodalEmbeddingUtils {
      */
     public List<String> downloadImagesToBase64(List<String> imageUrls) {
         List<String> base64List = new ArrayList<>();
+        if (imageUrls == null || imageUrls.size() > MAX_IMAGES) {
+            log.warn("图片数量超过限制，最多允许{}张", MAX_IMAGES);
+            return base64List;
+        }
         for (String url : imageUrls) {
             try {
+                if (url == null || url.length() > MAX_URL_LENGTH) {
+                    log.warn("图片地址为空或过长，跳过");
+                    continue;
+                }
                 if (isImageDataUri(url)) {
+                    String encoded = url.substring(url.indexOf(",") + 1);
+                    byte[] decoded = Base64.getDecoder().decode(encoded);
+                    if (decoded.length > MAX_IMAGE_BYTES) {
+                        log.warn("data URI 图片超过大小限制，跳过");
+                        continue;
+                    }
                     base64List.add(url);
                     continue;
                 }
                 URI uri = URI.create(url);
+                if (!("http".equalsIgnoreCase(uri.getScheme()) || "https".equalsIgnoreCase(uri.getScheme()))) {
+                    log.warn("图片 URL 协议不允许，跳过: {}", url);
+                    continue;
+                }
                 String path = uri.getPath();
                 if (path == null || path.length() <= 1) {
                     log.warn("图片 URL 路径为空，跳过: {}", url);
@@ -179,6 +211,10 @@ public class MultimodalEmbeddingUtils {
                     }
                     String bucket = minioPath.substring(1, firstSlash);
                     objectName = minioPath.substring(firstSlash + 1);
+                    if (Arrays.stream(BucketEnum.values()).noneMatch(b -> b.getName().equals(bucket))) {
+                        log.warn("图片桶不在允许列表，跳过: {}", bucket);
+                        continue;
+                    }
 
                     try (InputStream is = minioClient.getObject(
                             GetObjectArgs.builder()
@@ -186,10 +222,14 @@ public class MultimodalEmbeddingUtils {
                                     .object(objectName)
                                     .build()
                     )) {
-                        bytes = is.readAllBytes();
+                        bytes = readLimited(is, MAX_IMAGE_BYTES);
                     }
                     log.debug("MinIO 下载成功: bucket={}, object={} ({}KB)", bucket, objectName, bytes.length / 1024);
                 } else {
+                    if (!isSafeExternalUri(uri)) {
+                        log.warn("外部图片地址不在安全允许范围，跳过: {}", url);
+                        continue;
+                    }
                     // 外部 URL：HTTP GET 直接下载
                     objectName = path.substring(path.lastIndexOf('/') + 1);
                     log.debug("非本地 MinIO URL，尝试 HTTP 下载: {}", url);
@@ -203,6 +243,11 @@ public class MultimodalEmbeddingUtils {
                         continue;
                     }
                     log.debug("HTTP 下载成功: {} ({}KB)", objectName, bytes.length / 1024);
+                }
+
+                if (bytes == null || bytes.length > MAX_IMAGE_BYTES) {
+                    log.warn("图片超过大小限制，跳过: {}", url);
+                    continue;
                 }
 
                 String contentType = guessContentType(objectName);
@@ -225,6 +270,39 @@ public class MultimodalEmbeddingUtils {
                 && minioHost != null
                 && minioHost.equalsIgnoreCase(imgHost)
                 && minioPort == imgPort;
+    }
+
+    private boolean isSafeExternalUri(URI uri) {
+        String host = uri.getHost();
+        if (host == null || allowedExternalHosts.isEmpty()
+                || !allowedExternalHosts.contains(host.toLowerCase())) {
+            return false;
+        }
+        try {
+            for (InetAddress address : InetAddress.getAllByName(host)) {
+                if (address.isAnyLocalAddress() || address.isLoopbackAddress()
+                        || address.isLinkLocalAddress() || address.isSiteLocalAddress()
+                        || address.isMulticastAddress()) {
+                    return false;
+                }
+            }
+            return true;
+        } catch (UnknownHostException e) {
+            return false;
+        }
+    }
+
+    private static byte[] readLimited(InputStream input, int maxBytes) throws java.io.IOException {
+        java.io.ByteArrayOutputStream output = new java.io.ByteArrayOutputStream(Math.min(maxBytes, 8192));
+        byte[] buffer = new byte[8192];
+        int total = 0;
+        int read;
+        while ((read = input.read(buffer)) != -1) {
+            total += read;
+            if (total > maxBytes) throw new java.io.IOException("图片过大");
+            output.write(buffer, 0, read);
+        }
+        return output.toByteArray();
     }
 
     private boolean isPublicFileProxyPath(String path) {

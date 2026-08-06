@@ -12,6 +12,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.time.LocalDate;
+import java.util.Locale;
+import ai.weixiu.exception.UploadException;
 
 
 @Component
@@ -30,10 +32,17 @@ public class AliyunUpLoadUtils {
     }
 
     public String upload(MultipartFile file) throws IOException {
+        if (file == null || file.isEmpty() || file.getSize() > 10 * 1024 * 1024) {
+            throw new UploadException("图片不能为空且不能超过10MB");
+        }
         String originalName = file.getOriginalFilename();
         String suffix = originalName != null && originalName.contains(".")
-                ? originalName.substring(originalName.lastIndexOf("."))
+                ? originalName.substring(originalName.lastIndexOf(".")).toLowerCase(Locale.ROOT)
                 : "";
+        if (!java.util.Set.of(".jpg", ".jpeg", ".png", ".gif", ".webp").contains(suffix)
+                || file.getContentType() == null || !file.getContentType().toLowerCase(Locale.ROOT).startsWith("image/")) {
+            throw new UploadException("仅支持 jpg、png、gif、webp 图片");
+        }
 
         String key = "uploads/" + LocalDate.now() + "/" + UUID.randomUUID() + suffix;
 

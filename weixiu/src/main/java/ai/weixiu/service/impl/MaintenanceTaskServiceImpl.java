@@ -33,6 +33,7 @@ import ai.weixiu.service.ExpirationService;
 import ai.weixiu.utils.MultimodalEmbeddingUtils;
 import ai.weixiu.utils.BaseContext;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.toolkit.IdWorker;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.core.toolkit.Wrappers;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
@@ -562,7 +563,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     @Override
     @Transactional
     public void onGenerateSuccess(Long taskId, List<TaskStepRecordVO> steps, Object graphExtraction) {
-        MaintenanceTask task = taskMapper.selectById(taskId);
+        MaintenanceTask task = taskMapper.selectByIdForUpdate(taskId);
         if (task == null) {
             log.warn("[任务] MQ回调：任务不存在 taskId={}", taskId);
             return;
@@ -612,7 +613,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
     @Override
     @Transactional
     public void onGenerateFailed(Long taskId, String errorMsg) {
-        MaintenanceTask task = taskMapper.selectById(taskId);
+        MaintenanceTask task = taskMapper.selectByIdForUpdate(taskId);
         if (task == null) return;
         if (!"GENERATING".equals(task.getStatus())) return;
 
@@ -1314,12 +1315,9 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         msg.put("urgencyLevel", task.getUrgencyLevel());
         msg.put("reportImages", imagesForLlm(task.getReportImages(), "taskId=" + task.getId()));
         msg.put("generateMode", "AI_GENERATE");
-        rabbitTemplate.convertAndSend(
-                RabbitMQConfig.TASK_EXCHANGE,
-                RabbitMQConfig.TASK_GENERATE_KEY,
-                msg
-        );
-        log.info("[任务] 发送AI从零生成消息 taskId={} taskNumber={}", task.getId(), task.getTaskNumber());
+        publishAfterCommit(RabbitMQConfig.TASK_EXCHANGE, RabbitMQConfig.TASK_GENERATE_KEY, msg,
+                "任务步骤生成 taskId=" + task.getId(),
+                () -> markGeneratePublishFailed(task.getId()));
     }
 
     /**
@@ -1360,13 +1358,9 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         msg.put("procedureId", procedureId);
         StandardProcedure proc = procedureMapper.selectById(procedureId);
         msg.put("procedureName", proc != null ? proc.getName() : "");
-        rabbitTemplate.convertAndSend(
-                RabbitMQConfig.TASK_EXCHANGE,
-                RabbitMQConfig.TASK_GENERATE_KEY,
-                msg
-        );
-        log.info("[任务] 发送AI微调消息 taskId={} procedureId={} 模板步骤数={}",
-                task.getId(), procedureId, templateSteps.size());
+        publishAfterCommit(RabbitMQConfig.TASK_EXCHANGE, RabbitMQConfig.TASK_GENERATE_KEY, msg,
+                "任务步骤微调 taskId=" + task.getId(),
+                () -> markGeneratePublishFailed(task.getId()));
     }
 
     private void sendStepVerifyMessage(MaintenanceTask task, TaskStepRecord step) {
@@ -1380,12 +1374,54 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
         msg.put("note", step.getNote());
         msg.put("deviceName", task.getDeviceName());
         msg.put("faultDescription", task.getFaultDescription());
-        rabbitTemplate.convertAndSend(
-                RabbitMQConfig.TASK_EXCHANGE,
-                RabbitMQConfig.TASK_STEP_VERIFY_KEY,
-                msg
-        );
-        log.info("[任务] 发送步骤AI验证消息 taskId={} stepId={}", task.getId(), step.getId());
+        publishAfterCommit(RabbitMQConfig.TASK_EXCHANGE, RabbitMQConfig.TASK_STEP_VERIFY_KEY, msg,
+                "步骤AI验证 taskId=" + task.getId() + " stepId=" + step.getId(),
+                () -> markStepVerifyPublishFailed(step.getId()));
+    }
+
+    private void publishAfterCommit(String exchange, String routingKey, Object message,
+                                    String description, Runnable failureHandler) {
+        Runnable publish = () -> {
+            try {
+                rabbitTemplate.convertAndSend(exchange, routingKey, message);
+                log.info("[MQ] 发布成功 {}", description);
+            } catch (RuntimeException ex) {
+                log.error("[MQ] 发布失败 {}", description, ex);
+                try {
+                    failureHandler.run();
+                } catch (RuntimeException markEx) {
+                    log.error("[MQ] 发布失败状态回写失败 {}", description, markEx);
+                }
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publish.run();
+                }
+            });
+        } else {
+            rabbitTemplate.convertAndSend(exchange, routingKey, message);
+        }
+    }
+
+    private void markGeneratePublishFailed(Long taskId) {
+        MaintenanceTask current = taskMapper.selectById(taskId);
+        if (current != null && "GENERATING".equals(current.getStatus())) {
+            current.setStatus("GENERATE_FAILED");
+            current.setUpdatedAt(LocalDateTime.now());
+            taskMapper.updateById(current);
+        }
+    }
+
+    private void markStepVerifyPublishFailed(Long stepId) {
+        TaskStepRecord current = stepMapper.selectById(stepId);
+        if (current != null && "SUBMITTED".equals(current.getStatus())) {
+            current.setStatus("AI_REJECTED");
+            current.setAiReason("AI验证任务发送失败，请重新提交");
+            stepMapper.updateById(current);
+        }
     }
 
     private List<TaskStepRecord> loadSteps(Long taskId) {
@@ -1438,8 +1474,7 @@ public class MaintenanceTaskServiceImpl implements MaintenanceTaskService {
 
     private String generateTaskNumber() {
         String date = LocalDate.now().format(DATE_FMT);
-        String random = String.format("%03d", new Random().nextInt(1000));
-        return "MT-" + date + "-" + random;
+        return "MT-" + date + "-" + IdWorker.getIdStr();
     }
 
     private MaintenanceTask getTaskOrThrow(Long taskId) {

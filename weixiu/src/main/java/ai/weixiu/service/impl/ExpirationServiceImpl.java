@@ -319,6 +319,8 @@ public class ExpirationServiceImpl implements ExpirationService {
 
     @Override
     public PageResult<ExpirationReview> listReviews(int page, int size, String status) {
+        page = Math.max(1, page);
+        size = Math.min(100, Math.max(1, size));
         LambdaQueryWrapper<ExpirationReview> wrapper = new LambdaQueryWrapper<>();
         if (status != null && !status.isBlank()) {
             wrapper.eq(ExpirationReview::getReviewStatus, status);

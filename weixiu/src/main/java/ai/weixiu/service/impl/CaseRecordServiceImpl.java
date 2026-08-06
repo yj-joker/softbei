@@ -101,7 +101,20 @@ public class CaseRecordServiceImpl implements CaseRecordService {
     @Override
     @Transactional
     public CaseRecord update(CaseRecordDTO caseRecordDTO) {
-        CaseRecord caseRecord = toEntity(caseRecordDTO);
+        CaseRecord caseRecord = caseRecordRepository.findById(caseRecordDTO.getId())
+                .orElseThrow(() -> new NotFoundException(notFoundMessage));
+        if (caseRecordDTO.getTitle() != null) caseRecord.setTitle(caseRecordDTO.getTitle());
+        if (caseRecordDTO.getSummary() != null) caseRecord.setSummary(caseRecordDTO.getSummary());
+        if (caseRecordDTO.getDiagnosis() != null) caseRecord.setDiagnosis(caseRecordDTO.getDiagnosis());
+        if (caseRecordDTO.getResolution() != null) caseRecord.setResolution(caseRecordDTO.getResolution());
+        if (caseRecordDTO.getResult() != null) caseRecord.setResult(caseRecordDTO.getResult());
+        if (caseRecordDTO.getExperienceSummary() != null) caseRecord.setExperienceSummary(caseRecordDTO.getExperienceSummary());
+        if (caseRecordDTO.getTags() != null) caseRecord.setTags(caseRecordDTO.getTags());
+        if (caseRecordDTO.getDowntime() != null) caseRecord.setDowntime(caseRecordDTO.getDowntime());
+        if (caseRecordDTO.getCost() != null) caseRecord.setCost(caseRecordDTO.getCost());
+        if (caseRecordDTO.getImageUrls() != null) caseRecord.setImageUrls(caseRecordDTO.getImageUrls());
+        if (caseRecordDTO.getDeviceId() != null) caseRecord.setDeviceId(caseRecordDTO.getDeviceId());
+        if (caseRecordDTO.getFaultName() != null) caseRecord.setFaultName(caseRecordDTO.getFaultName());
         String embeddingText = buildStringUtils.buildCaseRecordEmbeddingText(caseRecord);
         caseRecord.setMultimodalEmbedding(
             multimodalEmbeddingUtils.getMultimodalEmbedding(embeddingText, caseRecord.getImageUrls())
@@ -193,6 +206,16 @@ public class CaseRecordServiceImpl implements CaseRecordService {
     @Override
     public CaseDraftVO draftFromUpload(List<MultipartFile> files, List<String> imageUrls,
                                        String rawText, String sourceType) {
+        if (files != null && files.size() > 5) {
+            throw new TaskStateException("最多上传5个文件");
+        }
+        if (imageUrls != null && (imageUrls.size() > 5
+                || imageUrls.stream().anyMatch(u -> u == null || u.length() > 2 * 1024 * 1024))) {
+            throw new TaskStateException("最多上传5张图片，单张地址不能超过2MB");
+        }
+        if (rawText != null && rawText.length() > 10000) {
+            throw new TaskStateException("文字描述不能超过10000个字符");
+        }
         // 0. 至少要有一种素材
         boolean hasFile = files != null && files.stream().anyMatch(f -> f != null && !f.isEmpty());
         boolean hasImage = imageUrls != null && !imageUrls.isEmpty();
@@ -205,8 +228,13 @@ public class CaseRecordServiceImpl implements CaseRecordService {
         String sourceFileUrl = null;
         List<Map<String, String>> extractFiles = new ArrayList<>();
         if (hasFile) {
+            long totalBytes = 0;
             for (MultipartFile f : files) {
                 if (f == null || f.isEmpty()) continue;
+                totalBytes += f.getSize();
+                if (totalBytes > 25 * 1024 * 1024) {
+                    throw new TaskStateException("上传文件总大小不能超过25MB");
+                }
                 try {
                     String stored = mioIOUpLoadService.upload(f, BucketEnum.PRIVATE);
                     if (sourceFileUrl == null) sourceFileUrl = stored;
@@ -369,6 +397,8 @@ public class CaseRecordServiceImpl implements CaseRecordService {
 
     @Override
     public PageResult<CaseRecordVO> pending(int page, int size) {
+        page = Math.max(1, page);
+        size = Math.min(100, Math.max(1, size));
         int p = Math.max(page, 1);
         long skip = (long) (p - 1) * size;
         List<CaseRecord> list = caseRecordRepository.findByStatus("pending", skip, size);
@@ -448,6 +478,8 @@ public class CaseRecordServiceImpl implements CaseRecordService {
 
     @Override
     public PageResult<CaseRecordVO> mine(int page, int size) {
+        page = Math.max(1, page);
+        size = Math.min(100, Math.max(1, size));
         Long uid = BaseContext.getCurrentId();
         int p = Math.max(page, 1);
         long skip = (long) (p - 1) * size;
@@ -465,13 +497,15 @@ public class CaseRecordServiceImpl implements CaseRecordService {
         if (vec == null || vec.isEmpty()) {
             return new ArrayList<>();
         }
-        long lim = limit == null ? 5L : limit;
+        long lim = limit == null ? 5L : Math.min(20L, Math.max(1L, limit));
         double ms = minScore == null ? 0.0 : minScore;
         return caseRecordRepository.getCasesByMultimodalEmbedding(vec, lim, ms);
     }
 
     @Override
     public PageResult<CaseRecordVO> getCasesByFault(String faultId, int page, int size) {
+        page = Math.max(1, page);
+        size = Math.min(100, Math.max(1, size));
         int p = Math.max(page, 1);
         long skip = (long) (p - 1) * size;
         List<CaseRecordVO> records = caseRecordRepository.findApprovedByFault(faultId, skip, size);

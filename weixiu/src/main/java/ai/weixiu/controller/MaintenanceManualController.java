@@ -91,6 +91,7 @@ public class MaintenanceManualController {
     }
 
     @PutMapping("/update")
+    @RequireAdmin
     @Operation(summary = "更新维修手册")
     /**
      * 更新手册。

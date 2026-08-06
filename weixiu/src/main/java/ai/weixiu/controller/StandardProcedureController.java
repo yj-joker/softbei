@@ -1,5 +1,6 @@
 package ai.weixiu.controller;
 
+import ai.weixiu.annotation.RequireAdmin;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.dto.ProcedureStepDTO;
@@ -25,6 +26,7 @@ public class StandardProcedureController {
 
     /** 创建标准规程（含步骤） */
     @PostMapping
+    @RequireAdmin
     public Result<StandardProcedureVO> create(@RequestBody StandardProcedureDTO dto) {
         Long userId = BaseContext.getCurrentId();
         StandardProcedureVO vo = procedureService.createProcedure(dto, userId);
@@ -33,6 +35,7 @@ public class StandardProcedureController {
 
     /** 编辑规程基本信息（仅 DRAFT） */
     @PutMapping("/{id}")
+    @RequireAdmin
     public Result<StandardProcedureVO> update(
             @PathVariable Long id,
             @RequestBody StandardProcedureDTO dto) {
@@ -56,6 +59,7 @@ public class StandardProcedureController {
 
     /** 发布规程（DRAFT → PUBLISHED） */
     @PostMapping("/{id}/publish")
+    @RequireAdmin
     public Result<Void> publish(@PathVariable Long id) {
         procedureService.publish(id);
         return Result.success(null);
@@ -63,6 +67,7 @@ public class StandardProcedureController {
 
     /** 归档规程（PUBLISHED → ARCHIVED） */
     @PostMapping("/{id}/archive")
+    @RequireAdmin
     public Result<Void> archive(@PathVariable Long id) {
         procedureService.archive(id);
         return Result.success(null);
@@ -70,6 +75,7 @@ public class StandardProcedureController {
 
     /** 批量保存步骤（全量替换，仅 DRAFT） */
     @PostMapping("/{id}/steps")
+    @RequireAdmin
     public Result<List<ProcedureStepVO>> saveSteps(
             @PathVariable Long id,
             @RequestBody List<ProcedureStepDTO> steps) {
@@ -86,6 +92,7 @@ public class StandardProcedureController {
 
     /** 删除单个步骤（仅 DRAFT） */
     @DeleteMapping("/{procedureId}/steps/{stepId}")
+    @RequireAdmin
     public Result<Void> deleteStep(
             @PathVariable Long procedureId,
             @PathVariable Long stepId) {

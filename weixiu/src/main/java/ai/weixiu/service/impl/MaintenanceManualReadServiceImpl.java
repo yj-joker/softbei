@@ -293,7 +293,7 @@ public class MaintenanceManualReadServiceImpl implements MaintenanceManualReadSe
     public PageResult<ManualReadHistoryVO> getReadHistory(Integer page, Integer size) {
         Long userId = currentUserId();
         int pageNum = (page == null || page <= 0) ? 1 : page;
-        int pageSize = (size == null || size <= 0) ? 10 : Math.min(size, 50);
+        int pageSize = (size == null || size <= 0) ? 10 : Math.min(size, 100);
 
         Page<ManualReadRecord> recordPage = manualReadRecordMapper.selectPage(
                 new Page<>(pageNum, pageSize),

@@ -69,7 +69,7 @@ public class StandardProcedureServiceImpl implements StandardProcedureService {
     @Override
     @Transactional
     public StandardProcedureVO updateProcedure(Long id, StandardProcedureDTO dto) {
-        StandardProcedure procedure = getProcedureOrThrow(id);
+        StandardProcedure procedure = lockProcedureOrThrow(id);
         assertDraft(procedure);
 
         if (dto.getName() != null && !dto.getName().isBlank()) {
@@ -147,7 +147,7 @@ public class StandardProcedureServiceImpl implements StandardProcedureService {
     @Override
     @Transactional
     public void publish(Long id) {
-        StandardProcedure procedure = getProcedureOrThrow(id);
+        StandardProcedure procedure = lockProcedureOrThrow(id);
         assertDraft(procedure);
 
         // 发布前校验：至少要有1个步骤
@@ -171,7 +171,7 @@ public class StandardProcedureServiceImpl implements StandardProcedureService {
     @Override
     @Transactional
     public void archive(Long id) {
-        StandardProcedure procedure = getProcedureOrThrow(id);
+        StandardProcedure procedure = lockProcedureOrThrow(id);
         if (!"PUBLISHED".equals(procedure.getStatus())) {
             throw new TaskStateException("只有已发布的规程才能归档，当前状态: " + procedure.getStatus());
         }
@@ -186,7 +186,7 @@ public class StandardProcedureServiceImpl implements StandardProcedureService {
     @Override
     @Transactional
     public List<ProcedureStepVO> saveSteps(Long procedureId, List<ProcedureStepDTO> stepDTOs) {
-        StandardProcedure procedure = getProcedureOrThrow(procedureId);
+        StandardProcedure procedure = lockProcedureOrThrow(procedureId);
         assertDraft(procedure);
 
         saveStepsInternal(procedureId, stepDTOs);
@@ -202,7 +202,7 @@ public class StandardProcedureServiceImpl implements StandardProcedureService {
     @Override
     @Transactional
     public void deleteStep(Long procedureId, Long stepId) {
-        StandardProcedure procedure = getProcedureOrThrow(procedureId);
+        StandardProcedure procedure = lockProcedureOrThrow(procedureId);
         assertDraft(procedure);
 
         ProcedureStep step = stepMapper.selectById(stepId);
@@ -272,6 +272,14 @@ public class StandardProcedureServiceImpl implements StandardProcedureService {
 
     private StandardProcedure getProcedureOrThrow(Long id) {
         StandardProcedure procedure = procedureMapper.selectById(id);
+        if (procedure == null) {
+            throw new NotFoundException("规程不存在: " + id);
+        }
+        return procedure;
+    }
+
+    private StandardProcedure lockProcedureOrThrow(Long id) {
+        StandardProcedure procedure = procedureMapper.selectByIdForUpdate(id);
         if (procedure == null) {
             throw new NotFoundException("规程不存在: " + id);
         }

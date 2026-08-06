@@ -54,6 +54,7 @@ public class MaintenanceTaskController {
     /** 重试生成步骤（GENERATE_FAILED → GENERATING） */
     @PostMapping("/{taskId}/retry")
     public Result<Void> retryGenerate(@PathVariable Long taskId) {
+        verifyAccess(taskId);
         taskService.retryGenerate(taskId);
         return Result.success(null);
     }
@@ -124,6 +125,7 @@ public class MaintenanceTaskController {
     public Result<Map<String, Object>> updateFocus(
             @PathVariable Long taskId,
             @RequestBody Map<String, Object> body) {
+        verifyAccess(taskId);
         Long userId = BaseContext.getCurrentId();
         Long stepId = body != null && body.get("currentStepId") != null
                 ? Long.valueOf(String.valueOf(body.get("currentStepId"))) : null;
@@ -196,10 +198,27 @@ public class MaintenanceTaskController {
      */
     @PostMapping(value = "/{taskId}/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<String> taskChat(@PathVariable Long taskId, @RequestBody Map<String, Object> body) {
+        if (body == null) {
+            throw new IllegalArgumentException("请求体不能为空");
+        }
         Long userId = BaseContext.getCurrentId();
-        String message = (String) body.getOrDefault("message", "");
-        @SuppressWarnings("unchecked")
-        List<String> images = (List<String>) body.get("images");
+        String message = String.valueOf(body.getOrDefault("message", ""));
+        if (message == null || message.length() > 4000) {
+            throw new IllegalArgumentException("消息长度不能超过4000个字符");
+        }
+        Object rawImages = body.get("images");
+        if (rawImages != null && !(rawImages instanceof List<?>)) {
+            throw new IllegalArgumentException("images 必须是数组");
+        }
+        List<String> images = rawImages == null ? null
+                : ((List<?>) rawImages).stream().map(String::valueOf).toList();
+        if (images != null && images.size() > 5) {
+            throw new IllegalArgumentException("图片数量不能超过5张");
+        }
+        if (images != null && images.stream().anyMatch(i -> i == null || i.length() > 2 * 1024 * 1024)) {
+            throw new IllegalArgumentException("单张图片地址过长");
+        }
+        verifyAccess(taskId);
         Long focusedStepId = body.get("focusedStepId") != null
                 ? Long.valueOf(String.valueOf(body.get("focusedStepId"))) : null;
 

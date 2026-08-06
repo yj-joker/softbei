@@ -45,13 +45,9 @@ public class SessionInterceptor implements HandlerInterceptor {
 
     @Override
     public boolean preHandle(HttpServletRequest request, @NonNull HttpServletResponse response, @NonNull Object handler) throws Exception {
+        BaseContext.removeCurrentId();
         // 获取请求路径
         String uri = request.getRequestURI();
-
-        // 放行登录和注册接口
-        if (uri.contains("/login") || uri.contains("/register")) {
-            return true;
-        }
 
         // 任何接口只要携带有效的内部 token 就直接放行（Python 内部服务调用）
         String token = request.getHeader("X-Internal-Token");
@@ -83,6 +79,14 @@ public class SessionInterceptor implements HandlerInterceptor {
         BaseContext.setCurrentId(Long.parseLong(userId.toString()));
         log.info("用户已登录，用户ID: {}，请求: {}", userId, uri);
         return true;
+    }
+
+    @Override
+    public void afterCompletion(@NonNull HttpServletRequest request,
+                                @NonNull HttpServletResponse response,
+                                @NonNull Object handler,
+                                Exception ex) {
+        BaseContext.removeCurrentId();
     }
 
     private void writeJsonResponse(HttpServletResponse response, Result result) throws IOException {

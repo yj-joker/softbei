@@ -29,7 +29,7 @@ FastAPI Web 服务入口，HTTP 接口定义、请求路由、参数校验。所
 
 `schemas/request.py` 中定义：
 
-- `ChatRequest` — session_id / message(max_length=50000) / images / stream
+- `ChatRequest` — session_id / message(max_length=4000) / images(max=5) / stream
 - `KnowledgeImportRequest` — file_url / file_type / category / tags
 - `KnowledgeSearchRequest` — query / top_k / category / tags
 - `MemoryConsolidateRequest` — session_id / memoryMessages / memoryPreferenceVOList / memoryUnresolvedVOList

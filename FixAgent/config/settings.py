@@ -50,6 +50,9 @@ class Settings:
 
     file_storage_backend = os.getenv("FILE_STORAGE_BACKEND", "local")
     file_public_base_url = os.getenv("FILE_PUBLIC_BASE_URL", "/files")
+    cors_allowed_origins = [item.strip() for item in os.getenv(
+        "CORS_ALLOWED_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",") if item.strip()]
     local_file_storage_dir = os.getenv("LOCAL_FILE_STORAGE_DIR", "rag_files")
     minio_public_base_url = os.getenv("MINIO_PUBLIC_BASE_URL", "")
     minio_endpoint = os.getenv("MINIO_ENDPOINT", "")
