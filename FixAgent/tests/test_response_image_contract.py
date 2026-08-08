@@ -77,6 +77,33 @@ def test_evidence_pages_contract_keeps_all_final_answer_pages_in_order() -> None
     assert metadata["image_selection_contract"]["selected_pages"] == [19, 20, 21]
 
 
+def test_complete_procedure_request_keeps_all_scoped_pages_when_one_action_scores_higher() -> None:
+    metadata = {
+        "original_user_message": "如何完整安装气缸与活塞？给我完整步骤的相关图片",
+        "query_understanding_selection_mode": "evidence_pages",
+        "_deterministic_answer_evidence_pages": [19, 20, 21],
+        "allowed_evidence_pages": [19, 20, 21],
+        "allowed_document_ids": ["manual-1"],
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [
+                    {"content": "安装气缸。", "metadata": {"chunk_type": "step_raw", "page": 19}},
+                    {"content": "安装活塞销。", "metadata": {"chunk_type": "step_raw", "page": 20}},
+                    {"content": "安装活塞销挡圈。", "metadata": {"chunk_type": "step_raw", "page": 21}},
+                ],
+            }],
+        }],
+    }
+
+    selected = main._select_evidence_images_for_response(
+        [_image(19, "cylinder"), _image(20, "piston-pin"), _image(21, "circlip")],
+        metadata,
+    )
+
+    assert [item.page for item in selected] == [19, 20, 21]
+
+
 def test_evidence_pages_step_binding_does_not_drop_an_answer_page_without_binding_metadata() -> None:
     metadata = {
         "original_user_message": "如何安装气缸与活塞？",

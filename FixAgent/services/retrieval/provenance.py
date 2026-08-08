@@ -34,7 +34,14 @@ def _field(item: Mapping[str, Any], name: str) -> Any:
 
 def canonical_manual_chunk_id(item: Mapping[str, Any]) -> str:
     """Return the source chunk shared by derived and direct representations."""
-    for name in ("source_chunk_id", "chunk_id", "id", "doc_id", "evidence_id"):
+    for name in (
+        "source_chunk_id",
+        "chunk_id",
+        "chunk_uid",
+        "id",
+        "doc_id",
+        "evidence_id",
+    ):
         value = _field(item, name)
         if value not in (None, ""):
             return str(value).strip()

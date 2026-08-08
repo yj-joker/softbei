@@ -1,0 +1,77 @@
+{
+  "registry_version": "1.0",
+  "policy": "Existing project datasets are development, regression, or mechanism sets. They must not be presented as a frozen blind test.",
+  "baselines": [
+    {
+      "baseline_id": "graphrag_dev_100_20260806",
+      "path": "../baselines/graphrag_dev_100_20260806.json",
+      "role": "development_negative_baseline"
+    }
+  ],
+  "datasets": [
+    {
+      "dataset_id": "maintenance_eval_v1",
+      "path": "../maintenance_eval_dataset_v1.jsonl",
+      "case_count": 40,
+      "split": "dev",
+      "purpose": "answer_quality_development_and_regression",
+      "is_blind": false,
+      "gold_status": "pdf_validated"
+    },
+    {
+      "dataset_id": "maintenance_adversarial_v2",
+      "path": "../maintenance_adversarial_v2.jsonl",
+      "case_count": 30,
+      "split": "regression",
+      "purpose": "adversarial_development_only",
+      "is_blind": false,
+      "gold_status": "blocked_pending_39_gold_fixes"
+    },
+    {
+      "dataset_id": "maintenance_image_adversarial_v1",
+      "path": "../maintenance_image_adversarial_v1.jsonl",
+      "case_count": 30,
+      "split": "regression",
+      "purpose": "image_answer_regression",
+      "is_blind": false,
+      "gold_status": "pdf_validated"
+    },
+    {
+      "dataset_id": "eval_specialised_v1",
+      "path": "eval_specialised_v1.jsonl",
+      "case_count": 30,
+      "turn_count": 34,
+      "split": "regression",
+      "purpose": "specialised_multiturn_regression",
+      "is_blind": false,
+      "gold_status": "project_curated"
+    },
+    {
+      "dataset_id": "kg_retrieval_eval",
+      "path": "../kg_retrieval_eval.jsonl",
+      "case_count": 63,
+      "split": "mechanism",
+      "purpose": "knowledge_graph_mechanism_only",
+      "is_blind": false,
+      "gold_status": "project_curated"
+    },
+    {
+      "dataset_id": "graphrag_graph_required_dev_v1",
+      "path": "graphrag_graph_required_dev_v1.jsonl",
+      "case_count": 27,
+      "split": "dev",
+      "purpose": "path_aligned_graphrag_development_and_gate_c",
+      "is_blind": false,
+      "gold_status": "materialized_from_current_graph_and_manual"
+    },
+    {
+      "dataset_id": "motorcycle_engine_manual_graphrag_dev_v2",
+      "path": "motorcycle_engine_manual_graphrag_dev_v2.jsonl",
+      "case_count": 66,
+      "split": "dev",
+      "purpose": "primary_manual_text_image_and_stable_graph_path_development",
+      "is_blind": false,
+      "gold_status": "40_pdf_validated_plus_26_stable_graph_paths"
+    }
+  ]
+}

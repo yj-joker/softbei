@@ -22,6 +22,11 @@ def _round_score(value: float) -> float:
     return round(max(0.0, min(0.99, value)), 2)
 
 
+def _requests_possible_causes(query: str) -> bool:
+    compact_query = _compact(query)
+    return bool(re.search(r"可能(?:的)?(?:故障)?原因", compact_query))
+
+
 def _public_hypotheses(hypotheses: list[dict[str, Any]]) -> list[dict[str, Any]]:
     result = []
     for item in hypotheses:
@@ -63,6 +68,8 @@ def build_evidence_follow_up(
 
     该入口不读取固定场景、设备或部件词表；候选不足时直接返回 None。
     """
+    if _requests_possible_causes(query):
+        return None
     source = metadata if isinstance(metadata, Mapping) else {}
     raw_candidates = source.get("diagnostic_candidates") or source.get("cause_candidates") or ()
     candidates = [dict(item) for item in raw_candidates if isinstance(item, Mapping)]

@@ -1,0 +1,297 @@
+{
+  "case_count": 66,
+  "answerable_case_count": 64,
+  "final_pass_rate": 0.257576,
+  "answer_correct_pass_rate": 0.530303,
+  "evidence_pass_rate": 0.454545,
+  "delivery_pass_rate": 0.787879,
+  "mechanism_pass_rate": 0.606061,
+  "avg_required_nugget_recall": 0.598958,
+  "grounding_pass_rate": 0.530303,
+  "unsupported_claim_free_rate": 1.0,
+  "procedure_case_count": 25,
+  "procedure_order_pass_rate": 0.8,
+  "image_case_count": 32,
+  "image_pass_rate": 0.59375,
+  "avg_image_recall": 0.723958,
+  "avg_image_precision": 0.84375,
+  "image_order_pass_rate": 0.59375,
+  "step_image_binding_pass_rate": 0.9375,
+  "no_answer_case_count": 2,
+  "no_answer_correct_rate": 0.5,
+  "avg_latency_ms": 7831.060606,
+  "p50_latency_ms": 7762.0,
+  "p95_latency_ms": 19766.5,
+  "metric_descriptions_cn": {
+    "case_count": "测评用例总数。",
+    "answerable_case_count": "手册中应当能回答的用例数量。",
+    "final_pass_rate": "最终通过率；必须同时满足必答点、禁答项、拒答、步骤顺序、图片等约束。",
+    "answer_correct_pass_rate": "答案内容正确率；只判断必答点、禁答项和应答/拒答是否正确，不包含图片、步骤和证据格式门禁。",
+    "evidence_pass_rate": "证据门禁通过率；答案中的证据来源和声明绑定满足当前测评合同。",
+    "delivery_pass_rate": "交付约束通过率；步骤顺序与图片要求均满足。",
+    "mechanism_pass_rate": "图谱机制门禁通过率；Graph-required题必须完成候选、资格筛选、证据使用和声明绑定。",
+    "avg_required_nugget_recall": "必答信息点平均覆盖率；越高说明答案越完整。",
+    "grounding_pass_rate": "证据忠实率；必答点覆盖且没有 forbidden_claims 中的无依据/错误说法。",
+    "unsupported_claim_free_rate": "无禁答项命中率；越低说明模型越容易乱补或说手册没写的内容。",
+    "procedure_case_count": "需要评估步骤顺序的用例数量。",
+    "procedure_order_pass_rate": "步骤顺序通过率；安装/拆卸流程必须按手册顺序。",
+    "image_case_count": "需要评估图片的用例数量。",
+    "image_pass_rate": "图片整体通过率；要求图片召回、精确率、顺序、禁图、步骤绑定均通过。",
+    "avg_image_recall": "图片平均召回率；应返回的图片/页是否都返回。",
+    "avg_image_precision": "图片平均精确率；返回的图片/页是否没有多余项。",
+    "image_order_pass_rate": "图片顺序通过率；返回图片顺序是否符合操作流程。",
+    "step_image_binding_pass_rate": "步骤-图片绑定通过率；图片是否能绑定到对应步骤。",
+    "no_answer_case_count": "手册无依据、应拒答/说明无依据的用例数量。",
+    "no_answer_correct_rate": "无答案题正确克制率；不应编造手册没有的信息。",
+    "avg_latency_ms": "端到端平均耗时，单位毫秒。"
+  },
+  "turn_count": 66,
+  "request_count": 66,
+  "latency_total_ms": 516850,
+  "metric_counts": {
+    "final_pass_rate": {
+      "numerator": 17,
+      "denominator": 66,
+      "rate": 0.257576
+    },
+    "answer_correct_pass_rate": {
+      "numerator": 35,
+      "denominator": 66,
+      "rate": 0.530303
+    },
+    "evidence_pass_rate": {
+      "numerator": 30,
+      "denominator": 66,
+      "rate": 0.454545
+    },
+    "delivery_pass_rate": {
+      "numerator": 52,
+      "denominator": 66,
+      "rate": 0.787879
+    },
+    "mechanism_pass_rate": {
+      "numerator": 40,
+      "denominator": 66,
+      "rate": 0.606061
+    },
+    "forbidden_claim_pass_rate": {
+      "numerator": 66,
+      "denominator": 66,
+      "rate": 1.0
+    },
+    "refusal_pass_rate": {
+      "numerator": 65,
+      "denominator": 66,
+      "rate": 0.984848
+    },
+    "procedure_order_pass_rate": {
+      "numerator": 20,
+      "denominator": 25,
+      "rate": 0.8
+    },
+    "image_pass_rate": {
+      "numerator": 19,
+      "denominator": 32,
+      "rate": 0.59375
+    },
+    "forbidden_image_pass_rate": {
+      "numerator": 32,
+      "denominator": 32,
+      "rate": 1.0
+    },
+    "evidence_nugget_coverage_rate": {
+      "numerator": 8,
+      "denominator": 52,
+      "rate": 0.153846
+    },
+    "evidence_source_pass_rate": {
+      "numerator": 13,
+      "denominator": 26,
+      "rate": 0.5
+    },
+    "answer_evidence_alignment_pass_rate": {
+      "numerator": 22,
+      "denominator": 26,
+      "rate": 0.846154
+    },
+    "scope_isolation_pass_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "unsupported_completion_free_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "partial_answer_correct_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "conflict_handling_pass_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "refusal_integrity_pass_rate": {
+      "numerator": 1,
+      "denominator": 2,
+      "rate": 0.5
+    },
+    "fixed_template_rate": {
+      "numerator": 8,
+      "denominator": 66,
+      "rate": 0.121212
+    },
+    "style_proxy_pass_rate": {
+      "numerator": 62,
+      "denominator": 66,
+      "rate": 0.939394
+    },
+    "source_mode_pass_rate": {
+      "numerator": 58,
+      "denominator": 66,
+      "rate": 0.878788
+    },
+    "multi_turn_pass_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    }
+  },
+  "dataset_case_counts": {
+    "motorcycle_engine_manual_graphrag_dev_v2.jsonl": 66
+  },
+  "forbidden_claim_pass_rate": 1.0,
+  "refusal_pass_rate": 0.984848,
+  "forbidden_image_pass_rate": 1.0,
+  "evidence_nugget_coverage_rate": 0.153846,
+  "evidence_source_pass_rate": 0.5,
+  "answer_evidence_alignment_pass_rate": 0.846154,
+  "scope_isolation_pass_rate": null,
+  "unsupported_completion_free_rate": null,
+  "partial_answer_correct_rate": null,
+  "conflict_handling_pass_rate": null,
+  "refusal_integrity_pass_rate": 0.5,
+  "fixed_template_rate": 0.121212,
+  "style_proxy_pass_rate": 0.939394,
+  "source_mode_pass_rate": 0.878788,
+  "multi_turn_pass_rate": null,
+  "case_metrics": {
+    "final_pass_rate": {
+      "numerator": 17,
+      "denominator": 66,
+      "rate": 0.257576
+    },
+    "multi_turn_pass_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    }
+  },
+  "turn_metrics": {
+    "answer_correct_pass_rate": {
+      "numerator": 35,
+      "denominator": 66,
+      "rate": 0.530303
+    },
+    "evidence_pass_rate": {
+      "numerator": 30,
+      "denominator": 66,
+      "rate": 0.454545
+    },
+    "delivery_pass_rate": {
+      "numerator": 52,
+      "denominator": 66,
+      "rate": 0.787879
+    },
+    "mechanism_pass_rate": {
+      "numerator": 40,
+      "denominator": 66,
+      "rate": 0.606061
+    },
+    "forbidden_claim_pass_rate": {
+      "numerator": 66,
+      "denominator": 66,
+      "rate": 1.0
+    },
+    "refusal_pass_rate": {
+      "numerator": 65,
+      "denominator": 66,
+      "rate": 0.984848
+    },
+    "procedure_order_pass_rate": {
+      "numerator": 20,
+      "denominator": 25,
+      "rate": 0.8
+    },
+    "image_pass_rate": {
+      "numerator": 19,
+      "denominator": 32,
+      "rate": 0.59375
+    },
+    "forbidden_image_pass_rate": {
+      "numerator": 32,
+      "denominator": 32,
+      "rate": 1.0
+    },
+    "evidence_nugget_coverage_rate": {
+      "numerator": 8,
+      "denominator": 52,
+      "rate": 0.153846
+    },
+    "evidence_source_pass_rate": {
+      "numerator": 13,
+      "denominator": 26,
+      "rate": 0.5
+    },
+    "answer_evidence_alignment_pass_rate": {
+      "numerator": 22,
+      "denominator": 26,
+      "rate": 0.846154
+    },
+    "scope_isolation_pass_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "unsupported_completion_free_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "partial_answer_correct_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "conflict_handling_pass_rate": {
+      "numerator": 0,
+      "denominator": 0,
+      "rate": null
+    },
+    "refusal_integrity_pass_rate": {
+      "numerator": 1,
+      "denominator": 2,
+      "rate": 0.5
+    },
+    "fixed_template_rate": {
+      "numerator": 8,
+      "denominator": 66,
+      "rate": 0.121212
+    },
+    "style_proxy_pass_rate": {
+      "numerator": 62,
+      "denominator": 66,
+      "rate": 0.939394
+    },
+    "source_mode_pass_rate": {
+      "numerator": 58,
+      "denominator": 66,
+      "rate": 0.878788
+    }
+  },
+  "rag_variant": "graph_shadow",
+  "repetitions": 1
+}

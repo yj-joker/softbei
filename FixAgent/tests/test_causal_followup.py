@@ -114,3 +114,26 @@ def test_graph_trace_candidates_choose_dynamic_part_discriminator():
     assert result is not None
     assert result["question_dimension"] == "faultPart"
     assert {item["text"] for item in result["alternatives"]} == {"甲单元", "乙单元"}
+
+
+def test_explicit_possible_causes_request_keeps_multiple_diagnoses_in_answer():
+    result = build_evidence_follow_up(
+        "助力油泵助力转向沉重，请诊断可能原因，并说明对应处理建议。",
+        {},
+        diagnosis_items=[
+            {
+                "id": "cause-a",
+                "faultPart": "助力油泵油罐",
+                "rootCause": "油量不足",
+                "distinguishingFeature": "液位低于下限",
+            },
+            {
+                "id": "cause-b",
+                "faultPart": "助力油泵安全阀",
+                "rootCause": "安全阀堵塞",
+                "distinguishingFeature": "阀芯卡滞",
+            },
+        ],
+    )
+
+    assert result is None

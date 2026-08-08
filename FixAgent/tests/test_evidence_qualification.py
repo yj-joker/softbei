@@ -67,6 +67,29 @@ def test_unscoped_candidate_is_reference_only() -> None:
     assert bundle["reference_evidence"][0]["metadata"]["qualification"] == "reference_only"
 
 
+def test_server_locked_manual_section_can_qualify_overloaded_diagnostic_query() -> None:
+    candidate = _candidate(
+        content="检查火花塞螺纹以及中心电极处，若有损坏或变形，则应更换火花塞。",
+        section_title="1.2 检查火花塞",
+        parent_section_id="sec:spark-plug",
+        chunk_uid="sec:spark-plug:text:0000",
+        document_version="v1",
+    )
+    bundle = qualify_candidates(
+        "摩托车发动机 火花塞损坏 更换步骤 扭矩 参数",
+        [candidate],
+        document_id="truck-manual",
+        device_type="truck",
+        document_version="v1",
+        requires_strict_evidence=True,
+        allowed_section_ids=["sec:spark-plug"],
+        allowed_source_chunk_uids=["sec:spark-plug:text:0000"],
+    )
+
+    assert bundle["overall_status"] == "qualified"
+    assert bundle["qualified_evidence"][0]["metadata"]["qualification"] == "qualified"
+
+
 def _torque_evidence(evidence_id: str, *, seq: str, quantity: str, torque: str) -> dict:
     return {
         "content": f"序号={seq}；零件名称=M10螺母；数量={quantity}；扭矩={torque} N·m",

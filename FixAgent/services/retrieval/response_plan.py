@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from services.retrieval.aspects import QuestionAspect, canonical_aspect_text, split_question_aspects
 from services.retrieval.evidence import EvidenceLedger, determine_coverage
+from services.retrieval.evidence_fusion import fuse_evidence_support
 from services.retrieval.provenance import dedupe_and_sort_manual_records
 from services.pending_clarification import build_evidence_conflict_clarification
 
@@ -46,6 +47,21 @@ class ResponseAuditResult:
     passed: bool
     violations: tuple[str, ...]
     used_fallback: bool
+    claim_evidence_bindings: tuple[dict[str, Any], ...] = ()
+    graph_evidence_used_ids: tuple[str, ...] = ()
+
+    def to_metadata(self) -> dict[str, Any]:
+        return {
+            "claim_evidence_bindings": [
+                {
+                    **dict(binding),
+                    "evidence_ids": list(binding.get("evidence_ids") or []),
+                    "source_types": list(binding.get("source_types") or []),
+                }
+                for binding in self.claim_evidence_bindings
+            ],
+            "graph_evidence_used_ids": list(self.graph_evidence_used_ids),
+        }
 
 
 @dataclass(frozen=True)
@@ -57,6 +73,8 @@ class ResponsePlan:
     missing_aspects: tuple[str, ...]
     conflicts: tuple[dict[str, Any], ...]
     ledger_digest: str
+    authorized_claim_evidence_bindings: tuple[dict[str, Any], ...] = ()
+    graph_evidence_bound_ids: tuple[str, ...] = ()
     pending_clarification: dict[str, Any] | None = None
 
     def deterministic_fallback(self) -> str:
@@ -67,6 +85,16 @@ class ResponsePlan:
             )
         if self.coverage_status == "conflict":
             return self._conflict_fallback()
+
+        graph_diagnosis = _graph_diagnostic_fallback(
+            self.allowed_evidence,
+            self._source_label(),
+        )
+        if graph_diagnosis:
+            if self.coverage_status == "partial" and self.missing_aspects:
+                missing = "、".join(f"“{item}”" for item in self.missing_aspects)
+                graph_diagnosis += f"\n\n关于{missing}，当前资料没有明确说明。"
+            return graph_diagnosis
 
         ordered_evidence = _order_manual_evidence(self.allowed_evidence)
         facts = [str(entry.get("text") or "").strip() for entry in ordered_evidence]
@@ -141,6 +169,16 @@ class ResponsePlan:
             "allowed_source_chunk_ids": allowed_source_chunk_ids,
             "allowed_evidence_pages": allowed_evidence_pages,
             "allowed_document_ids": allowed_document_ids,
+            "authorized_claim_evidence_bindings": [
+                {
+                    **dict(binding),
+                    "evidence_ids": list(binding.get("evidence_ids") or []),
+                }
+                for binding in self.authorized_claim_evidence_bindings
+            ],
+            "graph_evidence_bound_ids": list(self.graph_evidence_bound_ids),
+            "claim_evidence_bindings": [],
+            "graph_evidence_used_ids": [],
         }
         if self.pending_clarification:
             metadata["pending_clarification"] = dict(self.pending_clarification)
@@ -217,6 +255,7 @@ def build_response_plan(
     evidence_bundle: Mapping[str, Any],
     ledger: EvidenceLedger,
 ) -> ResponsePlan:
+    evidence_bundle = fuse_evidence_support(query, evidence_bundle, ledger)
     source_mode = _detect_source_mode(query)
     qualified = tuple(
         entry
@@ -227,6 +266,17 @@ def build_response_plan(
     if capabilities.get("may_cite_manual") is False:
         qualified = tuple(entry for entry in qualified if entry.get("source_type") != "manual")
     support_rows = [row for row in evidence_bundle.get("aspect_support") or [] if isinstance(row, Mapping)]
+    authorized_evidence_ids = {
+        str(evidence_id)
+        for row in support_rows
+        if row.get("supported")
+        for evidence_id in row.get("evidence_ids") or []
+        if str(evidence_id).strip()
+    }
+    qualified = tuple(
+        entry for entry in qualified
+        if str(entry.get("evidence_id") or "") in authorized_evidence_ids
+    )
     aspects = [
         QuestionAspect(str(row.get("aspect_id")), str(row.get("aspect_text") or row.get("aspect_id")))
         for row in support_rows
@@ -236,6 +286,16 @@ def build_response_plan(
     coverage_input["qualified_evidence"] = list(qualified)
     coverage = determine_coverage(coverage_input, aspects=aspects)
     coverage_status = coverage.status
+    user_obligation_rows = [
+        row
+        for row in support_rows
+        if row.get("user_obligation") is not False
+        and str(row.get("aspect_origin") or "") != "retrieval_expansion"
+    ]
+    if coverage_status != "conflict" and user_obligation_rows and not any(
+        row.get("supported") for row in user_obligation_rows
+    ):
+        coverage_status = "unsupported"
     missing_ids = {str(item) for item in evidence_bundle.get("missing_aspect_ids") or []}
     missing_labels = tuple(
         str(row.get("aspect_text") or row.get("aspect_id"))
@@ -281,12 +341,46 @@ def build_response_plan(
             if str((entry.get("source") or {}).get("chunk_id") or "") in conflict_ids
             or any(str(entry.get("evidence_id") or "").endswith(f":{candidate_id}") for candidate_id in conflict_ids)
         )
+    allowed_by_id = {
+        str(entry.get("evidence_id") or ""): entry
+        for entry in allowed
+        if str(entry.get("evidence_id") or "").strip()
+    }
+    authorized_claim_evidence_bindings = tuple(
+        {
+            "claim_id": str(row.get("aspect_id") or ""),
+            "claim_text": str(row.get("aspect_text") or row.get("aspect_id") or ""),
+            "evidence_ids": list(dict.fromkeys(
+                evidence_id
+                for evidence_id in (
+                    str(value).strip() for value in row.get("evidence_ids") or []
+                )
+                if evidence_id in allowed_by_id
+            )),
+        }
+        for row in support_rows
+        if row.get("supported")
+        and row.get("user_obligation") is not False
+        and str(row.get("aspect_origin") or "") != "retrieval_expansion"
+        and any(
+            str(value).strip() in allowed_by_id
+            for value in row.get("evidence_ids") or []
+        )
+    )
+    graph_evidence_bound_ids = tuple(dict.fromkeys(
+        evidence_id
+        for binding in authorized_claim_evidence_bindings
+        for evidence_id in binding["evidence_ids"]
+        if allowed_by_id[evidence_id].get("source_type") == "graph"
+    ))
     identity = {
         "coverage_status": coverage_status,
         "source_mode": source_mode,
         "missing_aspects": missing_labels,
         "conflicts": conflicts,
         "ledger_digest": ledger.digest,
+        "authorized_claim_evidence_bindings": authorized_claim_evidence_bindings,
+        "graph_evidence_bound_ids": graph_evidence_bound_ids,
     }
     canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     plan_id = f"response-plan-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
@@ -305,6 +399,8 @@ def build_response_plan(
         missing_aspects=missing_labels,
         conflicts=conflicts,
         ledger_digest=ledger.digest,
+        authorized_claim_evidence_bindings=authorized_claim_evidence_bindings,
+        graph_evidence_bound_ids=graph_evidence_bound_ids,
         pending_clarification=pending_clarification,
     )
 
@@ -347,6 +443,383 @@ def _order_manual_evidence(entries: tuple[dict[str, Any], ...]) -> list[dict[str
             continue
         output.append(entry)
     return output
+
+
+def _source_values(source: Mapping[str, Any], *keys: str) -> set[str]:
+    values: set[str] = set()
+    for key in keys:
+        value = source.get(key)
+        items = value if isinstance(value, (list, tuple, set)) else [value]
+        values.update(str(item).strip() for item in items if str(item or "").strip())
+    return values
+
+
+def _page_range_matches(graph_pages: set[str], manual_pages: set[str]) -> bool:
+    try:
+        graph_numbers = sorted({int(page) for page in graph_pages})
+        manual_numbers = {int(page) for page in manual_pages}
+    except (TypeError, ValueError):
+        return False
+    if len(graph_numbers) == 2 and graph_numbers[0] <= graph_numbers[1]:
+        return any(graph_numbers[0] <= page <= graph_numbers[1] for page in manual_numbers)
+    return bool(set(graph_numbers).intersection(manual_numbers))
+
+
+def _manual_solution_matches_graph_source(
+    graph_entry: Mapping[str, Any],
+    manual_entry: Mapping[str, Any],
+) -> bool:
+    graph_source = graph_entry.get("source")
+    manual_source = manual_entry.get("source")
+    if not isinstance(graph_source, Mapping) or not isinstance(manual_source, Mapping):
+        return False
+
+    graph_document = str(graph_source.get("document_id") or "").strip()
+    graph_version = str(graph_source.get("document_version") or "").strip()
+    graph_sections = _source_values(graph_source, "section_id")
+    graph_chunks = _source_values(graph_source, "source_chunk_uids")
+    graph_pages = _source_values(graph_source, "pages")
+    if not all((graph_document, graph_version, graph_sections, graph_chunks, graph_pages)):
+        return False
+
+    manual_sections = _source_values(manual_source, "section_id", "parent_section_id")
+    manual_chunks = _source_values(
+        manual_source,
+        "source_chunk_uids",
+        "chunk_ids",
+        "chunk_uid",
+        "chunk_id",
+        "parent_chunk_id",
+        "table_id",
+    )
+    manual_pages = _source_values(manual_source, "pages", "page")
+    if (
+        str(manual_source.get("document_id") or "").strip() != graph_document
+        or str(manual_source.get("document_version") or "").strip() != graph_version
+        or not graph_sections.intersection(manual_sections)
+        or not graph_chunks.intersection(manual_chunks)
+        or not _page_range_matches(graph_pages, manual_pages)
+    ):
+        return False
+
+    graph_device = str((graph_entry.get("device") or {}).get("name") or "").strip()
+    graph_component = str((graph_entry.get("component") or {}).get("name") or "").strip()
+    manual_device = str(manual_source.get("device_name") or "").strip()
+    manual_component = str(manual_source.get("component_name") or "").strip()
+    return not (
+        (manual_device and manual_device != graph_device)
+        or (manual_component and manual_component != graph_component)
+    )
+
+
+def _graph_diagnostic_fallback(
+    entries: tuple[dict[str, Any], ...],
+    source_label: str,
+) -> str:
+    graph_entry = next((
+        entry
+        for entry in entries
+        if entry.get("source_type") == "graph"
+        and {"OWNS", "CAUSES"}.issubset(set(entry.get("relationship_types") or []))
+        and str((entry.get("component") or {}).get("name") or "").strip()
+        and str((entry.get("fault") or {}).get("name") or "").strip()
+    ), None)
+    if graph_entry is None:
+        return ""
+
+    device_name = str((graph_entry.get("device") or {}).get("name") or "").strip()
+    component_name = str((graph_entry.get("component") or {}).get("name") or "").strip()
+    fault_name = str((graph_entry.get("fault") or {}).get("name") or "").strip()
+    device_prefix = f"在{device_name}中，" if device_name else ""
+    lines = [
+        f"诊断结论：{device_prefix}知识图谱将“{fault_name}”定位为“{component_name}”部件的故障。"
+    ]
+
+    solution = graph_entry.get("solution") if isinstance(graph_entry.get("solution"), Mapping) else {}
+    solution_text = ""
+    if (
+        "HAS_SOLUTION" in set(graph_entry.get("relationship_types") or [])
+        and solution.get("verified") is True
+        and str(solution.get("status") or "active") == "active"
+    ):
+        solution_text = str(solution.get("title") or "").strip()
+    if not solution_text:
+        matching_rows = [
+            entry
+            for entry in entries
+            if entry.get("source_type") == "manual"
+            and (entry.get("source") or {}).get("row_index") is not None
+            and fault_name in str(entry.get("text") or "")
+            and _manual_solution_matches_graph_source(graph_entry, entry)
+        ]
+        matching_rows.sort(key=lambda item: len(str(item.get("text") or "")))
+        for row in matching_rows:
+            for line in str(row.get("text") or "").splitlines():
+                if fault_name not in line:
+                    continue
+                match = re.search(
+                    r"(?:col_5|处理建议|解决方案|维修建议|指导)\s*[=:：]\s*([^；;\n|]+)",
+                    line,
+                    flags=re.IGNORECASE,
+                )
+                if match:
+                    solution_text = match.group(1).strip(" 。；;")
+                    break
+            if solution_text:
+                break
+
+    if not solution_text:
+        action_markers = ("更换", "跟换", "修复", "检查", "调整", "清洗", "紧固")
+        for entry in entries:
+            if entry.get("source_type") != "manual":
+                continue
+            if not _manual_solution_matches_graph_source(graph_entry, entry):
+                continue
+            for line in str(entry.get("text") or "").splitlines():
+                if fault_name not in line or "|" not in line:
+                    continue
+                cells = [cell.strip() for cell in line.split("|")]
+                fault_cell_index = next(
+                    (index for index, cell in enumerate(cells) if fault_name in cell),
+                    None,
+                )
+                if fault_cell_index is None:
+                    continue
+                solution_text = next((
+                    cell.strip(" 。；;")
+                    for cell in cells[fault_cell_index + 1:]
+                    if any(marker in cell for marker in action_markers)
+                ), "")
+                if solution_text:
+                    break
+            if solution_text:
+                break
+
+    if not solution_text:
+        solution_text = _manual_treatment_sentence(
+            graph_entry,
+            entries,
+        )
+
+    if solution_text:
+        lines.append(f"处理建议：手册对应故障行记录“{solution_text}”。")
+        canonical_treatment = _canonical_manual_treatment(graph_entry, solution_text)
+        if canonical_treatment and _normalized(canonical_treatment) not in _normalized(solution_text):
+            lines.append(f"处理结论：{canonical_treatment}。")
+    else:
+        lines.append("处理建议：当前合格证据未给出进一步处理方法。")
+    if source_label:
+        lines.extend(["", f"（来源：{source_label}）"])
+    return "\n".join(lines)
+
+
+_FAULT_TREATMENT_SUFFIX_RE = re.compile(
+    r"(?:变形或开裂|损坏|磨损|故障|不灵活|发黑|变形|开裂|弯曲|卡住|失效)$"
+)
+
+
+def _manual_treatment_sentence(
+    graph_entry: Mapping[str, Any],
+    entries: tuple[dict[str, Any], ...],
+) -> str:
+    """Extract one action-bearing treatment sentence from the graph source chunk."""
+    fault_name = str((graph_entry.get("fault") or {}).get("name") or "").strip()
+    component_name = str((graph_entry.get("component") or {}).get("name") or "").strip()
+    fault_target = _FAULT_TREATMENT_SUFFIX_RE.sub("", fault_name).strip(" -_/，、")
+    targets = [
+        _normalized(value)
+        for value in (fault_target, component_name)
+        if len(_normalized(value)) >= 2
+    ]
+    action_markers = ("更换", "跟换", "修复", "重新安装", "调整", "清洗", "紧固")
+    candidates: list[tuple[int, int, str]] = []
+    for entry in entries:
+        if entry.get("source_type") != "manual":
+            continue
+        if not _manual_solution_matches_graph_source(graph_entry, entry):
+            continue
+        text = str(entry.get("text") or "").strip()
+        if not text:
+            continue
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for index, line in enumerate(lines):
+            normalized_line = _normalized(line)
+            if not any(marker in line for marker in action_markers):
+                continue
+            target_hits = sum(target in normalized_line for target in targets)
+            if not target_hits:
+                continue
+            condition_hit = int(any(marker in line for marker in (
+                "若", "如有", "否则", "不灵活", "损坏", "磨损", "故障", "发黑", "开裂", "变形",
+            )))
+            candidates.append((target_hits + condition_hit, -index, line.strip(" 。；;")))
+    if not candidates:
+        return ""
+    return max(candidates, key=lambda item: (item[0], item[1], -len(item[2])))[2]
+
+
+def _canonical_manual_treatment(
+    graph_entry: Mapping[str, Any],
+    solution_text: str,
+) -> str:
+    """Render an explicit replacement target only when the manual names it."""
+    if "更换" not in solution_text and "跟换" not in solution_text:
+        return ""
+    fault_name = str((graph_entry.get("fault") or {}).get("name") or "").strip()
+    fault_target = _FAULT_TREATMENT_SUFFIX_RE.sub("", fault_name).strip(" -_/，、")
+    normalized_target = _normalized(fault_target)
+    if len(normalized_target) < 2 or normalized_target not in _normalized(solution_text):
+        return ""
+    return f"更换{fault_target}"
+
+
+_GRAPH_CLAIM_TYPES_BY_ASPECT = {
+    "device": "device_identity",
+    "device-identity": "device_identity",
+    "component": "component_ownership",
+    "component-ownership": "component_ownership",
+    "ownership": "component_ownership",
+    "fault": "fault_relation",
+    "fault-cause": "fault_relation",
+    "fault-relation": "fault_relation",
+    "treatment": "verified_solution",
+    "verified-solution": "verified_solution",
+}
+
+
+def _graph_claim_type(
+    binding: Mapping[str, Any],
+    entry: Mapping[str, Any],
+) -> str:
+    aspect_id = str(binding.get("claim_id") or "").strip().lower().replace("_", "-")
+    explicit = _GRAPH_CLAIM_TYPES_BY_ASPECT.get(aspect_id)
+    available = {str(value) for value in entry.get("claim_types") or []}
+    if explicit in available:
+        return explicit
+    for candidate in (
+        "verified_solution",
+        "fault_relation",
+        "component_ownership",
+        "device_identity",
+    ):
+        if candidate in available:
+            return candidate
+    return ""
+
+
+def _graph_claim_is_emitted(
+    answer: str,
+    entry: Mapping[str, Any],
+    claim_type: str,
+) -> bool:
+    normalized_answer = _normalized(answer)
+
+    def contains(container: Mapping[str, Any], key: str) -> bool:
+        value = _normalized(str(container.get(key) or ""))
+        return bool(value and value in normalized_answer)
+
+    device = entry.get("device") if isinstance(entry.get("device"), Mapping) else {}
+    component = entry.get("component") if isinstance(entry.get("component"), Mapping) else {}
+    fault = entry.get("fault") if isinstance(entry.get("fault"), Mapping) else {}
+    solution = entry.get("solution") if isinstance(entry.get("solution"), Mapping) else {}
+    if claim_type == "device_identity":
+        return contains(device, "name")
+    if claim_type == "component_ownership":
+        # The graph path is already scope-authorized. A concise answer may
+        # name only the component (for example, "故障部件：火花塞") without
+        # repeating the parent device or an ownership verb.
+        return contains(component, "name")
+    if claim_type == "fault_relation":
+        return contains(component, "name") and contains(fault, "name")
+    if claim_type == "verified_solution":
+        return (
+            solution.get("verified") is True
+            and str(solution.get("status") or "active") == "active"
+            and contains(solution, "title")
+            and (contains(fault, "name") or not str(fault.get("name") or "").strip())
+        )
+    return False
+
+
+def _bind_emitted_graph_claims(
+    plan: ResponsePlan,
+    answer: str,
+) -> tuple[tuple[dict[str, Any], ...], tuple[str, ...]]:
+    allowed_by_id = {
+        str(entry.get("evidence_id") or ""): entry
+        for entry in plan.allowed_evidence
+        if str(entry.get("evidence_id") or "").strip()
+    }
+    emitted: list[dict[str, Any]] = []
+    used_ids: list[str] = []
+    for binding in plan.authorized_claim_evidence_bindings:
+        graph_ids: list[str] = []
+        claim_type = ""
+        for evidence_id in binding.get("evidence_ids") or []:
+            entry = allowed_by_id.get(str(evidence_id))
+            if not entry or entry.get("source_type") != "graph":
+                continue
+            entry_claim_type = _graph_claim_type(binding, entry)
+            if not entry_claim_type or not _graph_claim_is_emitted(
+                answer,
+                entry,
+                entry_claim_type,
+            ):
+                continue
+            claim_type = claim_type or entry_claim_type
+            stable_id = str(evidence_id)
+            if stable_id not in graph_ids:
+                graph_ids.append(stable_id)
+            if stable_id not in used_ids:
+                used_ids.append(stable_id)
+        if graph_ids:
+            emitted.append({
+                "claim_id": str(binding.get("claim_id") or ""),
+                "claim_type": claim_type,
+                "claim_text": str(binding.get("claim_text") or ""),
+                "evidence_ids": graph_ids,
+                "source_types": ["graph"],
+                "emitted": True,
+            })
+    return tuple(emitted), tuple(used_ids)
+
+
+def _response_audit_result(
+    plan: ResponsePlan,
+    answer: str,
+    passed: bool,
+    violations: tuple[str, ...],
+    used_fallback: bool,
+) -> ResponseAuditResult:
+    bindings, graph_ids = _bind_emitted_graph_claims(plan, answer)
+    used_graph_ids = set(graph_ids)
+    unbound_graph_ids: list[str] = []
+    for entry in plan.allowed_evidence:
+        if entry.get("source_type") != "graph":
+            continue
+        evidence_id = str(entry.get("evidence_id") or "")
+        if not evidence_id or evidence_id in used_graph_ids:
+            continue
+        if any(
+            _graph_claim_is_emitted(answer, entry, claim_type)
+            for claim_type in entry.get("claim_types") or []
+        ):
+            unbound_graph_ids.append(evidence_id)
+    if unbound_graph_ids:
+        passed = False
+        used_fallback = True
+        violations = tuple(dict.fromkeys((
+            *violations,
+            *(f"unbound_graph_claim:{evidence_id}" for evidence_id in unbound_graph_ids),
+        )))
+    return ResponseAuditResult(
+        answer=answer,
+        passed=passed,
+        violations=violations,
+        used_fallback=used_fallback,
+        claim_evidence_bindings=bindings,
+        graph_evidence_used_ids=graph_ids,
+    )
 
 
 def finalize_response(
@@ -409,8 +882,16 @@ def finalize_response(
 
     deduped = tuple(dict.fromkeys(violations))
     if deduped:
-        return ResponseAuditResult(plan.deterministic_fallback(), False, deduped, True)
-    return ResponseAuditResult(answer, True, (), False)
+        fallback = plan.deterministic_fallback()
+        return _response_audit_result(plan, fallback, False, deduped, True)
+    if plan.graph_evidence_bound_ids:
+        emitted_bindings, _ = _bind_emitted_graph_claims(plan, answer)
+        if not emitted_bindings:
+            fallback = plan.deterministic_fallback()
+            fallback_bindings, _ = _bind_emitted_graph_claims(plan, fallback)
+            if fallback_bindings:
+                return _response_audit_result(plan, fallback, True, (), True)
+    return _response_audit_result(plan, answer, True, (), False)
 
 
 def _detect_source_mode(query: str) -> str:

@@ -236,10 +236,22 @@ public class ManualKGInternalController {
             String faultDescription  = (String) body.getOrDefault("faultDescription", "");
             String solutionTitle     = (String) body.get("solutionTitle");
             String solutionDesc      = (String) body.getOrDefault("solutionDescription", "");
+            String faultIdentityKey  = asText(body.get("faultIdentityKey"));
+            String solutionIdentityKey = asText(body.get("solutionIdentityKey"));
             @SuppressWarnings("unchecked")
             List<String> solutionSteps = (List<String>) body.getOrDefault("solutionSteps", Collections.emptyList());
             String chunkUid          = (String) body.get("sourceChunkUid");
             String documentId        = (String) body.getOrDefault("documentId", "");
+            String documentVersion   = asText(body.get("documentVersion"));
+            String sectionId         = asText(body.get("sectionId"));
+            String sourceSubject     = asText(body.get("sourceSubject"));
+            String sourceExcerpt     = asText(body.get("sourceExcerpt"));
+            List<String> sourceChunkUids = new ArrayList<>(textList(body.get("sourceChunkUids")));
+            if (chunkUid != null && !chunkUid.isBlank() && !sourceChunkUids.contains(chunkUid)) {
+                sourceChunkUids.add(chunkUid);
+            }
+            Integer pageStart        = toInteger(body.get("pageStart"));
+            Integer pageEnd          = toInteger(body.get("pageEnd"));
             Long manualId            = toLong(body.get("manualId"));
             Object confidenceRaw     = body.get("confidence");
             Double confidence        = confidenceRaw == null ? null : ((Number) confidenceRaw).doubleValue();
@@ -256,42 +268,81 @@ public class ManualKGInternalController {
                 return Result.error("400", "componentId required: Fault must be anchored to a Component");
             }
 
+            // A section-level component is not proof of the subject of a conditional
+            // maintenance statement.  When the extractor supplies a subject, it must
+            // be explicitly present in the immutable source excerpt before the edge
+            // is persisted.
+            if (!sourceSubject.isBlank()
+                    && !sourceExcerpt.isBlank()
+                    && !compactForSubjectMatch(sourceExcerpt).contains(compactForSubjectMatch(sourceSubject))) {
+                return Result.error("422", "sourceSubject is not present in sourceExcerpt");
+            }
+
+            if (faultIdentityKey.isBlank()) {
+                faultIdentityKey = "legacy-fault:" + componentId + ":" + faultName.trim();
+            }
+            if (solutionIdentityKey.isBlank()) {
+                solutionIdentityKey = "legacy-solution:" + faultIdentityKey + ":" + solutionTitle.trim();
+            }
+
             String stepsText = String.join("\n", solutionSteps);
 
             // --- Fault MERGE（严格要求 componentId）---
             String faultCypher = """
                     MATCH (c:Component {id: $componentId})
-                    MERGE (f:Fault {name: $faultName})<-[:CAUSES]-(c)
+                    MERGE (f:Fault {identity_key: $faultIdentityKey})
                     ON CREATE SET
                         f.id                = randomUUID(),
+                        f.name              = $faultName,
                         f.description       = $faultDescription,
                         f.source            = 'manual',
                         f.verified          = false,
                         f.status            = 'active',
                         f.manual_confidence = $confidence,
                         f.source_chunk_uid  = $chunkUid,
+                        f.source_chunk_uids = $sourceChunkUids,
                         f.document_id       = $documentId,
+                        f.document_version  = $documentVersion,
+                        f.section_id        = $sectionId,
+                        f.page_start        = $pageStart,
+                        f.page_end          = $pageEnd,
                         f.manual_ids        = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         f.created_at        = datetime()
                     ON MATCH SET
                         f.updated_at        = datetime(),
+                        f.name              = $faultName,
                         f.description       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $faultDescription ELSE f.description END,
                         f.manual_confidence = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $confidence         ELSE f.manual_confidence END,
                         f.document_id       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN coalesce($documentId, f.document_id) ELSE f.document_id END,
+                        f.document_version  = coalesce(f.document_version, $documentVersion),
+                        f.section_id        = coalesce(f.section_id, $sectionId),
+                        f.source_chunk_uids = reduce(acc = [], uid IN coalesce(f.source_chunk_uids, []) + $sourceChunkUids |
+                            CASE WHEN uid IN acc THEN acc ELSE acc + uid END),
+                        f.source_chunk_uid  = coalesce(f.source_chunk_uid, $chunkUid),
+                        f.page_start        = CASE WHEN f.page_start IS NULL THEN $pageStart WHEN $pageStart IS NULL THEN f.page_start ELSE CASE WHEN f.page_start < $pageStart THEN f.page_start ELSE $pageStart END END,
+                        f.page_end          = CASE WHEN f.page_end IS NULL THEN $pageEnd WHEN $pageEnd IS NULL THEN f.page_end ELSE CASE WHEN f.page_end > $pageEnd THEN f.page_end ELSE $pageEnd END END,
                         f.manual_ids        = CASE
                             WHEN $manualId IS NULL THEN coalesce(f.manual_ids, [])
                             WHEN $manualId IN coalesce(f.manual_ids, []) THEN f.manual_ids
                             ELSE coalesce(f.manual_ids, []) + $manualId END
-                    RETURN f.id AS faultId, (f.updated_at IS NULL) AS faultCreated
+                    WITH c, f, (f.updated_at IS NULL) AS faultCreated
+                    MERGE (c)-[:CAUSES]->(f)
+                    RETURN f.id AS faultId, faultCreated
                     """;
 
             Optional<Map<String, Object>> faultRow = neo4jClient.query(faultCypher)
                     .bind(componentId).to("componentId")
+                    .bind(faultIdentityKey).to("faultIdentityKey")
                     .bind(faultName).to("faultName")
                     .bind(faultDescription).to("faultDescription")
                     .bind(confidence).to("confidence")
                     .bind(chunkUid).to("chunkUid")
                     .bind(documentId).to("documentId")
+                    .bind(documentVersion).to("documentVersion")
+                    .bind(sectionId).to("sectionId")
+                    .bind(sourceChunkUids).to("sourceChunkUids")
+                    .bind(pageStart).to("pageStart")
+                    .bind(pageEnd).to("pageEnd")
                     .bind(manualId).to("manualId")
                     .fetch().first();
             if (faultRow.isEmpty()) {
@@ -304,37 +355,59 @@ public class ManualKGInternalController {
             // --- Solution MERGE ---
             String solutionCypher = """
                     MATCH (f:Fault {id: $faultId})
-                    MERGE (s:Solution {title: $solutionTitle})<-[:HAS_SOLUTION]-(f)
+                    MERGE (s:Solution {identity_key: $solutionIdentityKey})
                     ON CREATE SET
                         s.id               = randomUUID(),
+                        s.title             = $solutionTitle,
                         s.description      = $solutionDesc,
                         s.steps_text       = $stepsText,
                         s.source           = 'manual',
                         s.verified         = false,
                         s.status           = 'active',
                         s.source_chunk_uid = $chunkUid,
+                        s.source_chunk_uids = $sourceChunkUids,
                         s.document_id      = $documentId,
+                        s.document_version = $documentVersion,
+                        s.section_id       = $sectionId,
+                        s.page_start       = $pageStart,
+                        s.page_end         = $pageEnd,
                         s.manual_ids       = CASE WHEN $manualId IS NULL THEN [] ELSE [$manualId] END,
                         s.created_at       = datetime()
                     ON MATCH SET
                         s.updated_at       = datetime(),
+                        s.title             = $solutionTitle,
                         s.description      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $solutionDesc ELSE s.description END,
                         s.steps_text       = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $stepsText    ELSE s.steps_text END,
                         s.document_id      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN coalesce($documentId, s.document_id) ELSE s.document_id END,
+                        s.document_version = coalesce(s.document_version, $documentVersion),
+                        s.section_id       = coalesce(s.section_id, $sectionId),
+                        s.source_chunk_uids = reduce(acc = [], uid IN coalesce(s.source_chunk_uids, []) + $sourceChunkUids |
+                            CASE WHEN uid IN acc THEN acc ELSE acc + uid END),
+                        s.source_chunk_uid = coalesce(s.source_chunk_uid, $chunkUid),
+                        s.page_start       = CASE WHEN s.page_start IS NULL THEN $pageStart WHEN $pageStart IS NULL THEN s.page_start ELSE CASE WHEN s.page_start < $pageStart THEN s.page_start ELSE $pageStart END END,
+                        s.page_end         = CASE WHEN s.page_end IS NULL THEN $pageEnd WHEN $pageEnd IS NULL THEN s.page_end ELSE CASE WHEN s.page_end > $pageEnd THEN s.page_end ELSE $pageEnd END END,
                         s.manual_ids       = CASE
                             WHEN $manualId IS NULL THEN coalesce(s.manual_ids, [])
                             WHEN $manualId IN coalesce(s.manual_ids, []) THEN s.manual_ids
                             ELSE coalesce(s.manual_ids, []) + $manualId END
-                    RETURN s.id AS solutionId, (s.updated_at IS NULL) AS solutionCreated
+                    WITH f, s, (s.updated_at IS NULL) AS solutionCreated
+                    MERGE (f)-[:HAS_SOLUTION]->(s)
+                    RETURN s.id AS solutionId, solutionCreated
                     """;
 
             Optional<Map<String, Object>> solutionRow = neo4jClient.query(solutionCypher)
                     .bind(faultId).to("faultId")
+                    .bind(solutionIdentityKey).to("solutionIdentityKey")
                     .bind(solutionTitle).to("solutionTitle")
                     .bind(solutionDesc).to("solutionDesc")
                     .bind(stepsText).to("stepsText")
                     .bind(chunkUid).to("chunkUid")
                     .bind(documentId).to("documentId")
+                    .bind(documentVersion).to("documentVersion")
+                    .bind(sectionId).to("sectionId")
+                    .bind(sourceChunkUids).to("sourceChunkUids")
+                    .bind(pageStart).to("pageStart")
+                    .bind(pageEnd).to("pageEnd")
                     .bind(manualId).to("manualId")
                     .fetch()
                     .first();
@@ -347,10 +420,14 @@ public class ManualKGInternalController {
             Boolean solutionCreated = (Boolean) solutionRow.get().get("solutionCreated");
 
             // --- Fault embeddings ---
+            String embeddingStatus = "ok";
             try {
                 String embText   = "故障名称：" + faultName + "\n故障描述：" + faultDescription;
                 List<Double> emb      = embeddingUtils.getEmbedding(embText);
                 List<Double> multiEmb = multimodalEmbeddingUtils.getMultimodalEmbedding(embText, null);
+                if (emb == null || emb.size() != 1536) {
+                    throw new IllegalStateException("fault embedding must contain 1536 dimensions");
+                }
 
                 String embCypher = """
                         MATCH (f:Fault {id: $id})
@@ -363,6 +440,7 @@ public class ManualKGInternalController {
                         .bind(multiEmb).to("multiEmb")
                         .run();
             } catch (Exception embEx) {
+                embeddingStatus = "failed";
                 log.warn("embedding generation failed for fault {}: {}", faultId, embEx.getMessage());
             }
 
@@ -371,6 +449,7 @@ public class ManualKGInternalController {
             result.put("solutionId",     solutionId);
             result.put("faultCreated",   faultCreated);
             result.put("solutionCreated", solutionCreated);
+            result.put("embeddingStatus", embeddingStatus);
             return Result.success(result);
 
         } catch (Exception e) {
@@ -399,19 +478,17 @@ public class ManualKGInternalController {
                 return Result.error("400", "manualId required");
             }
 
-            // Step 1: 从所有归属本手册的节点的 manual_ids 中移除本 id
-            neo4jClient.query("""
-                    MATCH (n)
-                    WHERE $manualId IN coalesce(n.manual_ids, [])
-                    SET n.manual_ids = [x IN n.manual_ids WHERE x <> $manualId]
-                    """)
-                    .bind(manualId).to("manualId")
-                    .run();
-
-            // Step 2: 删除"可安全删除"的节点——manual_ids 空 + 自身非沉淀 + 下游无沉淀
-            // 沉淀判定：verified=true 或 source_task_id 非空
+            // 候选集必须在摘除 manualId 前冻结，后续只允许处理本次调用拥有的节点。
+            // 不能在摘除后再次全图 MATCH manual_ids 为空的节点，否则会误删未归属旧数据。
             String deleteCypher = """
                     MATCH (n)
+                    WHERE $manualId IN coalesce(n.manual_ids, [])
+                    WITH collect(n) AS candidateNodes
+                    FOREACH (n IN candidateNodes |
+                        SET n.manual_ids = [x IN n.manual_ids WHERE x <> $manualId])
+                    WITH candidateNodes
+                    UNWIND candidateNodes AS n
+                    WITH n
                     WHERE (n:Device OR n:Component OR n:Fault OR n:Solution)
                       AND size(coalesce(n.manual_ids, [])) = 0
                       AND coalesce(n.verified, false) = false
@@ -470,6 +547,28 @@ public class ManualKGInternalController {
             try {
                 long l = Long.parseLong(s.trim());
                 return l == 0L ? null : l;
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return null;
+    }
+
+    static String compactForSubjectMatch(String value) {
+        return value == null
+                ? ""
+                : value.replaceAll("\\s+", "")
+                        .replace("，", ",")
+                        .replace("：", ":")
+                        .trim();
+    }
+
+    private static Integer toInteger(Object value) {
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Integer.parseInt(text.trim());
             } catch (NumberFormatException ignored) {
             }
         }

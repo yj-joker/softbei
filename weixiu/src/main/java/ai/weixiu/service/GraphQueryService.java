@@ -5,6 +5,7 @@ import ai.weixiu.pojo.query.GraphCandidateQuery;
 import ai.weixiu.pojo.vo.ComponentDeviceVO;
 import ai.weixiu.pojo.vo.DiagnosisSearchVO;
 import ai.weixiu.pojo.vo.GraphCandidateVO;
+import ai.weixiu.pojo.vo.GraphCandidateBatchVO;
 
 import java.util.List;
 
@@ -20,7 +21,7 @@ public interface GraphQueryService {
     DiagnosisSearchVO searchDiagnosisPaths(DiagnosisSearchQuery query);
 
     /** 返回参与确定性反问决策的结构化图谱候选。 */
-    List<GraphCandidateVO> findClarificationCandidates(GraphCandidateQuery query);
+    GraphCandidateBatchVO findClarificationCandidates(GraphCandidateQuery query);
 
     /**
      * 验证故障名称是否存在于知识图谱中（模糊匹配）

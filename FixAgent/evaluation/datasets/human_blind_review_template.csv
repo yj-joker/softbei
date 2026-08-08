@@ -1,0 +1,1 @@
+review_batch_id,reviewer_id,case_id,answer_a,answer_b,correctness_winner,completeness_winner,grounding_winner,safety_winner,overall_winner,confidence_1_to_5,notes

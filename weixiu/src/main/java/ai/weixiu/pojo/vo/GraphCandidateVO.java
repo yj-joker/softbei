@@ -23,6 +23,7 @@ public class GraphCandidateVO {
     private String pathType;
     private double graphScore;
     private String provenanceStatus;
+    private String recallMode;
     private List<String> distinguishingFeatures = new ArrayList<>();
     private List<String> verificationActions = new ArrayList<>();
 }

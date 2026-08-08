@@ -179,3 +179,122 @@ def test_read_jsonl_dataset_rejects_duplicate_ids_inside_one_file(tmp_path: Path
 
     with pytest.raises(ValueError, match=r"duplicates\.jsonl.*same.*lines 1 and 2"):
         read_jsonl_dataset(dataset)
+
+
+def test_v3_blind_fields_and_graded_gold_evidence_are_parsed(tmp_path: Path) -> None:
+    dataset = _write_jsonl(
+        tmp_path / "blind_v2.jsonl",
+        [
+            {
+                "schema_version": "3.0",
+                "case_id": "blind_001",
+                "split": "blind_test",
+                "question": "如何判断两个故障现象之间的关系？",
+                "question_type": "multi_hop",
+                "graph_dependency": "required",
+                "gold_answer": "需要结合故障、原因和处置路径判断。",
+                "question_origin": "human_authored",
+                "difficulty": "medium",
+                "input_modality": "text",
+                "gold_evidence": [
+                    {"chunk_id": "chunk-a", "relevance_grade": 3},
+                    {"chunk_id": "chunk-b", "relevance_grade": "1"},
+                ],
+            }
+        ],
+    )
+
+    case = read_jsonl_dataset(dataset)[0]
+
+    assert case.schema_version == "3.0"
+    assert case.split == "blind_test"
+    assert case.question_type == "multi_hop"
+    assert case.graph_dependency == "required"
+    assert case.gold_answer == "需要结合故障、原因和处置路径判断。"
+    assert case.question_origin == "human_authored"
+    assert [item["relevance_grade"] for item in case.gold_evidence] == [3, 1]
+    assert case.input_modality == "text"
+    assert case.image_inputs == []
+
+
+def test_legacy_case_gets_non_blind_defaults(tmp_path: Path) -> None:
+    dataset = _write_jsonl(tmp_path / "legacy.jsonl", [{"case_id": "old", "query": "旧问题"}])
+
+    case = read_jsonl_dataset(dataset)[0]
+
+    assert case.schema_version == "1.0"
+    assert case.split == "dev"
+    assert case.graph_dependency == "unknown"
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("split", "secret_final"),
+        ("question_type", "other"),
+        ("graph_dependency", "sometimes"),
+    ],
+)
+def test_v2_rejects_unknown_controlled_values(tmp_path: Path, field: str, value: str) -> None:
+    row = {
+        "schema_version": "2.0",
+        "case_id": "invalid",
+        "query": "问题",
+        "split": "dev",
+        "question_type": "fact",
+        "graph_dependency": "none",
+    }
+    row[field] = value
+    dataset = _write_jsonl(tmp_path / "invalid_v2.jsonl", [row])
+
+    with pytest.raises(ValueError, match=field):
+        read_jsonl_dataset(dataset)
+
+
+def test_v2_rejects_out_of_range_relevance_grade(tmp_path: Path) -> None:
+    dataset = _write_jsonl(
+        tmp_path / "invalid_grade.jsonl",
+        [
+            {
+                "schema_version": "2.0",
+                "case_id": "invalid-grade",
+                "query": "问题",
+                "gold_evidence": [{"chunk_id": "chunk-a", "relevance_grade": 4}],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="relevance_grade"):
+        read_jsonl_dataset(dataset)
+
+
+def test_v3_image_case_requires_complete_image_provenance(tmp_path: Path) -> None:
+    row = {
+        "schema_version": "3.0",
+        "case_id": "image-1",
+        "split": "blind_test",
+        "query": "请判断图中异常",
+        "question_type": "relation_disambiguation",
+        "graph_dependency": "helpful",
+        "question_origin": "human_authored",
+        "difficulty": "hard",
+        "input_modality": "image",
+        "image_inputs": [{"image_id": "img-1"}],
+        "gold_evidence": [{"chunk_id": "chunk-1", "relevance_grade": 3}],
+    }
+
+    with pytest.raises(ValueError, match="image_inputs missing fields"):
+        read_jsonl_dataset(_write_jsonl(tmp_path / "invalid-image.jsonl", [row]))
+
+
+def test_blind_test_rejects_legacy_schema(tmp_path: Path) -> None:
+    row = {
+        "schema_version": "2.0",
+        "case_id": "legacy-blind",
+        "split": "blind_test",
+        "query": "问题",
+        "question_type": "fact",
+        "graph_dependency": "none",
+    }
+    with pytest.raises(ValueError, match="schema_version 3.0"):
+        read_jsonl_dataset(_write_jsonl(tmp_path / "legacy-blind.jsonl", [row]))

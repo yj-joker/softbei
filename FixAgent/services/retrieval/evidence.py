@@ -12,6 +12,7 @@ from services.retrieval.provenance import (
     canonical_manual_chunk_id,
     dedupe_and_sort_manual_records,
 )
+from services.retrieval.graph_evidence import normalize_graph_response
 
 
 @dataclass(frozen=True)
@@ -167,6 +168,19 @@ def _append_manual_entries(ledger: EvidenceLedger, payload: Any) -> None:
         if not document_id or not chunk_id:
             continue
         qualification = str(metadata.get("qualification") or item.get("qualification") or item.get("_ledger_qualification") or "")
+        chunk_uid = str(metadata.get("chunk_uid") or item.get("chunk_uid") or "").strip()
+        source_chunk_uid = str(
+            metadata.get("source_chunk_uid") or item.get("source_chunk_uid") or ""
+        ).strip()
+        source_chunk_uids = list(dict.fromkeys(
+            str(value).strip()
+            for value in [
+                *(metadata.get("source_chunk_uids") or item.get("source_chunk_uids") or []),
+                source_chunk_uid,
+                chunk_uid,
+            ]
+            if str(value or "").strip()
+        ))
         ledger.append({
             "evidence_id": f"manual:{document_id}:{chunk_id}",
             "source_type": "manual",
@@ -177,6 +191,9 @@ def _append_manual_entries(ledger: EvidenceLedger, payload: Any) -> None:
                 "document_version": str(metadata.get("document_version") or ""),
                 "chunk_id": chunk_id,
                 "source_chunk_id": chunk_id,
+                "chunk_uid": chunk_uid,
+                "source_chunk_uids": source_chunk_uids,
+                "table_id": str(metadata.get("table_id") or item.get("table_id") or ""),
                 "chunk_type": str(metadata.get("chunk_type") or ""),
                 "parent_chunk_id": str(metadata.get("parent_chunk_id") or ""),
                 "parent_section_id": str(metadata.get("parent_section_id") or ""),
@@ -216,58 +233,21 @@ def _append_rule_entry(ledger: EvidenceLedger, payload: Any) -> None:
 def _append_graph_entries(ledger: EvidenceLedger, payload: Any) -> None:
     if not isinstance(payload, Mapping):
         return
-    records = payload.get("raw_records") or payload.get("records") or []
-    for record in records if isinstance(records, list) else []:
-        if not isinstance(record, Mapping):
-            continue
-        path_ids = _as_list(record.get("pathIds") or record.get("path_ids") or record.get("pathId") or record.get("path_id"))
-        node_ids = _as_list(record.get("nodeIds") or record.get("node_ids") or record.get("nodeId") or record.get("node_id"))
-        if not path_ids and not node_ids:
-            continue
-        stable_id = path_ids[0] if path_ids else ":".join(node_ids)
-        solutions = record.get("solutions") if isinstance(record.get("solutions"), list) else []
-        solution_texts = [
-            _joined_text(
-                solution.get("title"),
-                solution.get("name"),
-                solution.get("description"),
-                solution.get("solutionDescription"),
-                *(solution.get("steps") or solution.get("solutionSteps") or []),
-            )
-            for solution in solutions
-            if isinstance(solution, Mapping)
-        ]
-        component_name = str(record.get("componentName") or "").strip()
-        solution_title = str(record.get("solutionTitle") or "").strip()
-        bound_solution_title = solution_title
-        if component_name and solution_title and component_name not in solution_title:
-            bound_solution_title = (
-                f"将{component_name}{solution_title[1:]}"
-                if solution_title.startswith("将")
-                else f"{component_name}：{solution_title}"
-            )
-        ledger.append({
-            "evidence_id": f"graph:{stable_id}",
-            "source_type": "graph",
-            "text": _joined_text(
-                _entry_text(record),
-                record.get("deviceName"),
-                component_name,
-                record.get("faultName"),
-                record.get("faultDescription"),
-                solution_title,
-                bound_solution_title,
-                record.get("solutionDescription"),
-                *(record.get("solutionSteps") or []),
-                *solution_texts,
-            ),
-            "qualification": "qualified",
-            "source": {
-                "path_ids": path_ids,
-                "node_ids": node_ids,
-                "relationship_types": _as_list(record.get("relationshipTypes") or record.get("relationship_types")),
-            },
-        })
+    normalized_entries = payload.get("evidence")
+    if isinstance(normalized_entries, list):
+        for entry in normalized_entries:
+            if (
+                isinstance(entry, Mapping)
+                and entry.get("source_type") == "graph"
+                and entry.get("qualification") == "qualified"
+            ):
+                ledger.append(entry)
+    scope = payload.get("graph_scope") or payload.get("scope")
+    scope = scope if isinstance(scope, Mapping) else None
+    batch = normalize_graph_response(payload, scope=scope)
+    for evidence in batch.evidence:
+        if evidence.qualification == "qualified":
+            ledger.append(evidence.to_ledger_entry())
 
 
 def _entry_text(item: Mapping[str, Any]) -> str:
@@ -282,9 +262,3 @@ def _joined_text(*values: Any) -> str:
         elif value not in (None, "") and str(value).strip():
             flattened.append(str(value).strip())
     return "\n".join(dict.fromkeys(flattened))
-
-
-def _as_list(value: Any) -> list[str]:
-    if isinstance(value, (list, tuple, set)):
-        return [str(item) for item in value if str(item).strip()]
-    return [str(value)] if value not in (None, "") else []

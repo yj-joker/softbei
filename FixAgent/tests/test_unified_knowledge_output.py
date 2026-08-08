@@ -821,6 +821,10 @@ def test_stream_done_always_contains_knowledge_diagnostics() -> None:
         "coverage_status",
         "response_plan_id",
         "evidence_ledger_digest",
+        "authorized_claim_evidence_bindings",
+        "claim_evidence_bindings",
+        "graph_evidence_bound_ids",
+        "graph_evidence_used_ids",
         "_deterministic_answer_evidence_pages",
         "_deterministic_answer_document_ids",
         "_deterministic_answer_section_title",
@@ -2115,24 +2119,44 @@ def test_numeric_domain_rule_fact_is_bound_to_rule_text() -> None:
     assert finalized.metadata["response_audit"]["passed"] is True
 
 
-def test_numeric_graph_fact_is_bound_to_structured_record() -> None:
-    trace = [{
+def _qualified_graph_trace(*, include_solution: bool = False) -> list[dict]:
+    record = {
+        "pathId": "kgpath:engine-1:spark-plug-1:gap-fault-1",
+        "nodeIds": ["engine-1", "spark-plug-1", "gap-fault-1"],
+        "relationshipTypes": ["OWNS", "CAUSES", "HAS_SOLUTION"],
+        "deviceId": "engine-1",
+        "deviceName": "发动机",
+        "componentId": "spark-plug-1",
+        "componentName": "火花塞",
+        "faultId": "gap-fault-1",
+        "faultName": "间隙异常",
+        "documentId": "manual-engine-1",
+        "documentVersion": "v1",
+        "sectionId": "sec-spark-plug",
+        "sourceChunkUids": ["chunk-spark-plug-1"],
+        "pages": [12],
+        "graphRevision": "graph-v1",
+        "provenanceStatus": "complete",
+        "matchScore": 3,
+    }
+    if include_solution:
+        record["solutions"] = [{
+            "id": "solution-gap-1",
+            "title": "将火花塞间隙调整为 0.8 mm",
+            "status": "active",
+            "verified": True,
+        }]
+    return [{
         "iteration": 1,
         "tool_calls": [{
             "name": "java_graph_diagnosis_path",
-            "result_data": {
-                "raw_records": [{
-                    "pathIds": ["path-1"],
-                    "nodeIds": ["node-1", "node-2"],
-                    "relationshipTypes": ["HAS_SOLUTION"],
-                    "deviceName": "发动机",
-                    "componentName": "火花塞",
-                    "faultName": "间隙异常",
-                    "solutionTitle": "将间隙调整为 0.8 mm",
-                }],
-            },
+            "result_data": {"raw_records": [record]},
         }],
     }]
+
+
+def test_numeric_graph_fact_is_rejected_without_manual_evidence() -> None:
+    trace = _qualified_graph_trace(include_solution=True)
     output = _output("react", trace, tools=["java_graph_diagnosis_path"])
 
     finalized = main._finalize_knowledge_output(
@@ -2141,33 +2165,32 @@ def test_numeric_graph_fact_is_bound_to_structured_record() -> None:
         candidate_message="将火花塞间隙调整为 0.8 mm。",
     )
 
-    assert finalized.message == "将火花塞间隙调整为 0.8 mm。"
-    assert finalized.metadata["response_audit"]["passed"] is True
+    assert "当前知识库没有找到足以回答该问题的可靠依据" in finalized.message
+    assert finalized.metadata["response_audit"]["passed"] is False
 
 
 @pytest.mark.parametrize(
-    ("trace", "tools", "expected_source"),
+    ("trace", "tools", "query", "candidate_message", "expected_source"),
     [
-        (_rule_trace(), ["domain_rule_engine"], "已审核规则"),
-        ([{
-            "tool_calls": [{
-                "name": "java_graph_diagnosis_path",
-                "result_data": {"raw_records": [{
-                    "pathIds": ["path-source"],
-                    "nodeIds": ["node-source"],
-                    "summary": "检查点火回路。",
-                }]},
-            }],
-        }], ["java_graph_diagnosis_path"], "知识图谱"),
+        (_rule_trace(), ["domain_rule_engine"], "应该怎么检查？", "使用 AB120 检测仪检查。", "已审核规则"),
+        (
+            _qualified_graph_trace(),
+            ["java_graph_diagnosis_path"],
+            "火花塞可能是什么故障？",
+            "使用 AB120 检测仪检查。",
+            "知识图谱",
+        ),
     ],
 )
-def test_deterministic_fallback_uses_actual_source_type(trace, tools, expected_source) -> None:
+def test_deterministic_fallback_uses_actual_source_type(
+    trace, tools, query, candidate_message, expected_source
+) -> None:
     output = _output("react", trace, tools=tools)
 
     finalized = main._finalize_knowledge_output(
-        "应该怎么检查？",
+        query,
         output,
-        candidate_message="使用 AB120 检测仪检查。",
+        candidate_message=candidate_message,
     )
 
     assert expected_source in finalized.message

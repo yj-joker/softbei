@@ -96,6 +96,13 @@ def _merge_key(candidate: KnowledgeCandidate) -> tuple[str, ...] | None:
 
 
 def _can_merge(left: KnowledgeCandidate, right: KnowledgeCandidate) -> bool:
+    left_paths = set(left.graph_path_ids or (() if not left.path_id else (left.path_id,)))
+    right_paths = set(right.graph_path_ids or (() if not right.path_id else (right.path_id,)))
+    if left_paths and right_paths and left_paths.isdisjoint(right_paths):
+        # A section may support multiple independent diagnostic paths.  Keep
+        # those paths separate so a later scope binding cannot select the
+        # wrong fault merely because the section id is shared.
+        return False
     left_key = _merge_key(left)
     right_key = _merge_key(right)
     if left_key is not None and right_key is not None and left_key == right_key:
@@ -115,20 +122,43 @@ def _union(*values: Iterable[str]) -> tuple[str, ...]:
 
 
 def _merge(left: KnowledgeCandidate, right: KnowledgeCandidate) -> KnowledgeCandidate:
+    graph_candidate = (
+        right
+        if right.source_kind == "graph"
+        else left
+        if left.source_kind == "graph"
+        else right
+        if right.source_kind == "fused" and right.graph_path_ids
+        else left
+    )
+    dimensions = dict(left.dimensions)
+    dimensions.update(dict(right.dimensions))
+    if graph_candidate is not left or graph_candidate is not right:
+        dimensions.update(dict(graph_candidate.dimensions))
+    dimension_labels = dict(left.dimension_labels)
+    dimension_labels.update(dict(right.dimension_labels))
+    if graph_candidate is not left or graph_candidate is not right:
+        dimension_labels.update(dict(graph_candidate.dimension_labels))
     source_kinds = _union(left.source_kinds or (left.source_kind,), right.source_kinds or (right.source_kind,))
     provenance = "complete" if left.provenance_status == right.provenance_status == "complete" else (
         "partial" if left.provenance_status != "missing" or right.provenance_status != "missing" else "missing"
     )
     return replace(
         left,
-        candidate_id=left.candidate_id,
+        candidate_id=graph_candidate.candidate_id,
         source_kind="fused",
         source_kinds=source_kinds,
-        evidence_refs=_union(left.evidence_refs, right.evidence_refs),
-        pages=tuple(dict.fromkeys((*left.pages, *right.pages))),
-        source_chunk_uids=_union(left.source_chunk_uids, right.source_chunk_uids),
+        dimensions=dimensions,
+        dimension_labels=dimension_labels,
+        section_title=graph_candidate.section_title or left.section_title,
+        # A fused diagnostic candidate inherits the graph path's exact source
+        # boundary. Unioning the matching section candidate here widens one
+        # fault row back to the whole section and defeats server-owned scope.
+        evidence_refs=graph_candidate.evidence_refs,
+        pages=graph_candidate.pages,
+        source_chunk_uids=graph_candidate.source_chunk_uids,
         document_version=left.document_version or right.document_version,
-        path_id=left.path_id or right.path_id,
+        path_id=graph_candidate.path_id or left.path_id or right.path_id,
         node_ids=_union(left.node_ids, right.node_ids),
         graph_path_ids=_union(left.graph_path_ids, right.graph_path_ids),
         graph_node_ids=_union(left.graph_node_ids, right.graph_node_ids),

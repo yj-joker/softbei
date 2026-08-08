@@ -1,0 +1,80 @@
+{
+  "blueprint_version": "1.0",
+  "schema_version": "3.0",
+  "split": "blind_test",
+  "target_case_count": 120,
+  "gold_location_policy": "private_outside_git",
+  "recommended_private_root": "D:/softbei-eval-private",
+  "freeze_policy": "Freeze question, gold answer, graded evidence qrels, dataset SHA-256, and reviewer sign-off before either system is run.",
+  "required_case_fields": [
+    "schema_version",
+    "case_id",
+    "split",
+    "query",
+    "question_type",
+    "graph_dependency",
+    "difficulty",
+    "gold_answer",
+    "gold_evidence",
+    "question_origin"
+    ,"input_modality"
+    ,"image_inputs"
+  ],
+  "relevance_grade_scale": {
+    "0": "not_relevant",
+    "1": "supporting",
+    "2": "highly_relevant",
+    "3": "decisive"
+  },
+  "case_family_quotas": {"ordinary_retrieval": 40, "relation_disambiguation": 20, "multi_hop": 20, "multimodal": 20, "unanswerable_or_distractor": 20},
+  "primary_document_policy": {"document_name": "摩托车发动机维修手册.pdf", "document_id": "kdoc_2084935345958137858", "minimum_case_count": 84, "minimum_share": 0.70},
+  "source_scope_quotas": {"motorcycle_primary_answerable": 70, "motorcycle_primary_unanswerable": 14, "other_document": 16, "cross_document": 10, "out_of_scope": 10},
+  "graph_dependency_quotas": {"none": 40, "helpful": 40, "required": 40},
+  "difficulty_quotas": {"easy": 24, "medium": 60, "hard": 36},
+  "input_modality_quotas": {"text": 100, "image": 4, "text_image": 16},
+  "graph_dependency_by_modality": {
+    "none": {"text": 35, "image": 1, "text_image": 4},
+    "helpful": {"text": 33, "image": 1, "text_image": 6},
+    "required": {"text": 32, "image": 2, "text_image": 6}
+  },
+  "quotas": [
+    {
+      "question_type": "fact",
+      "case_count": 30,
+      "recommended_graph_dependency": {"none": 15, "helpful": 10, "required": 5}
+    },
+    {
+      "question_type": "procedure",
+      "case_count": 20,
+      "recommended_graph_dependency": {"none": 12, "helpful": 6, "required": 2}
+    },
+    {
+      "question_type": "relation_disambiguation",
+      "case_count": 20,
+      "recommended_graph_dependency": {"none": 2, "helpful": 8, "required": 10}
+    },
+    {
+      "question_type": "multi_hop",
+      "case_count": 20,
+      "recommended_graph_dependency": {"none": 1, "helpful": 7, "required": 12}
+    },
+    {
+      "question_type": "cross_document",
+      "case_count": 10,
+      "recommended_graph_dependency": {"none": 0, "helpful": 5, "required": 5}
+    },
+    {
+      "question_type": "safety",
+      "case_count": 20,
+      "recommended_graph_dependency": {"none": 10, "helpful": 4, "required": 6}
+    }
+  ],
+  "authoring_workflow": [
+    "Author questions without seeing system outputs.",
+    "A second reviewer writes or verifies gold answers from source documents.",
+    "Assign 0-3 relevance grades to every gold evidence item.",
+    "Resolve disagreements and record reviewer sign-off.",
+    "Freeze files and SHA-256 hashes before evaluation.",
+    "Keep gold files outside Git and expose only question-only input during runs."
+  ]
+}

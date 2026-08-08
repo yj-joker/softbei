@@ -6,8 +6,12 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.reactive.ReactorClientHttpConnector;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
+import org.springframework.web.reactive.function.client.WebClientRequestException;
+import reactor.netty.http.client.HttpClient;
+import io.netty.resolver.DefaultAddressResolverGroup;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -18,14 +22,20 @@ public class EmbeddingUtils {
     static final int TEXT_EMBEDDING_DIMENSIONS = 1536;
 
     private final ObjectMapper objectMapper;
+    private final WebClient webClient;
     @Value("${apikey}")
     private String apiKey;
     public EmbeddingUtils(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
+        HttpClient httpClient = HttpClient.create()
+                .resolver(DefaultAddressResolverGroup.INSTANCE);
+        this.webClient = WebClient.builder()
+                .baseUrl("https://dashscope.aliyuncs.com/compatible-mode/v1")
+                .clientConnector(new ReactorClientHttpConnector(httpClient))
+                .build();
     }
 
     public List<Double> getEmbedding(String text) {
-        WebClient webClient = WebClient.create("https://dashscope.aliyuncs.com/compatible-mode/v1");
         String response;
         try {
             response = webClient.post()
@@ -43,6 +53,8 @@ public class EmbeddingUtils {
                     .block();
         } catch (JsonProcessingException e) {
             throw new EmbeddingException("向量化失败");
+        } catch (WebClientRequestException e) {
+            throw new EmbeddingException("remote embedding service unavailable", e);
         }
         JsonNode root;
         try {

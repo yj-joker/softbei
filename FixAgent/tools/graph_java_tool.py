@@ -98,7 +98,11 @@ class JavaGraphDiagnosisPathTool(BaseTool):
         fault_description: str = None,
         component_description: str = None,
         image_urls: list = None,
-        limit: int = 10
+        limit: int = 10,
+        allowed_path_ids: list | None = None,
+        allowed_device_ids: list | None = None,
+        allowed_component_ids: list | None = None,
+        allowed_fault_ids: list | None = None,
     ) -> dict:
         has_keyword = bool(keyword and keyword.strip())
         has_fault = bool(fault_description and fault_description.strip())
@@ -123,6 +127,16 @@ class JavaGraphDiagnosisPathTool(BaseTool):
                 body["componentDescription"] = component_description.strip()
             if has_images:
                 body["imageUrls"] = image_urls
+            for key, values in (
+                ("allowedPathIds", allowed_path_ids),
+                ("allowedDeviceIds", allowed_device_ids),
+                ("allowedComponentIds", allowed_component_ids),
+                ("allowedFaultIds", allowed_fault_ids),
+            ):
+                if values is not None:
+                    body[key] = list(dict.fromkeys(
+                        str(value).strip() for value in values if str(value).strip()
+                    ))
 
             logger.info("[graph_java_tool] 调用 Java 图谱查询: keyword=%s, "
                         "fault_desc=%s, comp_desc=%s, images=%d",

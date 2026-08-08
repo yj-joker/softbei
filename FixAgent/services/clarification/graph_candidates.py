@@ -155,17 +155,21 @@ def build_graph_candidates(
         features = _texts(_value(record, "distinguishingFeatures", "distinguishing_features"))
         actions = _texts(_value(record, "verificationActions", "verification_actions"))
 
+        graph_score = _float(_value(record, "graphScore", "graph_score"), 0.0)
         match_score = _float(_value(record, "retrievalScore", "retrieval_score"), 0.0)
         if not match_score:
             # matchScore is an integer dimension count in the current Java API;
             # normalize it without treating it as a semantic confidence.
             try:
-                match_score = max(0.0, min(1.0, float(_value(record, "matchScore", "match_score") or 0.0) / 4.0))
+                raw_match_score = _value(record, "matchScore", "match_score")
+                match_score = max(0.0, min(1.0, float(raw_match_score or 0.0) / 4.0))
             except (TypeError, ValueError):
                 match_score = 0.0
+        if not match_score:
+            match_score = graph_score
         component_score = _float(_value(record, "componentScore", "component_score"), 0.0)
         fault_score = _float(_value(record, "faultScore", "fault_score"), 0.0)
-        target_score = max(component_score, fault_score, match_score)
+        target_score = max(component_score, fault_score, match_score, graph_score)
         field_score = 1.0 if (solutions or evidence_refs) else 0.5
         dimensions = {
             "path_id": path_id,
@@ -222,7 +226,7 @@ def build_graph_candidates(
                 node_ids=node_ids,
                 graph_path_ids=(path_id,),
                 graph_node_ids=node_ids,
-                graph_score=_float(_value(record, "graphScore", "graph_score"), match_score),
+                graph_score=graph_score or match_score,
                 provenance_status=provenance_status,
                 distinguishing_features=features,
                 verification_actions=actions,

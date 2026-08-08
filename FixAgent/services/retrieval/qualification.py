@@ -39,6 +39,9 @@ def qualify_candidates(
     requires_strict_evidence: bool = False,
     aspects: Optional[Sequence[QuestionAspect]] = None,
     scope_status: Optional[str] = None,
+    allowed_section_ids: Optional[Sequence[str]] = None,
+    allowed_evidence_refs: Optional[Sequence[str]] = None,
+    allowed_source_chunk_uids: Optional[Sequence[str]] = None,
 ) -> Dict[str, Any]:
     """Return a serializable evidence bundle without exposing rejected content.
 
@@ -50,6 +53,11 @@ def qualify_candidates(
     excluded: List[Dict[str, Any]] = []
     effective_aspects = list(aspects) if aspects is not None else split_question_aspects(query)
     query_constraints = extract_query_constraints(query)
+    scope_locked = any(
+        str(value or "").strip()
+        for values in (allowed_section_ids, allowed_evidence_refs, allowed_source_chunk_uids)
+        for value in (values or ())
+    )
 
     for index, raw in enumerate(candidates or []):
         if not isinstance(raw, dict):
@@ -66,6 +74,7 @@ def qualify_candidates(
             document_version=document_version,
             manual_type=manual_type,
             requires_strict_evidence=requires_strict_evidence,
+            scope_locked=scope_locked,
         )
         metadata.update(matches)
         constraint_conflicts = candidate_constraint_conflicts(query_constraints, item)
@@ -159,6 +168,7 @@ def _qualify_candidate(
     document_version: Optional[str],
     manual_type: Optional[str],
     requires_strict_evidence: bool,
+    scope_locked: bool = False,
 ) -> tuple[str, List[str], Dict[str, str]]:
     metadata = item.get("metadata") or {}
     reasons: List[str] = []
@@ -173,7 +183,7 @@ def _qualify_candidate(
     for name in ("device", "document", "version", "manual"):
         if matches[f"{name}_match"] == "mismatch":
             reasons.append(f"{name}_mismatch")
-    if matches["topic_match"] == "conflict":
+    if matches["topic_match"] == "conflict" and not scope_locked:
         reasons.append("topic_conflict")
     if reasons:
         return EXCLUDED, reasons, matches
@@ -195,9 +205,10 @@ def _qualify_candidate(
     if unknown_identity:
         reasons.append("identity_not_confirmed")
 
-    if requires_strict_evidence and (not has_identity_scope or unknown_identity or matches["topic_match"] != "matched"):
+    topic_confirmed = matches["topic_match"] == "matched" or scope_locked
+    if requires_strict_evidence and (not has_identity_scope or unknown_identity or not topic_confirmed):
         return REFERENCE_ONLY, reasons or ["strict_evidence_not_confirmed"], matches
-    if not has_identity_scope or unknown_identity or matches["topic_match"] != "matched":
+    if not has_identity_scope or unknown_identity or not topic_confirmed:
         return REFERENCE_ONLY, reasons or ["reference_only"], matches
     return QUALIFIED, reasons, matches
 

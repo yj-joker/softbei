@@ -12,6 +12,116 @@ from services.retrieval.query_understanding import understand_query
 from tools.knowledge_retrieval_tool import KnowledgeRetrievalTool
 
 
+def test_tool_schema_exposes_complete_server_scope_contract() -> None:
+    properties = KnowledgeRetrievalTool().get_parameters_schema()["properties"]
+
+    assert properties["allowed_source_chunk_uids"]["type"] == "array"
+    assert properties["pages"]["items"]["type"] == "integer"
+
+
+def test_resolved_scope_filters_by_source_uid_and_closed_page_window() -> None:
+    candidates = [
+        {
+            "doc_id": "row-59",
+            "metadata": {
+                "parent_section_id": "section-1",
+                "chunk_uid": "chunk-uid-1",
+                "page": 59,
+            },
+        },
+        {
+            "doc_id": "row-60",
+            "metadata": {
+                "parent_section_id": "section-1",
+                "chunk_uid": "foreign-chunk",
+                "page": 60,
+            },
+        },
+        {
+            "doc_id": "row-62",
+            "metadata": {
+                "parent_section_id": "section-1",
+                "chunk_uid": "chunk-uid-1",
+                "page": 62,
+            },
+        },
+    ]
+
+    filtered = KnowledgeRetrievalTool._filter_to_resolved_scope(
+        candidates,
+        allowed_section_ids=["section-1"],
+        allowed_source_chunk_uids=["chunk-uid-1"],
+        pages=[58, 61],
+    )
+
+    assert [item["doc_id"] for item in filtered] == ["row-59"]
+
+
+def test_source_uid_anchor_keeps_legacy_candidate_without_uid_inside_window() -> None:
+    legacy = {
+        "doc_id": "legacy-row",
+        "metadata": {
+            "parent_section_id": "section-1",
+            "page": 59,
+        },
+    }
+
+    filtered = KnowledgeRetrievalTool._filter_to_resolved_scope(
+        [legacy],
+        allowed_section_ids=["section-1"],
+        allowed_source_chunk_uids=["chunk-uid-1"],
+        pages=[58, 61],
+    )
+
+    assert filtered == [legacy]
+
+
+def test_authoritative_scope_loads_exact_section_before_semantic_ranking() -> None:
+    calls = []
+    records = [
+        {
+            "doc_id": "target-row",
+            "text": "空压机不工作；检查控制线路。",
+            "metadata": {
+                "document_id": "manual-bus",
+                "parent_section_id": "sec-compressor",
+                "chunk_uid": "sec-compressor:table:0001",
+                "table_id": "sec-compressor:table:0001",
+                "page": 57,
+            },
+        },
+        {
+            "doc_id": "other-row",
+            "text": "其他故障。",
+            "metadata": {
+                "document_id": "manual-bus",
+                "parent_section_id": "sec-compressor",
+                "chunk_uid": "sec-compressor:table:0002",
+                "table_id": "sec-compressor:table:0002",
+                "page": 57,
+            },
+        },
+    ]
+
+    class _VectorService:
+        def get_section_records(self, document_id, parent_section_id, limit=30, chunk_type=None):
+            calls.append((document_id, parent_section_id, limit, chunk_type))
+            return records
+
+    loaded = KnowledgeRetrievalTool._load_authoritative_scope_records(
+        _VectorService(),
+        document_id="manual-bus",
+        allowed_section_ids=("sec-compressor",),
+        allowed_evidence_refs=("sec-compressor:table:0001",),
+        allowed_source_chunk_uids=("sec-compressor:table:0001",),
+        pages=(57,),
+        limit=30,
+    )
+
+    assert calls == [("manual-bus", "sec-compressor", 30, None)]
+    assert [item["doc_id"] for item in loaded] == ["target-row"]
+
+
 def _candidate(chunk_type: str, section_id: str, route: str | None = None) -> dict:
     candidate = {
         "doc_id": f"{chunk_type}:{section_id}",
@@ -765,3 +875,34 @@ def test_resolved_scope_filter_never_reopens_other_sections_or_records():
     )
 
     assert [item["doc_id"] for item in filtered] == ["chunk-a", "chunk-a-image"]
+
+
+def test_resolved_scope_matches_stable_manual_chunk_uids_from_graph_provenance():
+    candidates = [
+        {
+            "doc_id": "vector-row-1",
+            "metadata": {
+                "parent_section_id": "section-a",
+                "chunk_uid": "section-a:table:0002:row:0003",
+                "row_id": "section-a:table:0002:row:0003",
+                "table_id": "section-a:table:0002",
+            },
+        },
+        {
+            "doc_id": "vector-row-2",
+            "metadata": {
+                "parent_section_id": "section-a",
+                "chunk_uid": "section-a:table:0003:row:0001",
+                "row_id": "section-a:table:0003:row:0001",
+                "table_id": "section-a:table:0003",
+            },
+        },
+    ]
+
+    filtered = KnowledgeRetrievalTool._filter_to_resolved_scope(
+        candidates,
+        allowed_section_ids=("section-a",),
+        allowed_evidence_refs=("section-a:table:0002",),
+    )
+
+    assert [item["doc_id"] for item in filtered] == ["vector-row-1"]

@@ -62,6 +62,35 @@ def test_server_resolved_section_scope_authorizes_only_matching_unknown_route() 
     assert conflict.status == "out_of_scope"
 
 
+def test_graph_selected_document_authorizes_only_matching_device_name_conflict() -> None:
+    decision = ScopeDecision(
+        status="out_of_scope",
+        source="request_document",
+        reason="device_document_conflict",
+        document_id="manual-a",
+        identity_relation="unmatched",
+        identity_conflicts=("device_name",),
+    )
+    selected_route = SimpleNamespace(
+        selected_graph_candidate_id="graph:path-1",
+        selected_document_id="manual-a",
+        graph_scope={"document_id": "manual-a", "allowed_path_ids": ["path-1"]},
+    )
+    mismatched_route = SimpleNamespace(
+        selected_graph_candidate_id="graph:path-1",
+        selected_document_id="manual-a",
+        graph_scope={"document_id": "manual-b", "allowed_path_ids": ["path-1"]},
+    )
+
+    authorized = main._apply_graph_scope_authority(decision, route_plan=selected_route)
+    rejected = main._apply_graph_scope_authority(decision, route_plan=mismatched_route)
+
+    assert authorized.status == "in_scope"
+    assert authorized.source == "resolved_graph_scope"
+    assert authorized.reason == "server_authoritative_graph_scope"
+    assert rejected.status == "out_of_scope"
+
+
 def _catalog() -> DeviceCatalog:
     return DeviceCatalog.from_manifests(
         [
@@ -180,6 +209,7 @@ def _prepare(
     *,
     document_id: str | None = MANUAL_ID,
     intent_router=None,
+    context: dict | None = None,
 ):
     async def load_catalog():
         return _catalog()
@@ -222,9 +252,45 @@ def _prepare(
         session_id="scope-api-test",
         message=message,
         document_id=document_id,
+        context=context,
         stream=False,
     )
     return asyncio.run(main._prepare_chat_agent_input(request))
+
+
+def test_paired_evaluation_contract_skips_reclassification(monkeypatch) -> None:
+    class _MustNotClassify:
+        async def classify(self, message, **kwargs):
+            raise AssertionError("frozen paired contract must skip intent classification")
+
+    prepared = _prepare(
+        monkeypatch,
+        "助力油泵保险熔断",
+        intent_router=_MustNotClassify(),
+        context={
+            "_evaluation_route_contract": {
+                "intent_decision": {
+                    "intent": "fault_diagnosis",
+                    "task_action": "find_cause",
+                    "confidence": 0.99,
+                    "source": "paired_evaluation",
+                    "component": "助力油泵",
+                    "symptoms": ["保险熔断"],
+                },
+                "query_contract": {
+                    "raw_query": "助力油泵保险熔断",
+                    "intent": "fault_diagnosis",
+                    "task_action": "find_cause",
+                    "component": "助力油泵",
+                    "symptoms": ["保险熔断"],
+                },
+            }
+        },
+    )
+
+    assert prepared.context["evaluation_route_contract_applied"] is True
+    assert prepared.context["intent_decision"]["task_action"] == "find_cause"
+    assert prepared.context["query_contract"]["component"] == "助力油泵"
 
 
 def test_structured_evidence_candidates_are_not_reopened_by_weaker_title_matches(monkeypatch) -> None:
@@ -322,6 +388,8 @@ def test_matching_motorcycle_query_can_use_selected_motorcycle_document(monkeypa
     assert prepared.context["retrieval_scope"] == {
         "document_id": MANUAL_ID,
         "device_type": "",
+        "server_authoritative": True,
+        "scope_fingerprint": "manual-scope:72980d818f279c02",
     }
 
 
@@ -333,6 +401,8 @@ def test_component_entity_does_not_conflict_with_selected_device_document(monkey
     assert prepared.context["retrieval_scope"] == {
         "document_id": MANUAL_ID,
         "device_type": "",
+        "server_authoritative": True,
+        "scope_fingerprint": "manual-scope:72980d818f279c02",
     }
 
 
@@ -344,6 +414,8 @@ def test_device_span_with_component_suffix_uses_selected_matching_document(monke
     assert prepared.context["retrieval_scope"] == {
         "document_id": MANUAL_ID,
         "device_type": "",
+        "server_authoritative": True,
+        "scope_fingerprint": "manual-scope:72980d818f279c02",
     }
 
 
@@ -356,6 +428,9 @@ def test_document_section_entity_is_not_rejected_as_an_unmatched_device(monkeypa
         "document_id": MANUAL_ID,
         "device_type": "",
         "parent_section_id": "sec-document-entity",
+        "allowed_section_ids": ["sec-document-entity"],
+        "server_authoritative": True,
+        "scope_fingerprint": "manual-scope:830c4b5644c6c4dc",
     }
 
 
@@ -366,6 +441,8 @@ def test_selected_document_allows_unqualified_dynamic_identity_head(monkeypatch)
     assert prepared.context["retrieval_scope"] == {
         "document_id": MANUAL_ID,
         "device_type": "",
+        "server_authoritative": True,
+        "scope_fingerprint": "manual-scope:72980d818f279c02",
     }
 
 

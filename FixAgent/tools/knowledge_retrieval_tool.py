@@ -107,6 +107,16 @@ class KnowledgeRetrievalTool(BaseTool):
                     "items": {"type": "string"},
                     "description": "Server-resolved evidence allow-list from clarification.",
                 },
+                "allowed_source_chunk_uids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Server-resolved stable source chunk identities.",
+                },
+                "pages": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Server-resolved page window; two values form a closed range.",
+                },
                 "chunk_type": {"type": "string", "description": "text/table/image/image_summary filter."},
                 "device_type": {"type": "string", "description": "Device type metadata filter."},
                 "document_version": {"type": "string", "description": "Document version metadata filter."},
@@ -176,11 +186,31 @@ class KnowledgeRetrievalTool(BaseTool):
         *,
         allowed_section_ids: Iterable[str] = (),
         allowed_evidence_refs: Iterable[str] = (),
+        allowed_source_chunk_uids: Iterable[str] = (),
+        pages: Iterable[int] = (),
     ) -> List[Dict]:
         """Apply a non-relaxable allow-list after every retrieval expansion."""
         sections = {str(value).strip() for value in allowed_section_ids if str(value).strip()}
-        evidence = {str(value).strip() for value in allowed_evidence_refs if str(value).strip()}
-        if not sections and not evidence:
+        evidence = {
+            str(value).strip() for value in allowed_evidence_refs if str(value).strip()
+        }
+        source_uids = {
+            str(value).strip() for value in allowed_source_chunk_uids if str(value).strip()
+        }
+        page_values: list[int] = []
+        for value in pages:
+            try:
+                page = int(value)
+            except (TypeError, ValueError):
+                continue
+            if page > 0 and page not in page_values:
+                page_values.append(page)
+        if len(page_values) == 2:
+            start, end = sorted(page_values)
+            allowed_pages = set(range(start, end + 1))
+        else:
+            allowed_pages = set(page_values)
+        if not sections and not evidence and not source_uids and not allowed_pages:
             return list(candidates)
         filtered: List[Dict] = []
         for candidate in candidates:
@@ -192,6 +222,11 @@ class KnowledgeRetrievalTool(BaseTool):
                 str(candidate.get("doc_id") or "").strip(),
                 str(metadata.get("id") or "").strip(),
                 str(metadata.get("chunk_id") or "").strip(),
+                str(metadata.get("chunk_uid") or "").strip(),
+                str(metadata.get("row_id") or "").strip(),
+                str(metadata.get("table_id") or "").strip(),
+                str(metadata.get("parent_chunk_id") or "").strip(),
+                str(metadata.get("continuation_id") or "").strip(),
                 str(metadata.get("source_chunk_id") or "").strip(),
                 str(metadata.get("source_image_id") or "").strip(),
                 str(cls._canonical_id(candidate) or "").strip(),
@@ -199,8 +234,64 @@ class KnowledgeRetrievalTool(BaseTool):
             identifiers.discard("")
             if evidence and not identifiers.intersection(evidence):
                 continue
+            stable_source_ids = {
+                str(metadata.get("chunk_uid") or "").strip(),
+                str(metadata.get("source_chunk_uid") or "").strip(),
+                *(
+                    str(value).strip()
+                    for value in metadata.get("source_chunk_uids") or ()
+                ),
+            }
+            stable_source_ids.discard("")
+            if source_uids and stable_source_ids and not stable_source_ids.intersection(source_uids):
+                continue
+            raw_page = metadata.get("page")
+            if raw_page is None:
+                raw_page = metadata.get("page_number")
+            try:
+                candidate_page = int(raw_page)
+            except (TypeError, ValueError):
+                candidate_page = 0
+            if allowed_pages and candidate_page not in allowed_pages:
+                continue
             filtered.append(candidate)
         return filtered
+
+    @classmethod
+    def _load_authoritative_scope_records(
+        cls,
+        vector_service,
+        *,
+        document_id: str,
+        allowed_section_ids: Iterable[str] = (),
+        allowed_evidence_refs: Iterable[str] = (),
+        allowed_source_chunk_uids: Iterable[str] = (),
+        pages: Iterable[int] = (),
+        limit: int = 30,
+    ) -> List[Dict]:
+        """Load server-locked manual records without depending on global Top-K."""
+        if not document_id:
+            return []
+        sections = tuple(dict.fromkeys(
+            str(value).strip() for value in allowed_section_ids if str(value).strip()
+        ))
+        if not sections or not hasattr(vector_service, "get_section_records"):
+            return []
+        records: List[Dict] = []
+        for section_id in sections:
+            records.extend(vector_service.get_section_records(
+                document_id,
+                section_id,
+                limit=max(1, int(limit)),
+                chunk_type=None,
+            ))
+        return cls._filter_to_resolved_scope(
+            records,
+            allowed_section_ids=sections,
+            allowed_evidence_refs=allowed_evidence_refs,
+            allowed_source_chunk_uids=allowed_source_chunk_uids,
+            pages=pages,
+        )
 
     @staticmethod
     def _is_step(item: Dict) -> bool:
@@ -1349,6 +1440,8 @@ class KnowledgeRetrievalTool(BaseTool):
         parent_section_id: str = None,
         allowed_section_ids: List[str] = None,
         allowed_evidence_refs: List[str] = None,
+        allowed_source_chunk_uids: List[str] = None,
+        pages: List[int] = None,
         _event_sink: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ) -> List[VectorSearchResult]:
         resolved_sections = tuple(dict.fromkeys(
@@ -1356,6 +1449,12 @@ class KnowledgeRetrievalTool(BaseTool):
         ))
         resolved_evidence = tuple(dict.fromkeys(
             str(value).strip() for value in (allowed_evidence_refs or ()) if str(value).strip()
+        ))
+        resolved_source_uids = tuple(dict.fromkeys(
+            str(value).strip() for value in (allowed_source_chunk_uids or ()) if str(value).strip()
+        ))
+        resolved_pages = tuple(dict.fromkeys(
+            int(value) for value in (pages or ()) if str(value).strip().isdigit() and int(value) > 0
         ))
         if parent_section_id and not resolved_sections:
             resolved_sections = (str(parent_section_id),)
@@ -1519,6 +1618,18 @@ class KnowledgeRetrievalTool(BaseTool):
                 vector_service = get_vector_service()
 
             async def fetch_section_match_candidates() -> List[Dict]:
+                if resolved_sections and document_id:
+                    records = await asyncio.to_thread(
+                        self._load_authoritative_scope_records,
+                        vector_service,
+                        document_id=document_id,
+                        allowed_section_ids=resolved_sections,
+                        allowed_evidence_refs=resolved_evidence,
+                        allowed_source_chunk_uids=resolved_source_uids,
+                        pages=resolved_pages,
+                        limit=max(30, recall_k),
+                    )
+                    return [self._mark_route(record, "authoritative_scope") for record in records]
                 hits = section_match_hits  # 复用提前计算的匹配结果
                 if not hits:
                     return []
@@ -1552,6 +1663,8 @@ class KnowledgeRetrievalTool(BaseTool):
                     list(docs),
                     allowed_section_ids=resolved_sections,
                     allowed_evidence_refs=resolved_evidence,
+                    allowed_source_chunk_uids=resolved_source_uids,
+                    pages=resolved_pages,
                 )
                 for docs in route_results
             ]
@@ -1588,6 +1701,8 @@ class KnowledgeRetrievalTool(BaseTool):
                 merged_with_locator,
                 allowed_section_ids=resolved_sections,
                 allowed_evidence_refs=resolved_evidence,
+                allowed_source_chunk_uids=resolved_source_uids,
+                pages=resolved_pages,
             )
             return merged_with_locator, rank_candidates(query, merged_with_locator, plan)
 
@@ -1602,6 +1717,8 @@ class KnowledgeRetrievalTool(BaseTool):
             merged,
             allowed_section_ids=resolved_sections,
             allowed_evidence_refs=resolved_evidence,
+            allowed_source_chunk_uids=resolved_source_uids,
+            pages=resolved_pages,
         )
         ranked = rank_candidates(query, merged, plan)
         merged, ranked = apply_image_locator(merged, ranked)
@@ -1619,6 +1736,9 @@ class KnowledgeRetrievalTool(BaseTool):
             manual_type=manual_type,
             requires_strict_evidence=plan.requires_strict_evidence,
             aspects=question_aspects,
+            allowed_section_ids=resolved_sections,
+            allowed_evidence_refs=resolved_evidence,
+            allowed_source_chunk_uids=resolved_source_uids,
         )
         supplemental_decision = decide_supplemental_retrieval(
             plan,
@@ -1684,6 +1804,8 @@ class KnowledgeRetrievalTool(BaseTool):
                     merged,
                     allowed_section_ids=resolved_sections,
                     allowed_evidence_refs=resolved_evidence,
+                    allowed_source_chunk_uids=resolved_source_uids,
+                    pages=resolved_pages,
                 )
                 ranked = rank_candidates(query, merged, plan)
                 merged, ranked = apply_image_locator(merged, ranked)
@@ -1713,6 +1835,8 @@ class KnowledgeRetrievalTool(BaseTool):
             selected,
             allowed_section_ids=resolved_sections,
             allowed_evidence_refs=resolved_evidence,
+            allowed_source_chunk_uids=resolved_source_uids,
+            pages=resolved_pages,
         )
         final_quality = evaluate_retrieval_quality(plan, ranked, selected, top_k=final_top_k)
         candidate_count_after = len(merged)
@@ -1765,6 +1889,8 @@ class KnowledgeRetrievalTool(BaseTool):
             expanded_selected,
             allowed_section_ids=resolved_sections,
             allowed_evidence_refs=resolved_evidence,
+            allowed_source_chunk_uids=resolved_source_uids,
+            pages=resolved_pages,
         )
         qualification = qualify_candidates(
             query,
@@ -1775,6 +1901,9 @@ class KnowledgeRetrievalTool(BaseTool):
             manual_type=manual_type,
             requires_strict_evidence=plan.requires_strict_evidence,
             aspects=question_aspects,
+            allowed_section_ids=resolved_sections,
+            allowed_evidence_refs=resolved_evidence,
+            allowed_source_chunk_uids=resolved_source_uids,
         )
         qualified_docs = qualification["qualified_evidence"]
         reference_docs = qualification["reference_evidence"]

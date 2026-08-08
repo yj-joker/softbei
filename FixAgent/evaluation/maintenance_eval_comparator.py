@@ -10,11 +10,238 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
+import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 LATENCY_REGRESSION_RATIO = 1.2
+
+
+def _to_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _percentile(values: Sequence[float], probability: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    position = (len(ordered) - 1) * probability
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return float(ordered[lower])
+    fraction = position - lower
+    return float(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction)
+
+
+def _exact_mcnemar(no_graph_values: Sequence[float], graph_values: Sequence[float]) -> dict[str, Any]:
+    no_graph_only = sum(1 for left, right in zip(no_graph_values, graph_values) if left and not right)
+    graph_only = sum(1 for left, right in zip(no_graph_values, graph_values) if right and not left)
+    discordant = no_graph_only + graph_only
+    if discordant:
+        tail = sum(
+            math.comb(discordant, index) * (0.5**discordant)
+            for index in range(min(no_graph_only, graph_only) + 1)
+        )
+        p_value = min(1.0, 2 * tail)
+    else:
+        p_value = 1.0
+    return {
+        "no_graph_only_success": no_graph_only,
+        "graph_only_success": graph_only,
+        "discordant_pairs": discordant,
+        "p_value": round(p_value, 6),
+    }
+
+
+def _paired_metric(
+    no_graph_values: Sequence[float],
+    graph_values: Sequence[float],
+    *,
+    bootstrap_samples: int,
+    seed: int,
+) -> dict[str, Any]:
+    count = len(no_graph_values)
+    if count != len(graph_values):
+        raise ValueError("paired metrics require equal-length inputs")
+    no_graph_mean = sum(no_graph_values) / count if count else 0.0
+    graph_mean = sum(graph_values) / count if count else 0.0
+    difference = graph_mean - no_graph_mean
+    differences: list[float] = []
+    if count and bootstrap_samples > 0:
+        rng = random.Random(seed)
+        paired_deltas = [right - left for left, right in zip(no_graph_values, graph_values)]
+        for _ in range(bootstrap_samples):
+            differences.append(sum(paired_deltas[rng.randrange(count)] for _ in range(count)) / count)
+    confidence_interval = (
+        [round(_percentile(differences, 0.025), 6), round(_percentile(differences, 0.975), 6)]
+        if differences
+        else [None, None]
+    )
+    return {
+        "case_count": count,
+        "no_graph_rate": round(no_graph_mean, 6),
+        "graph_rate": round(graph_mean, 6),
+        "difference": round(difference, 6),
+        "bootstrap_samples": bootstrap_samples,
+        "confidence_interval_95": confidence_interval,
+    }
+
+
+def _index_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Mapping[str, Any]]:
+    return {str(row.get("id") or row.get("case_id") or ""): row for row in rows}
+
+
+def _binary_value(row: Mapping[str, Any], field: str) -> float:
+    return 1.0 if _to_bool(row.get(field)) is True else 0.0
+
+
+def _numeric_value(row: Mapping[str, Any], field: str) -> float:
+    return _to_float(row.get(field)) or 0.0
+
+
+def _distribution(rows: Sequence[Mapping[str, Any]], field: str) -> dict[str, float]:
+    values = [value for row in rows if (value := _to_float(row.get(field))) is not None]
+    return {
+        "mean": round(sum(values) / len(values), 6) if values else 0.0,
+        "p50": round(_percentile(values, 0.5), 6),
+        "p95": round(_percentile(values, 0.95), 6),
+    }
+
+
+def _optional_pair_difference(
+    no_graph_rows: Sequence[Mapping[str, Any]],
+    graph_rows: Sequence[Mapping[str, Any]],
+    fields: Sequence[str],
+) -> dict[str, Any]:
+    pairs: list[tuple[float, float]] = []
+    for left, right in zip(no_graph_rows, graph_rows):
+        left_value = next((_to_float(left.get(field)) for field in fields if _to_float(left.get(field)) is not None), None)
+        right_value = next((_to_float(right.get(field)) for field in fields if _to_float(right.get(field)) is not None), None)
+        if left_value is not None and right_value is not None:
+            pairs.append((left_value, right_value))
+    if not pairs:
+        return {"available": False}
+    left_mean = sum(left for left, _ in pairs) / len(pairs)
+    right_mean = sum(right for _, right in pairs) / len(pairs)
+    return {
+        "available": True,
+        "no_graph_mean": round(left_mean, 6),
+        "graph_mean": round(right_mean, 6),
+        "mean_difference": round(right_mean - left_mean, 6),
+    }
+
+
+def build_paired_ablation_report(
+    no_graph_rows: Sequence[Mapping[str, Any]],
+    graph_rows: Sequence[Mapping[str, Any]],
+    *,
+    bootstrap_samples: int = 10_000,
+    seed: int = 20260806,
+) -> dict[str, Any]:
+    """Build answer-quality statistics for paired w/o KG and Full runs."""
+
+    no_graph_index = _index_rows(no_graph_rows)
+    graph_index = _index_rows(graph_rows)
+    aligned_ids = sorted(set(no_graph_index) & set(graph_index))
+    aligned_no_graph = [no_graph_index[case_id] for case_id in aligned_ids]
+    aligned_graph = [graph_index[case_id] for case_id in aligned_ids]
+
+    final_no_graph = [_binary_value(row, "final_pass") for row in aligned_no_graph]
+    final_graph = [_binary_value(row, "final_pass") for row in aligned_graph]
+    final_pass = _paired_metric(
+        final_no_graph,
+        final_graph,
+        bootstrap_samples=bootstrap_samples,
+        seed=seed,
+    )
+    final_pass["mcnemar_exact"] = _exact_mcnemar(final_no_graph, final_graph)
+
+    nugget = _paired_metric(
+        [_numeric_value(row, "required_nugget_recall") for row in aligned_no_graph],
+        [_numeric_value(row, "required_nugget_recall") for row in aligned_graph],
+        bootstrap_samples=bootstrap_samples,
+        seed=seed + 1,
+    )
+    grounding = _paired_metric(
+        [_binary_value(row, "grounding_pass") for row in aligned_no_graph],
+        [_binary_value(row, "grounding_pass") for row in aligned_graph],
+        bootstrap_samples=bootstrap_samples,
+        seed=seed + 2,
+    )
+
+    no_answer_indexes = [
+        index
+        for index, row in enumerate(aligned_no_graph)
+        if _to_bool(row.get("answerable")) is False
+    ]
+    no_answer = _paired_metric(
+        [_binary_value(aligned_no_graph[index], "refusal_pass") for index in no_answer_indexes],
+        [_binary_value(aligned_graph[index], "refusal_pass") for index in no_answer_indexes],
+        bootstrap_samples=bootstrap_samples,
+        seed=seed + 3,
+    )
+
+    groups: dict[str, dict[str, Any]] = {}
+    for field in ("question_type", "difficulty", "graph_dependency"):
+        field_groups: dict[str, Any] = {}
+        values = sorted(
+            {
+                str(left.get(field) or right.get(field) or "unspecified")
+                for left, right in zip(aligned_no_graph, aligned_graph)
+            }
+        )
+        for value in values:
+            indexes = [
+                index
+                for index, (left, right) in enumerate(zip(aligned_no_graph, aligned_graph))
+                if str(left.get(field) or right.get(field) or "unspecified") == value
+            ]
+            left_pass = [_binary_value(aligned_no_graph[index], "final_pass") for index in indexes]
+            right_pass = [_binary_value(aligned_graph[index], "final_pass") for index in indexes]
+            left_nugget = [_numeric_value(aligned_no_graph[index], "required_nugget_recall") for index in indexes]
+            right_nugget = [_numeric_value(aligned_graph[index], "required_nugget_recall") for index in indexes]
+            field_groups[value] = {
+                "case_count": len(indexes),
+                "final_pass_difference": round(
+                    sum(right_pass) / len(indexes) - sum(left_pass) / len(indexes), 6
+                ),
+                "required_nugget_recall_difference": round(
+                    sum(right_nugget) / len(indexes) - sum(left_nugget) / len(indexes), 6
+                ),
+            }
+        groups[field] = field_groups
+
+    return {
+        "comparison": "graph_minus_no_graph",
+        "aligned_case_count": len(aligned_ids),
+        "missing_in_no_graph": sorted(set(graph_index) - set(no_graph_index)),
+        "missing_in_graph": sorted(set(no_graph_index) - set(graph_index)),
+        "final_pass": final_pass,
+        "required_nugget_recall": nugget,
+        "grounding_pass": grounding,
+        "no_answer_correct": no_answer,
+        "latency_ms": {
+            "no_graph": _distribution(aligned_no_graph, "latency_ms"),
+            "graph": _distribution(aligned_graph, "latency_ms"),
+        },
+        "token_usage": _optional_pair_difference(
+            aligned_no_graph, aligned_graph, ("total_tokens", "token_usage")
+        ),
+        "cost": _optional_pair_difference(
+            aligned_no_graph, aligned_graph, ("cost", "cost_usd", "estimated_cost")
+        ),
+        "groups": groups,
+    }
 
 
 def _to_bool(value: Any) -> bool | None:

@@ -1,0 +1,158 @@
+{
+  "comparison": "graph_shadow_minus_no_graph",
+  "aligned_case_count": 66,
+  "missing_in_no_graph": [],
+  "missing_in_graph": [],
+  "final_pass": {
+    "case_count": 66,
+    "no_graph_rate": 0.242424,
+    "graph_rate": 0.257576,
+    "difference": 0.015152,
+    "bootstrap_samples": 10000,
+    "confidence_interval_95": [
+      0.0,
+      0.045455
+    ],
+    "mcnemar_exact": {
+      "no_graph_only_success": 0,
+      "graph_only_success": 1,
+      "discordant_pairs": 1,
+      "p_value": 1.0,
+      "baseline_only_success": 0,
+      "comparison_only_success": 1
+    },
+    "baseline_rate": 0.242424,
+    "comparison_rate": 0.257576
+  },
+  "required_nugget_recall": {
+    "case_count": 66,
+    "no_graph_rate": 0.560606,
+    "graph_rate": 0.580808,
+    "difference": 0.020202,
+    "bootstrap_samples": 10000,
+    "confidence_interval_95": [
+      0.0,
+      0.055556
+    ],
+    "baseline_rate": 0.560606,
+    "comparison_rate": 0.580808
+  },
+  "grounding_pass": {
+    "case_count": 66,
+    "no_graph_rate": 0.515152,
+    "graph_rate": 0.530303,
+    "difference": 0.015152,
+    "bootstrap_samples": 10000,
+    "confidence_interval_95": [
+      0.0,
+      0.045455
+    ],
+    "baseline_rate": 0.515152,
+    "comparison_rate": 0.530303
+  },
+  "no_answer_correct": {
+    "case_count": 2,
+    "no_graph_rate": 0.5,
+    "graph_rate": 0.5,
+    "difference": 0.0,
+    "bootstrap_samples": 10000,
+    "confidence_interval_95": [
+      0.0,
+      0.0
+    ],
+    "baseline_rate": 0.5,
+    "comparison_rate": 0.5
+  },
+  "latency_ms": {
+    "no_graph": {
+      "mean": 10522.166667,
+      "p50": 11301.0,
+      "p95": 21012.75
+    },
+    "graph": {
+      "mean": 7831.060606,
+      "p50": 7762.0,
+      "p95": 19766.5
+    },
+    "by_variant": {
+      "no_graph": {
+        "mean": 10522.166667,
+        "p50": 11301.0,
+        "p95": 21012.75
+      },
+      "graph_shadow": {
+        "mean": 7831.060606,
+        "p50": 7762.0,
+        "p95": 19766.5
+      }
+    }
+  },
+  "token_usage": {
+    "available": false
+  },
+  "cost": {
+    "available": false
+  },
+  "groups": {
+    "question_type": {
+      "fact": {
+        "case_count": 14,
+        "final_pass_difference": 0.0,
+        "required_nugget_recall_difference": 0.0
+      },
+      "multi_hop": {
+        "case_count": 9,
+        "final_pass_difference": 0.0,
+        "required_nugget_recall_difference": 0.037037
+      },
+      "procedure": {
+        "case_count": 25,
+        "final_pass_difference": 0.04,
+        "required_nugget_recall_difference": 0.04
+      },
+      "relation_disambiguation": {
+        "case_count": 18,
+        "final_pass_difference": 0.0,
+        "required_nugget_recall_difference": 0.0
+      }
+    },
+    "difficulty": {
+      "easy": {
+        "case_count": 1,
+        "final_pass_difference": 0.0,
+        "required_nugget_recall_difference": 0.0
+      },
+      "hard": {
+        "case_count": 38,
+        "final_pass_difference": 0.026316,
+        "required_nugget_recall_difference": 0.035088
+      },
+      "medium": {
+        "case_count": 27,
+        "final_pass_difference": 0.0,
+        "required_nugget_recall_difference": 0.0
+      }
+    },
+    "graph_dependency": {
+      "none": {
+        "case_count": 40,
+        "final_pass_difference": 0.025,
+        "required_nugget_recall_difference": 0.025
+      },
+      "required": {
+        "case_count": 26,
+        "final_pass_difference": 0.0,
+        "required_nugget_recall_difference": 0.012821
+      }
+    }
+  },
+  "baseline_variant": "no_graph",
+  "comparison_variant": "graph_shadow",
+  "run_name": "graph_binding_fallback_manual66_20260808",
+  "dataset_role": "development_or_regression_unless_separately_frozen",
+  "experiment_labels": {
+    "baseline": "no_graph",
+    "comparison": "graph_shadow"
+  },
+  "concurrency": 6
+}

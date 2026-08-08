@@ -1,0 +1,38 @@
+{
+  "contract_version": "1.0",
+  "variants": ["no_graph", "graph_shadow", "graph_full"],
+  "variant_contracts": {
+    "no_graph": {
+      "graph_candidate_enabled": false,
+      "graph_retrieval_enabled": false,
+      "graph_route_influence_enabled": false,
+      "graph_evidence_enabled": false
+    },
+    "graph_shadow": {
+      "graph_candidate_enabled": true,
+      "graph_retrieval_enabled": true,
+      "graph_route_influence_enabled": false,
+      "graph_evidence_enabled": false
+    },
+    "graph_full": {
+      "graph_candidate_enabled": true,
+      "graph_retrieval_enabled": true,
+      "graph_route_influence_enabled": true,
+      "graph_evidence_enabled": true,
+      "qualified_only": true
+    }
+  },
+  "gates": [
+    {"gate_id": "A", "name": "graph_readiness", "stop_on_failure": true},
+    {"gate_id": "B", "name": "mechanism_and_evidence_chain", "stop_on_failure": true},
+    {"gate_id": "C", "name": "development_regression", "stop_on_failure": true},
+    {"gate_id": "D", "name": "frozen_blind_evaluation", "stop_on_failure": true}
+  ],
+  "primary_comparison": "graph_full_minus_no_graph",
+  "secondary_comparisons": [
+    "graph_shadow_minus_no_graph",
+    "graph_full_minus_graph_shadow"
+  ],
+  "blind_tuning_prohibited": true,
+  "case_is_statistical_unit": true
+}

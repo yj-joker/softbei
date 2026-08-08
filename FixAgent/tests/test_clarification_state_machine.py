@@ -18,6 +18,7 @@ def test_new_state_contains_round_version_and_route_snapshot():
     state = store.create("s1", _pending(), route_snapshot={"action": "clarify"}, max_rounds=2)
 
     assert state.status is ClarificationStatus.AWAITING
+    assert state.to_dict()["status"] == "awaiting_answer"
     assert state.round_count == 1
     assert state.max_rounds == 2
     assert state.version == 1
@@ -46,6 +47,62 @@ def test_numeric_answer_resolves_candidates_by_display_order():
     assert resolved.status is ClarificationStatus.RESOLVED
     assert resolved.selected_option_id == "B"
     assert resolved.selected_constraints == {"document_id": "doc-b"}
+
+
+def test_numeric_answer_wins_over_section_number_in_candidate_label():
+    store = ClarificationStateStore()
+    state = store.create("numeric-section-collision", {
+        **_pending(),
+        "candidates": [
+            {"id": "A", "label": "6.4 右曲轴箱盖与离合器", "constraints": {"document_id": "doc-a"}},
+            {"id": "B", "label": "6.1 右曲轴箱盖装配部件清单", "constraints": {"document_id": "doc-b"}},
+        ],
+    })
+
+    resolved = store.resolve("numeric-section-collision", answer="1", expected_version=state.version)
+
+    assert resolved is not None
+    assert resolved.selected_option_id == "A"
+
+
+def test_ambiguous_natural_language_answer_does_not_select_first_candidate():
+    store = ClarificationStateStore()
+    state = store.create("ambiguous-label", {
+        **_pending(),
+        "candidates": [
+            {"id": "A", "label": "6.4 右曲轴箱盖与离合器", "constraints": {"document_id": "doc-a"}},
+            {"id": "B", "label": "7.3 磁电机转子离合器分部件", "constraints": {"document_id": "doc-b"}},
+            {"id": "C", "label": "6.2 离合器、机油泵装配零件清单", "constraints": {"document_id": "doc-c"}},
+        ],
+    })
+
+    assert store.resolve("ambiguous-label", answer="离合器", expected_version=state.version) is None
+
+
+def test_document_id_and_natural_language_label_are_resolvable():
+    store = ClarificationStateStore()
+    state = store.create("document-answer-forms", {
+        **_pending(),
+        "candidates": [
+            {"id": "A", "label": "纯电动公路客车", "value": "kdoc-a", "constraints": {"document_id": "kdoc-a"}},
+            {"id": "B", "label": "摩托车发动机", "value": "kdoc-b", "constraints": {"document_id": "kdoc-b"}},
+        ],
+    })
+
+    resolved_by_id = store.resolve("document-answer-forms", answer="kdoc-b", expected_version=state.version)
+    assert resolved_by_id is not None
+    assert resolved_by_id.selected_option_id == "B"
+
+    state = store.create("document-natural-language", {
+        **_pending(),
+        "candidates": [
+            {"id": "A", "label": "纯电动公路客车", "value": "kdoc-a", "constraints": {"document_id": "kdoc-a"}},
+            {"id": "B", "label": "摩托车发动机", "value": "kdoc-b", "constraints": {"document_id": "kdoc-b"}},
+        ],
+    })
+    resolved_by_sentence = store.resolve("document-natural-language", answer="我选摩托车发动机", expected_version=state.version)
+    assert resolved_by_sentence is not None
+    assert resolved_by_sentence.selected_option_id == "B"
 
 
 def test_wrong_version_is_rejected_without_mutating_state():

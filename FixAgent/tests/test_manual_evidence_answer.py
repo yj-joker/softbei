@@ -52,6 +52,68 @@ def test_exact_section_title_can_authorize_broad_procedure_query() -> None:
     )
 
 
+def test_section_title_action_prefix_can_authorize_fault_treatment_query() -> None:
+    direct_text = (
+        "1.2 检查火花塞\n"
+        "检查火花塞螺纹以及中心电极处，若有损坏或变形，则应更换火花塞。"
+    )
+
+    assert _direct_manual_text_supports_query(
+        direct_text,
+        "摩托车发动机的火花塞出现火花塞损坏时应如何处理？请说明故障所属部件和手册依据。",
+    )
+
+
+def test_graph_diagnostic_registers_manual_records_without_overriding_composed_answer(
+    monkeypatch,
+) -> None:
+    from api import main as api_main
+
+    record = {
+        "id": "spark-plug-step",
+        "content": "检查火花塞，若有损坏或变形，则应更换火花塞。",
+        "metadata": {
+            "qualification": "qualified",
+            "document_id": "manual-doc",
+            "document_version": "v1",
+            "parent_section_id": "sec-spark",
+            "chunk_uid": "sec-spark:text:0000",
+            "section_title": "1.2 检查火花塞",
+            "page": 3,
+        },
+    }
+    metadata = {
+        "route_plan": {
+            **_component_route("manual-doc", "火花塞", "处理"),
+            "selected_section_id": "sec-spark",
+        },
+        "graph_pre_retrieval": {
+            "status": "found",
+            "evidence": [{"qualification": "qualified"}],
+        },
+        "scope_decision": {"document_id": "manual-doc", "status": "in_scope"},
+    }
+    monkeypatch.setattr(
+        api_main,
+        "_manual_best_section_records",
+        lambda message, kind, context: [record],
+    )
+
+    answer = _format_manual_evidence_answer_from_metadata(
+        "火花塞损坏时应如何处理？",
+        metadata,
+    )
+
+    assert answer is None
+    assert metadata["_manual_evidence_registered_for_graph_composition"] is True
+    assert metadata["_deterministic_answer_mode"] == "evidence_rendered"
+    assert any(
+        (call.get("arguments") or {}).get("source") == "section_text_lookup"
+        for step in metadata["react_trace"]
+        for call in step.get("tool_calls") or []
+    )
+
+
 def test_final_audit_preserves_authorized_rendered_answer_with_partial_coverage() -> None:
     plan = ResponsePlan(
         plan_id="test-plan",

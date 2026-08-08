@@ -2,7 +2,8 @@
 
 The evaluator reads a manually curated CSV dataset, calls the internal
 KnowledgeRetrievalTool, and writes per-case retrieval results plus aggregate
-Recall@K/MRR metrics.
+Hit@K and MRR metrics. The historical ``recall_at_*`` output fields are kept
+as compatibility aliases, but their semantics are query-level hit rate.
 """
 
 from __future__ import annotations
@@ -597,10 +598,14 @@ def evaluate_retrieval_rows(
         "case_count": len(rows),
         "answerable_case_count": total,
         "top_k": top_k,
+        "hit_at_1": rate("hit_top1"),
+        "hit_at_3": rate("hit_top3"),
+        "hit_at_5": rate("hit_top5"),
         "recall_at_1": rate("hit_top1"),
         "recall_at_3": rate("hit_top3"),
         "recall_at_5": rate("hit_top5"),
         "mrr": round(sum(reciprocal_ranks) / total, 6) if total else 0.0,
+        "legacy_recall_fields_are_hit_rate": True,
     }
     image_rows = [row for row in answerable_rows if row.get("image_eval_required")]
     image_total = len(image_rows)

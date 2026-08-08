@@ -8,6 +8,10 @@ import java.util.List;
 
 @Data
 public class DiagnosisPathVO {
+    private String pathId; // 基于业务 ID 的稳定路径 ID
+    private List<String> nodeIds; // 路径上的业务节点 ID
+    private List<String> relationshipTypes; // 路径上的真实关系类型
+
     private String deviceId; // 设备ID
     private String deviceName; // 设备名称
     private String componentId; // 部件ID
@@ -33,6 +37,14 @@ public class DiagnosisPathVO {
     private Double faultScore; // 故障向量匹配分数
     private Double componentScore; // 部件向量匹配分数
     private Integer matchScore; // 多维度匹配评分（匹配维度越多越高）
+
+    private String documentId; // 来源文档 ID
+    private String documentVersion; // 来源文档版本
+    private String sectionId; // 来源章节 ID
+    private List<String> sourceChunkUids; // 来源 Chunk 稳定 ID
+    private List<Integer> pages; // 来源页码
+    private String graphRevision; // 图数据版本
+    private String provenanceStatus; // complete | partial | missing
 
     @Data
     @AllArgsConstructor

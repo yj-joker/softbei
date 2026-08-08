@@ -68,8 +68,13 @@ class RouteExecutor:
         normalized_options: list[dict[str, Any]] = []
         for index, option in enumerate(plan.clarification_options, start=1):
             name = str(option.get("label") or option.get("display_name") or option.get("document_id") or "未命名文档")
-            document_id = str(option.get("document_id") or "")
             constraints = option.get("constraints") if isinstance(option.get("constraints"), dict) else {}
+            document_id = str(
+                option.get("document_id")
+                or constraints.get("document_id")
+                or option.get("value")
+                or ""
+            )
             if document_id and "document_id" not in constraints:
                 constraints = {**constraints, "document_id": document_id}
             normalized_options.append({
@@ -95,10 +100,10 @@ class RouteExecutor:
             tools_used=(),
             metadata={
                 **self._route_metadata(plan),
-                "status": "awaiting_document_selection",
+                "status": "awaiting_answer",
                 "pending_clarification": {
                     "kind": plan.clarification_kind or "slot_disambiguation",
-                    "status": "awaiting",
+                    "status": "awaiting_answer",
                     "round_count": 1,
                     "max_rounds": 2,
                     "version": 1,

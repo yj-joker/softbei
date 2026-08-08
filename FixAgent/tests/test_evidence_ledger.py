@@ -4,6 +4,8 @@ import hashlib
 import json
 
 from services.retrieval.evidence import EvidenceLedger
+from services.llm.react_loop import ToolExecutor
+import asyncio
 
 
 def test_ledger_appends_deduplicates_and_serializes_stably() -> None:
@@ -62,10 +64,23 @@ def test_ledger_collects_manual_rule_and_graph_from_react_trace() -> None:
                         "result_data": {
                             "raw_records": [
                                 {
-                                    "pathIds": ["path-1"],
-                                    "nodeIds": ["node-1", "node-2"],
-                                    "relationshipTypes": ["HAS_FAULT"],
-                                    "summary": "图谱证据",
+                                    "pathId": "kgpath:device-1:component-1:fault-1",
+                                    "nodeIds": ["device-1", "component-1", "fault-1"],
+                                    "relationshipTypes": ["OWNS", "CAUSES"],
+                                    "deviceId": "device-1",
+                                    "deviceName": "一号发动机",
+                                    "componentId": "component-1",
+                                    "componentName": "张紧轮",
+                                    "faultId": "fault-1",
+                                    "faultName": "轴承磨损",
+                                    "documentId": "manual-1",
+                                    "documentVersion": "v1",
+                                    "sectionId": "sec-bearing",
+                                    "sourceChunkUids": ["chunk-graph-1"],
+                                    "pages": [12],
+                                    "graphRevision": "graph-v1",
+                                    "provenanceStatus": "complete",
+                                    "matchScore": 3,
                                 }
                             ]
                         },
@@ -85,7 +100,79 @@ def test_ledger_collects_manual_rule_and_graph_from_react_trace() -> None:
     assert [entry["evidence_id"] for entry in ledger.entries] == [
         "manual:manual-1:chunk-1",
         "domain_rule:rule-1",
-        "graph:path-1",
+        "graph:kgpath:device-1:component-1:fault-1:none",
+    ]
+    graph_entry = ledger.entries[2]
+    assert graph_entry["path_id"] == "kgpath:device-1:component-1:fault-1"
+    assert graph_entry["relationship_types"] == ["OWNS", "CAUSES"]
+    assert graph_entry["source"]["source_chunk_uids"] == ["chunk-graph-1"]
+
+
+def test_manual_ledger_preserves_stable_chunk_and_table_identifiers() -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": {
+                    "qualified_evidence": [{
+                        "doc_id": "vector-row-1",
+                        "content": "manual evidence",
+                        "metadata": {
+                            "qualification": "qualified",
+                            "document_id": "manual-1",
+                            "chunk_id": "chunk-1",
+                            "chunk_uid": "chunk-uid-1",
+                            "source_chunk_uid": "source-uid-1",
+                            "source_chunk_uids": ["source-uid-1", "source-uid-2"],
+                            "table_id": "table-1",
+                        },
+                    }],
+                },
+            }],
+        }],
+    }
+
+    ledger = EvidenceLedger.from_react_trace(metadata)
+
+    source = ledger.entries[0]["source"]
+    assert source["chunk_uid"] == "chunk-uid-1"
+    assert source["source_chunk_uids"] == [
+        "source-uid-1",
+        "source-uid-2",
+        "chunk-uid-1",
+    ]
+    assert source["table_id"] == "table-1"
+
+
+def test_manual_ledger_accepts_chunk_uid_as_primary_identity_without_legacy_id() -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": {
+                    "qualified_evidence": [{
+                        "content": "stable uid evidence",
+                        "metadata": {
+                            "qualification": "qualified",
+                            "document_id": "manual-1",
+                            "chunk_uid": "chunk-uid-only",
+                            "source_chunk_uids": ["source-parent-1"],
+                        },
+                    }],
+                },
+            }],
+        }],
+    }
+
+    ledger = EvidenceLedger.from_react_trace(metadata)
+
+    assert [entry["evidence_id"] for entry in ledger.entries] == [
+        "manual:manual-1:chunk-uid-only"
+    ]
+    assert ledger.entries[0]["source"]["chunk_uid"] == "chunk-uid-only"
+    assert ledger.entries[0]["source"]["source_chunk_uids"] == [
+        "source-parent-1",
+        "chunk-uid-only",
     ]
 
 
@@ -109,6 +196,65 @@ def test_ledger_ignores_unstable_or_inactive_sources() -> None:
     }
 
     assert EvidenceLedger.from_react_trace(metadata).entries == []
+
+
+def test_ledger_consumes_server_pre_normalized_graph_evidence() -> None:
+    normalized = {
+        "evidence_id": "graph:kgpath:device-1:component-1:fault-1:none",
+        "source_type": "graph",
+        "qualification": "qualified",
+        "path_id": "kgpath:device-1:component-1:fault-1",
+        "node_ids": ["device-1", "component-1", "fault-1"],
+        "relationship_types": ["OWNS", "CAUSES"],
+        "device": {"id": "device-1", "name": "一号发动机"},
+        "component": {"id": "component-1", "name": "张紧轮"},
+        "fault": {"id": "fault-1", "name": "轴承磨损"},
+        "solution": {},
+        "confidence": 3.0,
+        "graph_revision": "graph-v1",
+        "provenance_status": "complete",
+        "claim_types": ["device_identity", "component_ownership", "fault_relation"],
+        "supports_aspect_ids": ["device", "component", "fault-cause"],
+        "text": "一号发动机 -> OWNS -> 张紧轮 -> CAUSES -> 轴承磨损",
+        "source": {
+            "document_id": "manual-1",
+            "document_version": "v1",
+            "section_id": "sec-bearing",
+            "source_chunk_uids": ["chunk-1"],
+            "pages": [12],
+        },
+    }
+    metadata = {
+        "react_trace": [{
+            "iteration": 0,
+            "action": "server_pre_retrieval",
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {"status": "found", "evidence": [normalized]},
+            }],
+        }],
+    }
+
+    ledger = EvidenceLedger.from_react_trace(metadata)
+
+    assert len(ledger.entries) == 1
+    assert ledger.entries[0]["evidence_id"] == normalized["evidence_id"]
+    assert ledger.entries[0]["claim_types"] == normalized["claim_types"]
+    assert ledger.entries[0]["source"]["document_version"] == "v1"
+
+
+def test_unknown_tool_is_not_marked_as_an_actual_execution() -> None:
+    async def run() -> tuple[dict, dict]:
+        return await ToolExecutor({}).execute({
+            "id": "call-1",
+            "function": {"name": "component_reverse_device", "arguments": "{}"},
+        })
+
+    call, payload = asyncio.run(run())
+
+    assert payload["error"] == "Tool component_reverse_device not found"
+    assert call["executed"] is False
+    assert call["execution_status"] == "not_registered"
 
 
 def test_ledger_canonicalizes_parent_child_representations_and_keeps_source_position() -> None:

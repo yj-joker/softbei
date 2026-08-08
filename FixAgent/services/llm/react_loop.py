@@ -36,6 +36,8 @@ class ToolExecutor:
         call_record = {
             "name": func_name,
             "arguments": func_args,
+            "executed": False,
+            "execution_status": "not_registered",
         }
 
         if func_name not in self.tool_handlers:
@@ -44,9 +46,14 @@ class ToolExecutor:
             return call_record, result_payload
 
         try:
+            call_record["executed"] = True
+            call_record["execution_status"] = "started"
             result = await self.tool_handlers[func_name](**func_args)
         except Exception as exc:
             result = {"error": str(exc)}
+            call_record["execution_status"] = "error"
+        else:
+            call_record["execution_status"] = "completed"
 
         result_payload = _json_compatible(result)
         evidence = build_evidence_items(func_name, result_payload)

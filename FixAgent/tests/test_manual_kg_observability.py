@@ -164,9 +164,9 @@ def _failure_chunks(path):
                 "section_title": "部件1",
                 "chunk_label": label,
                 "chunk_uid": "chunk-1",
-                "raw_text": "故障排查内容" if label == "troubleshooting" else "步骤内容",
+                "raw_text": "气缸盖：故障排查内容" if label == "troubleshooting" else "步骤内容",
             },
-            "text": "内容",
+            "text": "气缸盖：故障排查内容" if label == "troubleshooting" else "步骤内容",
         }
     ]
 
@@ -279,6 +279,8 @@ async def _extract_fault_solution_item(*_args, **_kwargs):
             solution_steps=["步骤一"],
             confidence=0.9,
             source_chunk_uid="chunk-1",
+            source_subject="气缸盖",
+            component_name="气缸盖",
         )
     ]
 

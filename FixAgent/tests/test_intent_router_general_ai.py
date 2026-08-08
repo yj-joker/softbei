@@ -188,6 +188,7 @@ def test_maintenance_operation_still_uses_knowledge_route() -> None:
     assert decision.intent == "maintenance_guidance"
     assert decision.target_layer == "operation_task"
     assert decision.requires_knowledge_retrieval is True
+    assert decision.requires_graph_search is False
 
 
 def test_manual_step_image_request_overrides_visual_identification_bias() -> None:

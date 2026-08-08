@@ -4,6 +4,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+VALID_RAG_VARIANTS = frozenset({"production", "no_graph", "graph_shadow", "graph_full"})
+
+
+def normalize_rag_variant(value) -> str:
+    """Normalize the process-owned RAG mode and reject silent fallbacks."""
+    normalized = str(value or "production").strip().lower()
+    if normalized == "graph":
+        normalized = "graph_full"
+    if normalized not in VALID_RAG_VARIANTS:
+        allowed = ", ".join(sorted(VALID_RAG_VARIANTS))
+        raise ValueError(f"RAG_VARIANT 必须是以下值之一: {allowed}")
+    return normalized
+
+
 def validate_auth_tokens(internal_token, api_token):
     """Validate the two service-token contracts without exposing token values."""
     normalized_internal = (internal_token or "").strip()
@@ -37,6 +51,8 @@ class Settings:
 
     # Java 后端服务地址（图谱查询统一走 Java 端，Python 不再直连 Neo4j）
     java_service_url = os.getenv("JAVA_SERVICE_URL", "http://localhost:8080")
+    graph_java_request_budget_seconds = float(os.getenv("GRAPH_JAVA_REQUEST_BUDGET_SECONDS", "10"))
+    graph_client_timeout_seconds = float(os.getenv("GRAPH_CLIENT_TIMEOUT_SECONDS", "20"))
 
     # RabbitMQ 配置
     rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
@@ -73,6 +89,9 @@ class Settings:
     def __init__(self) -> None:
         mode = os.getenv("CLARIFICATION_MODE", "enforce").strip().lower()
         self.clarification_mode = mode if mode in {"enforce", "shadow", "off"} else "enforce"
+        self.rag_variant = normalize_rag_variant(os.getenv("RAG_VARIANT"))
+        if self.graph_client_timeout_seconds <= self.graph_java_request_budget_seconds:
+            raise ValueError("GRAPH_CLIENT_TIMEOUT_SECONDS 必须大于 GRAPH_JAVA_REQUEST_BUDGET_SECONDS")
 
 
 _settings = None

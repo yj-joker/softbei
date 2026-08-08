@@ -11,13 +11,16 @@ import ai.weixiu.pojo.vo.DeviceVO;
 import ai.weixiu.pojo.vo.DiagnosisPathVO;
 import ai.weixiu.pojo.vo.DiagnosisSearchVO;
 import ai.weixiu.pojo.vo.GraphCandidateVO;
+import ai.weixiu.pojo.vo.GraphCandidateBatchVO;
 import ai.weixiu.pojo.vo.FaultVO;
+import ai.weixiu.exception.EmbeddingException;
 import ai.weixiu.repository.DeviceRepository;
 import ai.weixiu.service.CaseRecordService;
 import ai.weixiu.service.ComponentService;
 import ai.weixiu.service.FaultService;
 import ai.weixiu.service.GraphQueryService;
 import ai.weixiu.utils.MultimodalEmbeddingUtils;
+import ai.weixiu.utils.GraphLexicalMatcher;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.neo4j.core.Neo4jClient;
@@ -54,7 +57,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
     @Override
     public DiagnosisSearchVO searchDiagnosisPaths(DiagnosisSearchQuery query) {
         int safePage = Math.max(query.getPage(), 0);
-        int safeSize = Math.max(query.getSize(), 5);
+        int safeSize = normalizeSearchSize(query.getSize());
         int skip = safePage * safeSize;
         double minScore = query.getMinScore();
         long searchLimit = 10L;
@@ -63,6 +66,23 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         boolean hasFaultDesc = hasText(query.getFaultDescription());
         boolean hasCompDesc = hasText(query.getComponentDescription());
         boolean hasImages = query.getImageUrls() != null && !query.getImageUrls().isEmpty();
+
+        List<String> allowedPathIds = normalizeIds(query.getAllowedPathIds());
+        List<String> allowedDeviceIds = normalizeIds(query.getAllowedDeviceIds());
+        List<String> allowedComponentIds = normalizeIds(query.getAllowedComponentIds());
+        List<String> allowedFaultIds = normalizeIds(query.getAllowedFaultIds());
+        boolean graphScopeProvided = query.getAllowedPathIds() != null
+                || query.getAllowedDeviceIds() != null
+                || query.getAllowedComponentIds() != null
+                || query.getAllowedFaultIds() != null;
+        if (graphScopeProvided
+                && allowedPathIds.isEmpty()
+                && allowedDeviceIds.isEmpty()
+                && allowedComponentIds.isEmpty()
+                && allowedFaultIds.isEmpty()) {
+            log.info("诊断路径查询被空图谱作用域关闭");
+            return emptyResult(safePage, safeSize);
+        }
 
         if (!hasFaultDesc && !hasCompDesc && !hasImages) {
             return emptyResult(safePage, safeSize);
@@ -85,7 +105,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         // ===== 2. 故障文本向量检索（只搜 fault 索引）=====
         Map<String, Double> faultScoreMap = new HashMap<>();
         if (hasFaultDesc) {
-            List<FaultVO> faults = faultService.getFaultByEmbedding(query.getFaultDescription(), searchLimit, minScore);
+            List<FaultVO> faults = getFaultsWithFallback(query.getFaultDescription(), searchLimit, minScore);
             for (FaultVO f : faults) {
                 faultScoreMap.merge(f.getId(), f.getScore(), Math::max);
             }
@@ -95,7 +115,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         // ===== 3. 部件文本向量检索（只搜 component 索引）=====
         Map<String, Double> compScoreMap = new HashMap<>();
         if (hasCompDesc) {
-            List<ComponentVO> components = componentService.getComponentByEmbedding(query.getComponentDescription(), searchLimit, minScore);
+            List<ComponentVO> components = getComponentsWithFallback(query.getComponentDescription(), searchLimit, minScore);
             for (ComponentVO c : components) {
                 compScoreMap.merge(c.getId(), c.getScore(), Math::max);
             }
@@ -119,8 +139,14 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         }
 
         // ===== 5. 检查召回结果 =====
-        List<String> faultIds = faultScoreMap.isEmpty() ? null : new ArrayList<>(faultScoreMap.keySet());
-        List<String> componentIds = compScoreMap.isEmpty() ? null : new ArrayList<>(compScoreMap.keySet());
+        List<String> faultIds = mergeRecallIdsWithScope(
+                faultScoreMap.isEmpty() ? null : new ArrayList<>(faultScoreMap.keySet()),
+                allowedFaultIds
+        );
+        List<String> componentIds = mergeRecallIdsWithScope(
+                compScoreMap.isEmpty() ? null : new ArrayList<>(compScoreMap.keySet()),
+                allowedComponentIds
+        );
 
         // ===== 5.5 相关案例向量召回（approved，非阻塞）=====
         // 即使图谱未命中，相关案例也可独立返回，保证沉淀的实战经验"永不悬空"。
@@ -147,7 +173,9 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         QueryResult queryResult;
         try {
             queryResult = queryPathsWithTotal(deviceIds, componentIds, faultIds, deviceFilterActive,
-                    compScoreMap, faultScoreMap, skip, safeSize);
+                    compScoreMap, faultScoreMap,
+                    allowedPathIds, allowedDeviceIds, allowedComponentIds, allowedFaultIds,
+                    skip, safeSize);
         } catch (Exception e) {
             log.error("Cypher查询失败: devices={} components={} faults={} deviceFilter={} skip={} limit={} err={}",
                     deviceIds, componentIds, faultIds, deviceFilterActive, skip, safeSize, e.getMessage(), e);
@@ -175,9 +203,11 @@ public class GraphQueryServiceImpl implements GraphQueryService {
     }
 
     @Override
-    public List<GraphCandidateVO> findClarificationCandidates(GraphCandidateQuery request) {
+    public GraphCandidateBatchVO findClarificationCandidates(GraphCandidateQuery request) {
+        long startedNanos = System.nanoTime();
         if (request == null) {
-            return List.of();
+            return candidateBatch("not_applicable", "missing_request", List.of(),
+                    "not_used", "none", 0, 0, 0, 0, startedNanos);
         }
         GraphQueryContract contract = request.getQueryContract() == null
                 ? new GraphQueryContract()
@@ -194,29 +224,45 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 contract.getRawQuery()
         );
         int limit = Math.max(1, Math.min(request.getLimit(), 50));
+        int recallLimit = overfetchLimit(limit);
         double minScore = Math.max(0.0, Math.min(request.getMinScore(), 1.0));
 
         Map<String, Double> componentScores = new HashMap<>();
         Map<String, Double> faultScores = new HashMap<>();
+        String componentRecallMode = "none";
+        String faultRecallMode = "none";
+        boolean degraded = false;
         try {
             if (hasText(componentDescription)) {
-                for (ComponentVO component : componentService.getComponentByEmbedding(
-                        componentDescription, (long) limit, minScore)) {
+                RecallResult<ComponentVO> componentRecall = getComponentsRecall(
+                        componentDescription, (long) recallLimit, minScore);
+                componentRecallMode = componentRecall.mode();
+                degraded = componentRecall.degraded();
+                for (ComponentVO component : componentRecall.records()) {
                     componentScores.merge(component.getId(), component.getScore(), Math::max);
                 }
             }
-            if (hasText(faultDescription) && !"parameter_lookup".equals(contract.getTaskAction())) {
-                for (FaultVO fault : faultService.getFaultByEmbedding(
-                        faultDescription, (long) limit, minScore)) {
+            if (hasText(faultDescription)
+                    && (!"parameter_lookup".equals(contract.getTaskAction())
+                    || "fault_diagnosis".equals(contract.getIntent()))) {
+                RecallResult<FaultVO> faultRecall = getFaultsRecall(
+                        faultDescription, (long) recallLimit, minScore);
+                faultRecallMode = faultRecall.mode();
+                degraded = degraded || faultRecall.degraded();
+                for (FaultVO fault : faultRecall.records()) {
                     faultScores.merge(fault.getId(), fault.getScore(), Math::max);
                 }
             }
         } catch (Exception e) {
             log.info("图谱候选向量召回不可用: {}", e.getMessage());
-            return List.of();
+            throw new IllegalStateException("graph_candidate_recall_unavailable", e);
         }
         if (componentScores.isEmpty() && faultScores.isEmpty()) {
-            return List.of();
+            String mode = combineRecallModes(componentRecallMode, faultRecallMode);
+            return candidateBatch(degraded ? "degraded" : "empty",
+                    degraded ? "embedding_unavailable_lexical_empty" : "no_candidates",
+                    List.of(), degraded ? "unavailable" : "ok", mode,
+                    componentScores.size(), faultScores.size(), 0, 0, startedNanos);
         }
 
         Map<String, Object> params = new HashMap<>();
@@ -224,7 +270,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         params.put("faultIds", new ArrayList<>(faultScores.keySet()));
         params.put("componentScores", componentScores);
         params.put("faultScores", faultScores);
-        params.put("limit", limit);
+        params.put("limit", recallLimit);
 
         List<String> matchConditions = new ArrayList<>();
         if (!componentScores.isEmpty()) {
@@ -247,6 +293,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         String cypher = """
                 MATCH (d:Device)-[:OWNS]->(c:Component)
                 OPTIONAL MATCH (c)-[:CAUSES]->(f:Fault)
+                WITH d, c, f
                 WHERE (%s)
                   AND ($documentFilter = false OR coalesce(c.document_id, d.document_id, f.document_id) IN $allowedDocumentIds)
                   AND ($sectionFilter = false OR coalesce(c.section_id, f.section_id) IN $allowedSectionIds)
@@ -268,28 +315,239 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                        coalesce(c.section_id, f.section_id) AS sectionId,
                        coalesce(c.source_chunk_uids, CASE WHEN c.source_chunk_uid IS NULL THEN [] ELSE [c.source_chunk_uid] END) AS componentChunks,
                        coalesce(f.source_chunk_uids, CASE WHEN f.source_chunk_uid IS NULL THEN [] ELSE [f.source_chunk_uid] END) AS faultChunks,
-                       coalesce(c.page_start, d.page_start, f.page_start) AS pageStart,
-                       coalesce(c.page_end, d.page_end, f.page_end) AS pageEnd,
+                       coalesce(f.page_start, c.page_start, d.page_start) AS pageStart,
+                       coalesce(f.page_end, c.page_end, d.page_end) AS pageEnd,
                        CASE WHEN f IS NULL THEN 'procedure' ELSE 'fault' END AS pathType,
                        graphScore,
                        CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL THEN 'missing'
+                            WHEN coalesce(c.document_version, d.document_version, f.document_version) IS NULL THEN 'partial'
                             WHEN coalesce(c.section_id, f.section_id) IS NULL THEN 'partial'
                             WHEN size(coalesce(c.source_chunk_uids, [])) = 0 AND c.source_chunk_uid IS NULL THEN 'partial'
+                            WHEN coalesce(c.page_start, d.page_start, f.page_start) IS NULL THEN 'partial'
                             ELSE 'complete' END AS provenanceStatus
                 """.formatted(String.join(" OR ", matchConditions));
 
-        List<GraphCandidateVO> candidates = new ArrayList<>();
+        List<GraphCandidateVO> fetchedCandidates = new ArrayList<>();
         try {
             neo4jClient.query(cypher)
                     .bindAll(params)
                     .fetch()
                     .all()
-                    .forEach(row -> candidates.add(mapGraphCandidate(row)));
+                    .forEach(row -> fetchedCandidates.add(mapGraphCandidate(row)));
         } catch (Exception e) {
             log.info("图谱候选范围查询不可用: {}", e.getMessage());
+            throw new IllegalStateException("graph_candidate_query_unavailable", e);
+        }
+        List<GraphCandidateVO> candidates = rerankCandidates(
+                fetchedCandidates, faultDescription, componentDescription, limit);
+        String recallMode = combineRecallModes(componentRecallMode, faultRecallMode);
+        candidates.forEach(candidate -> candidate.setRecallMode(recallMode));
+        return candidateBatch(degraded ? "degraded" : (candidates.isEmpty() ? "empty" : "found"),
+                degraded ? "embedding_unavailable_lexical_fallback" :
+                        (candidates.isEmpty() ? "scope_filtered_all" : ""),
+                candidates, degraded ? "unavailable" : "ok", recallMode,
+                componentScores.size(), faultScores.size(),
+                componentScores.size() + faultScores.size(), candidates.size(), startedNanos);
+    }
+
+    static int normalizeSearchSize(int requestedSize) {
+        return Math.min(Math.max(requestedSize, 1), 100);
+    }
+
+    static int overfetchLimit(int requestedLimit) {
+        int normalized = Math.max(1, Math.min(requestedLimit, 50));
+        return Math.min(50, Math.max(normalized, normalized * 5));
+    }
+
+    /** 精确故障/部件命中优先，再按图谱分数截取最终候选数量。 */
+    public static List<GraphCandidateVO> rerankCandidates(
+            List<GraphCandidateVO> candidates,
+            String faultDescription,
+            String componentDescription,
+            int limit
+    ) {
+        if (candidates == null || candidates.isEmpty()) {
             return List.of();
         }
-        return candidates;
+        String faultText = compact(faultDescription);
+        String componentText = compact(componentDescription);
+        List<GraphCandidateVO> ranked = new ArrayList<>(candidates);
+        ranked.sort(Comparator
+                .comparingInt((GraphCandidateVO candidate) -> matchStrength(
+                        candidate, faultText, componentText)).reversed()
+                .thenComparing(Comparator.comparingDouble(GraphCandidateVO::getGraphScore).reversed())
+                .thenComparing(candidate -> Objects.toString(candidate.getPathId(), "")));
+        int outputLimit = Math.max(1, Math.min(limit, ranked.size()));
+        return new ArrayList<>(ranked.subList(0, outputLimit));
+    }
+
+    private static int matchStrength(
+            GraphCandidateVO candidate,
+            String faultText,
+            String componentText
+    ) {
+        int strength = 0;
+        String faultName = compact(candidate.getFaultName());
+        String componentName = compact(candidate.getComponentName());
+        if (!faultText.isEmpty() && !faultName.isEmpty()
+                && (faultText.contains(faultName) || faultName.contains(faultText))) {
+            strength += 4;
+        }
+        if (!componentText.isEmpty() && !componentName.isEmpty()
+                && (componentText.contains(componentName) || componentName.contains(componentText))) {
+            strength += 2;
+        }
+        return strength;
+    }
+
+    private static String compact(String value) {
+        return Objects.toString(value, "")
+                .toLowerCase(Locale.ROOT)
+                .replaceAll("[\\p{Punct}\\p{Z}\\p{Cntrl}]+", "");
+    }
+
+    private List<FaultVO> getFaultsWithFallback(String description, long limit, double minScore) {
+        return getFaultsRecall(description, limit, minScore).records();
+    }
+
+    private RecallResult<FaultVO> getFaultsRecall(String description, long limit, double minScore) {
+        try {
+            List<FaultVO> faults = faultService.getFaultByEmbedding(description, limit, minScore);
+            if (GraphLexicalMatcher.requiresFallback(faults)) {
+                log.warn("graph_recall fallback=lexical entity=fault reason=vector_empty");
+                return new RecallResult<>(lexicalFaults(description, limit), "lexical", false);
+            }
+            return new RecallResult<>(faults, "vector", false);
+        } catch (EmbeddingException e) {
+            log.warn("graph_recall fallback=lexical entity=fault reason=embedding_unavailable");
+            return new RecallResult<>(lexicalFaults(description, limit), "lexical", true);
+        }
+    }
+
+    private List<ComponentVO> getComponentsWithFallback(String description, long limit, double minScore) {
+        return getComponentsRecall(description, limit, minScore).records();
+    }
+
+    private RecallResult<ComponentVO> getComponentsRecall(String description, long limit, double minScore) {
+        try {
+            List<ComponentVO> components = componentService.getComponentByEmbedding(description, limit, minScore);
+            if (GraphLexicalMatcher.requiresFallback(components)) {
+                log.warn("graph_recall fallback=lexical entity=component reason=vector_empty");
+                return new RecallResult<>(lexicalComponents(description, limit), "lexical", false);
+            }
+            return new RecallResult<>(components, "vector", false);
+        } catch (EmbeddingException e) {
+            log.warn("graph_recall fallback=lexical entity=component reason=embedding_unavailable");
+            return new RecallResult<>(lexicalComponents(description, limit), "lexical", true);
+        }
+    }
+
+    private record RecallResult<T>(List<T> records, String mode, boolean degraded) {
+    }
+
+    private static String combineRecallModes(String first, String second) {
+        Set<String> modes = new LinkedHashSet<>(List.of(first, second));
+        modes.remove("none");
+        if (modes.isEmpty()) {
+            return "none";
+        }
+        return modes.size() == 1 ? modes.iterator().next() : "mixed";
+    }
+
+    private static GraphCandidateBatchVO candidateBatch(
+            String status,
+            String reason,
+            List<GraphCandidateVO> records,
+            String embeddingStatus,
+            String recallMode,
+            int componentRecallCount,
+            int faultRecallCount,
+            int beforeScopeCount,
+            int afterScopeCount,
+            long startedNanos
+    ) {
+        GraphCandidateBatchVO batch = new GraphCandidateBatchVO();
+        batch.setStatus(status);
+        batch.setReason(reason);
+        batch.setRecords(new ArrayList<>(records));
+        Map<String, Object> diagnostics = new LinkedHashMap<>();
+        diagnostics.put("embeddingStatus", embeddingStatus);
+        diagnostics.put("recallMode", recallMode);
+        diagnostics.put("componentRecallCount", componentRecallCount);
+        diagnostics.put("faultRecallCount", faultRecallCount);
+        diagnostics.put("beforeScopeCount", beforeScopeCount);
+        diagnostics.put("afterScopeCount", afterScopeCount);
+        diagnostics.put("dropReasons", afterScopeCount == 0 && beforeScopeCount > 0
+                ? Map.of("scope_filtered", beforeScopeCount) : Map.of());
+        diagnostics.put("elapsedMs", (System.nanoTime() - startedNanos) / 1_000_000L);
+        batch.setDiagnostics(diagnostics);
+        return batch;
+    }
+
+    private List<FaultVO> lexicalFaults(String description, long limit) {
+        List<FaultVO> result = new ArrayList<>();
+        for (Map<String, Object> row : lexicalRows("Fault", description, limit,
+                List.of("name", "description", "category", "severity"))) {
+            FaultVO value = new FaultVO();
+            value.setId(asText(row.get("id")));
+            value.setName(asText(row.get("name")));
+            value.setDescription(asText(row.get("description")));
+            value.setCategory(asText(row.get("category")));
+            value.setSeverity(asText(row.get("severity")));
+            value.setScore(number(row.get("score")));
+            result.add(value);
+        }
+        return result;
+    }
+
+    private List<ComponentVO> lexicalComponents(String description, long limit) {
+        List<ComponentVO> result = new ArrayList<>();
+        for (Map<String, Object> row : lexicalRows("Component", description, limit,
+                List.of("name", "part_number", "specification", "supplier"))) {
+            ComponentVO value = new ComponentVO();
+            value.setId(asText(row.get("id")));
+            value.setName(asText(row.get("name")));
+            value.setPartNumber(asText(row.get("partNumber")));
+            value.setSpecification(asText(row.get("specification")));
+            value.setSupplier(asText(row.get("supplier")));
+            value.setScore(number(row.get("score")));
+            result.add(value);
+        }
+        return result;
+    }
+
+    private Collection<Map<String, Object>> lexicalRows(
+            String label,
+            String description,
+            long limit,
+            List<String> properties
+    ) {
+        List<String> terms = GraphLexicalMatcher.terms(description);
+        if (terms.isEmpty()) {
+            return List.of();
+        }
+        String propertyMatches = properties.stream()
+                .map(property -> "toLower(coalesce(n." + property + ", '')) CONTAINS term")
+                .reduce((left, right) -> left + " OR " + right)
+                .orElse("false");
+        String cypher = """
+                MATCH (n:%s)
+                WITH n, size([term IN $terms WHERE %s]) AS hits
+                WHERE hits > 0
+                RETURN n.id AS id, n.name AS name, n.description AS description,
+                       n.category AS category, n.severity AS severity,
+                       n.part_number AS partNumber, n.specification AS specification,
+                       n.supplier AS supplier, toFloat(hits) / size($terms) AS score
+                ORDER BY hits DESC, n.id
+                LIMIT $limit
+                """.formatted(label, propertyMatches);
+        Collection<Map<String, Object>> rows = neo4jClient.query(cypher)
+                .bind(terms).to("terms")
+                .bind(limit).to("limit")
+                .fetch()
+                .all();
+        log.info("graph_recall mode=lexical entity={} terms={} hits={}", label, terms.size(), rows.size());
+        return rows;
     }
 
     private GraphCandidateVO mapGraphCandidate(Map<String, Object> row) {
@@ -306,9 +564,13 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         candidate.setPathType(asText(row.get("pathType")));
         candidate.setGraphScore(number(row.get("graphScore")));
         candidate.setProvenanceStatus(asText(row.get("provenanceStatus")));
-        String pathId = String.join("|", candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId());
+        String pathId = "kgpath:" + String.join(":", candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId());
         candidate.setPathId(pathId);
-        candidate.setSourceChunkUids(concatTextLists(row.get("componentChunks"), row.get("faultChunks")));
+        candidate.setSourceChunkUids(selectPathSourceChunkUids(
+                !candidate.getFaultId().isBlank(),
+                row.get("componentChunks"),
+                row.get("faultChunks")
+        ));
         Integer pageStart = integer(row.get("pageStart"));
         Integer pageEnd = integer(row.get("pageEnd"));
         if (pageStart != null) {
@@ -373,6 +635,10 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             boolean deviceFilterActive,
             Map<String, Double> compScoreMap,
             Map<String, Double> faultScoreMap,
+            List<String> allowedPathIds,
+            List<String> allowedDeviceIds,
+            List<String> allowedComponentIds,
+            List<String> allowedFaultIds,
             int skip,
             int limit
     ) {
@@ -401,6 +667,14 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         params.putIfAbsent("componentIds", List.of());
         params.putIfAbsent("faultIds", List.of());
         params.put("deviceIds", deviceIds != null ? deviceIds : List.of());
+        params.put("allowedPathIds", allowedPathIds);
+        params.put("allowedDeviceIds", allowedDeviceIds);
+        params.put("allowedComponentIds", allowedComponentIds);
+        params.put("allowedFaultIds", allowedFaultIds);
+        params.put("allowedPathFilter", !allowedPathIds.isEmpty());
+        params.put("allowedDeviceFilter", !allowedDeviceIds.isEmpty());
+        params.put("allowedComponentFilter", !allowedComponentIds.isEmpty());
+        params.put("allowedFaultFilter", !allowedFaultIds.isEmpty());
 
         // 设备硬隔离：keyword 匹配到设备时，强制 Component 必须属于该设备（OWNS 关系），
         // 从根上排除跨设备的向量误召回。deviceFilterActive=false 时不加此约束。
@@ -419,6 +693,11 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 WHERE %s %s
                 OPTIONAL MATCH (d:Device)-[:OWNS]->(c)
                 OPTIONAL MATCH (d)-[hf:HAS_FAULT]->(f)
+                WITH c, f, d, hf
+                WHERE ($allowedPathFilter = false OR ('kgpath:' + coalesce(d.id, '') + ':' + coalesce(c.id, '') + ':' + coalesce(f.id, '')) IN $allowedPathIds)
+                  AND ($allowedDeviceFilter = false OR d.id IN $allowedDeviceIds)
+                  AND ($allowedComponentFilter = false OR c.id IN $allowedComponentIds)
+                  AND ($allowedFaultFilter = false OR f.id IN $allowedFaultIds)
                 WITH DISTINCT c, f, d, hf IS NOT NULL AS hasHistory,
                      CASE WHEN f IS NOT NULL AND f.id IN $faultIds THEN 1 ELSE 0 END +
                      CASE WHEN c.id IN $componentIds THEN 1 ELSE 0 END +
@@ -452,6 +731,28 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                        f.id AS faultId,
                        f.name AS faultName,
                        f.severity AS faultSeverity,
+                       coalesce(c.document_id, d.document_id, f.document_id) AS documentId,
+                       coalesce(c.document_version, d.document_version, f.document_version) AS documentVersion,
+                       coalesce(c.section_id, f.section_id) AS sectionId,
+                       coalesce(c.source_chunk_uids, CASE WHEN c.source_chunk_uid IS NULL THEN [] ELSE [c.source_chunk_uid] END) AS componentChunks,
+                       coalesce(f.source_chunk_uids, CASE WHEN f.source_chunk_uid IS NULL THEN [] ELSE [f.source_chunk_uid] END) AS faultChunks,
+                       coalesce(f.page_start, c.page_start, d.page_start) AS pageStart,
+                       coalesce(f.page_end, c.page_end, d.page_end) AS pageEnd,
+                       coalesce(
+                           f.graph_revision,
+                           c.graph_revision,
+                           d.graph_revision,
+                           CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL
+                                  OR coalesce(c.document_version, d.document_version, f.document_version) IS NULL
+                                THEN NULL
+                                ELSE 'manual:' + coalesce(c.document_id, d.document_id, f.document_id)
+                                     + ':' + coalesce(c.document_version, d.document_version, f.document_version)
+                           END) AS graphRevision,
+                       CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL THEN 'missing'
+                            WHEN coalesce(c.section_id, f.section_id) IS NULL THEN 'partial'
+                            WHEN size(coalesce(c.source_chunk_uids, [])) = 0 AND c.source_chunk_uid IS NULL
+                                 AND size(coalesce(f.source_chunk_uids, [])) = 0 AND f.source_chunk_uid IS NULL THEN 'partial'
+                            ELSE 'complete' END AS provenanceStatus,
                        hasHistory,
                        matchScore,
                        solutions,
@@ -486,6 +787,25 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         vo.setFaultName(record.get("faultName").asString(null));
         vo.setFaultSeverity(record.get("faultSeverity").asString(null));
         vo.setMatchScore(record.get("matchScore").asInt(0));
+        vo.setDocumentId(record.get("documentId").asString(null));
+        vo.setDocumentVersion(record.get("documentVersion").asString(null));
+        vo.setSectionId(record.get("sectionId").asString(null));
+        vo.setGraphRevision(record.get("graphRevision").asString(null));
+        vo.setProvenanceStatus(record.get("provenanceStatus").asString("missing"));
+        vo.setSourceChunkUids(selectPathSourceChunkUids(
+                hasText(vo.getFaultId()),
+                record.get("componentChunks").asList(),
+                record.get("faultChunks").asList()
+        ));
+        Integer pageStart = record.get("pageStart").isNull() ? null : record.get("pageStart").asInt();
+        Integer pageEnd = record.get("pageEnd").isNull() ? null : record.get("pageEnd").asInt();
+        if (pageStart != null) {
+            vo.setPages(pageEnd == null || pageStart.equals(pageEnd)
+                    ? List.of(pageStart)
+                    : List.of(pageStart, pageEnd));
+        } else {
+            vo.setPages(List.of());
+        }
 
         // 解析聚合的 solutions 列表（含诊断方案 + 维修规程，按 id 去重、过滤空对象）
         List<DiagnosisPathVO.SolutionBrief> solutions = new ArrayList<>();
@@ -526,6 +846,23 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             vo.setSolutionTitle(best.getTitle());
             vo.setEstimatedTime(best.getEstimatedTime());
             vo.setVerified(best.getVerified());
+        }
+
+        List<String> nodeIds = new ArrayList<>();
+        if (hasText(vo.getDeviceId())) nodeIds.add(vo.getDeviceId());
+        if (hasText(vo.getComponentId())) nodeIds.add(vo.getComponentId());
+        if (hasText(vo.getFaultId())) nodeIds.add(vo.getFaultId());
+        vo.setNodeIds(nodeIds);
+
+        List<String> relationshipTypes = new ArrayList<>();
+        if (hasText(vo.getDeviceId()) && hasText(vo.getComponentId())) relationshipTypes.add("OWNS");
+        if (hasText(vo.getComponentId()) && hasText(vo.getFaultId())) relationshipTypes.add("CAUSES");
+        if (!solutions.isEmpty()) relationshipTypes.add("HAS_SOLUTION");
+        vo.setRelationshipTypes(relationshipTypes);
+
+        if (hasText(vo.getDeviceId()) && hasText(vo.getComponentId()) && hasText(vo.getFaultId())) {
+            String pathId = "kgpath:" + vo.getDeviceId() + ":" + vo.getComponentId() + ":" + vo.getFaultId();
+            vo.setPathId(pathId);
         }
 
         return vo;
@@ -579,6 +916,38 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             }
         }
         return result;
+    }
+
+    static List<String> selectPathSourceChunkUids(
+            boolean faultPath,
+            Object componentChunks,
+            Object faultChunks
+    ) {
+        return faultPath
+                ? concatTextLists(faultChunks)
+                : concatTextLists(componentChunks);
+    }
+
+    static List<String> mergeRecallIdsWithScope(List<String> recalledIds, List<String> scopedIds) {
+        List<String> merged = Stream.concat(
+                        normalizeIds(recalledIds).stream(),
+                        normalizeIds(scopedIds).stream()
+                )
+                .distinct()
+                .toList();
+        return merged.isEmpty() ? null : merged;
+    }
+
+    private static List<String> normalizeIds(List<String> values) {
+        if (values == null) {
+            return List.of();
+        }
+        return values.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
     }
 
     private DiagnosisSearchVO emptyResult(int page, int size) {

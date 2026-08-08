@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 from api import main
 
@@ -33,13 +34,19 @@ def test_health_exposes_running_commit_worktree_and_ready_document_revisions(
     monkeypatch.setenv("FIXAGENT_GIT_DIRTY", "true")
     monkeypatch.setenv("FIXAGENT_WORKTREE", "C:/workspace/rag-quality-v2")
     monkeypatch.setattr(main, "get_vector_service", lambda: _VectorService())
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(rag_variant="production"))
 
     public_payload = asyncio.run(main.health())
     payload = asyncio.run(main.runtime_info())
 
-    assert public_payload == {"status": "ok", "build_id": "abc123-dirty"}
+    assert public_payload == {
+        "status": "ok",
+        "build_id": "abc123-dirty",
+        "rag_variant": "production",
+    }
     assert "runtime" not in public_payload
     assert payload["status"] == "ok"
+    assert payload["rag_variant"] == "production"
     assert payload["runtime"]["git_commit"] == "abc123"
     assert payload["runtime"]["dirty"] is True
     assert payload["runtime"]["worktree"] == "C:/workspace/rag-quality-v2"
@@ -57,6 +64,7 @@ def test_health_degrades_without_vector_catalog_but_keeps_version_identity(
     monkeypatch.setenv("FIXAGENT_GIT_COMMIT", "abc123")
     monkeypatch.setenv("FIXAGENT_GIT_DIRTY", "false")
     monkeypatch.setenv("FIXAGENT_WORKTREE", "C:/workspace/rag-quality-v2")
+    monkeypatch.setattr(main, "get_settings", lambda: SimpleNamespace(rag_variant="production"))
 
     def unavailable_vector_service():
         raise RuntimeError("redis unavailable")
@@ -66,8 +74,13 @@ def test_health_degrades_without_vector_catalog_but_keeps_version_identity(
     public_payload = asyncio.run(main.health())
     payload = asyncio.run(main.runtime_info())
 
-    assert public_payload == {"status": "degraded", "build_id": "abc123"}
+    assert public_payload == {
+        "status": "degraded",
+        "build_id": "abc123",
+        "rag_variant": "production",
+    }
     assert payload["status"] == "degraded"
+    assert payload["rag_variant"] == "production"
     assert payload["runtime"]["git_commit"] == "abc123"
     assert payload["runtime"]["documents"] == []
     assert payload["runtime"]["catalog_available"] is False

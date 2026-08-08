@@ -266,6 +266,37 @@ def test_unknown_explicit_device_is_not_demoted_or_bound_to_existing_document() 
     assert candidates.selected_document_id == ""
 
 
+def test_graph_component_identity_is_demoted_to_manual_scope_when_graph_proves_parent_device() -> None:
+    catalog = _catalog(("manual-a", "纯电动公路客车", "客车", "公交"))
+    contract = QueryContract.from_mapping(
+        {
+            "raw_device_span": "空调PTC",
+            "device_name": "空调PTC",
+            "component": "空调PTC",
+            "task_action": "find_cause",
+        },
+        raw_query="空调PTC故障原因",
+    )
+    graph_candidates = ({
+        "componentName": "空调PTC",
+        "deviceName": "纯电动公路客车",
+        "documentId": "manual-a",
+    },)
+
+    resolution = EntityResolver().resolve(contract, catalog, (), graph_candidates=graph_candidates)
+    candidates = DocumentCandidateResolver().resolve(
+        resolution.contract,
+        catalog,
+        (),
+        graph_document_ids=("manual-a",),
+    )
+
+    assert resolution.entity_role == "document_component"
+    assert resolution.contract.raw_device_span == ""
+    assert candidates.action == RouteAction.GROUNDED_RETRIEVAL
+    assert candidates.selected_document_id == "manual-a"
+
+
 def test_qualified_unknown_device_is_not_demoted_by_fuzzy_section_overlap() -> None:
     query = "远航飞行器涡轮装置出现周期性抖动是什么原因"
     contract = QueryContract.from_mapping(

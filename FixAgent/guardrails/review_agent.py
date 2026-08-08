@@ -280,13 +280,31 @@ class _GraphCheck:
     """
 
     @staticmethod
-    def _parse_trace_results(react_trace: List[Dict]) -> List[Dict[str, str]]:
+    def _parse_trace_results(react_trace: List[Dict]) -> List[Dict[str, Any]]:
         paths = []
         for step in react_trace:
-            if step.get("action") != "tool_call":
-                continue
             for tc in step.get("tool_calls", []):
                 if tc.get("name") not in ("java_graph_diagnosis_path", "java_graph_device_search"):
+                    continue
+                result_data = tc.get("result_data")
+                normalized = result_data.get("evidence") if isinstance(result_data, dict) else None
+                if isinstance(normalized, list):
+                    for item in normalized:
+                        if not isinstance(item, dict) or item.get("qualification") != "qualified":
+                            continue
+                        fault = item.get("fault") if isinstance(item.get("fault"), dict) else {}
+                        solution = item.get("solution") if isinstance(item.get("solution"), dict) else {}
+                        paths.append({
+                            "evidence_id": str(item.get("evidence_id") or ""),
+                            "path_id": str(item.get("path_id") or ""),
+                            "fault_name": str(fault.get("name") or ""),
+                            "solution_title": str(solution.get("title") or ""),
+                            "solution_verified": solution.get("verified") is True,
+                            "solution_status": str(solution.get("status") or ""),
+                            "relationship_types": list(item.get("relationship_types") or []),
+                            "provenance_status": str(item.get("provenance_status") or ""),
+                            "structured": True,
+                        })
                     continue
                 summary = tc.get("result_summary", "")
                 try:
@@ -340,6 +358,45 @@ class _GraphCheck:
                        for r in trace_results if r.get("fault_name") and r.get("solution_title")}
 
         verified, unverified = [], []
+
+        structured_results = [item for item in trace_results if item.get("structured")]
+        if structured_results:
+            for claim in claims:
+                matching_faults = [
+                    item for item in structured_results
+                    if cls._names_match(claim["fault_name"], item.get("fault_name", ""))
+                    and {"OWNS", "CAUSES"}.issubset(set(item.get("relationship_types") or []))
+                ]
+                if not matching_faults:
+                    unverified.append({**claim, "reason": "完整图谱关系路径未匹配"})
+                    continue
+                if claim.get("solution_title"):
+                    matching_solutions = [
+                        item for item in matching_faults
+                        if cls._names_match(claim["solution_title"], item.get("solution_title", ""))
+                        and "HAS_SOLUTION" in set(item.get("relationship_types") or [])
+                        and item.get("solution_verified") is True
+                        and item.get("solution_status") == "active"
+                    ]
+                    if not matching_solutions:
+                        unverified.append({**claim, "reason": "已验证方案关系未匹配"})
+                        continue
+                    matched = matching_solutions[0]
+                else:
+                    matched = matching_faults[0]
+                verified.append({
+                    **claim,
+                    "evidence_id": matched.get("evidence_id", ""),
+                    "path_id": matched.get("path_id", ""),
+                    "verified_by": "structured_graph_evidence",
+                })
+            return {
+                "unverified_paths": unverified,
+                "verified_paths": verified,
+                "total_paths": len(claims),
+                "verified_count": len(verified),
+                "unverified_count": len(unverified),
+            }
 
         try:
             import httpx
@@ -407,6 +464,13 @@ class _GraphCheck:
         return {"unverified_paths": unverified, "verified_paths": verified,
                 "total_paths": len(claims), "verified_count": len(verified),
                 "unverified_count": len(unverified)}
+
+    @staticmethod
+    def _names_match(claim: str, evidence: str) -> bool:
+        normalize = lambda value: re.sub(r"[^\w\u4e00-\u9fff]", "", str(value or "")).casefold()
+        left = normalize(claim)
+        right = normalize(evidence)
+        return bool(left and right and (left in right or right in left))
 
 
 # ====================================================================

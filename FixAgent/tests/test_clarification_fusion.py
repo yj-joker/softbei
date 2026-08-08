@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 from services.clarification.fusion import CandidateFusionEngine
 from services.clarification.models import KnowledgeCandidate
 from services.retrieval.device_identity import QueryContract
@@ -66,21 +68,110 @@ def test_fusion_joins_by_document_and_section_not_display_name() -> None:
         section_id="6.2",
         evidence_refs=("chunk-23",),
     )
-    graph = _candidate(
-        candidate_id="graph:path-1",
-        source_kind="graph",
-        document_id="manual-1",
-        section_id="6.2",
-        evidence_refs=("chunk-23",),
-        path_id="path-1",
+    graph = replace(
+        _candidate(
+            candidate_id="graph:path-1",
+            source_kind="graph",
+            document_id="manual-1",
+            section_id="6.2",
+            evidence_refs=("chunk-23",),
+            path_id="path-1",
+        ),
+        dimensions={
+            "document_id": "manual-1",
+            "section_id": "6.2",
+            "component": "clutch",
+            "component_id": "component-1",
+            "fault_id": "fault-1",
+            "path_id": "path-1",
+        },
     )
 
     result = CandidateFusionEngine().fuse((section,), (graph,), _contract())
 
     assert len(result) == 1
     assert result[0].source_kinds == ("section", "graph")
+    assert result[0].candidate_id == "graph:path-1"
+    assert result[0].dimensions["path_id"] == "path-1"
+    assert result[0].dimensions["component_id"] == "component-1"
+    assert result[0].dimensions["fault_id"] == "fault-1"
     assert result[0].graph_path_ids == ("path-1",)
     assert result[0].source_chunk_uids == ("chunk-23",)
+
+
+def test_fusion_keeps_distinct_graph_paths_from_the_same_section() -> None:
+    section = _candidate(
+        candidate_id="section:manual-1:6.2",
+        source_kind="section",
+        document_id="manual-1",
+        section_id="6.2",
+        evidence_refs=("chunk-23",),
+    )
+    first = replace(
+        _candidate(
+            candidate_id="graph:path-1",
+            source_kind="graph",
+            document_id="manual-1",
+            section_id="6.2",
+            evidence_refs=("chunk-23",),
+            path_id="path-1",
+        ),
+        dimensions={
+            "document_id": "manual-1",
+            "section_id": "6.2",
+            "component": "clutch",
+            "component_id": "component-1",
+            "fault_id": "fault-1",
+            "path_id": "path-1",
+        },
+    )
+    second = replace(
+        first,
+        candidate_id="graph:path-2",
+        path_id="path-2",
+        graph_path_ids=("path-2",),
+        dimensions={**first.dimensions, "fault_id": "fault-2", "path_id": "path-2"},
+    )
+
+    result = CandidateFusionEngine().fuse((section,), (first, second), _contract())
+
+    assert len(result) == 2
+    assert {item.path_id for item in result} == {"path-1", "path-2"}
+
+
+def test_fusion_keeps_selected_graph_path_evidence_row_scoped() -> None:
+    section = _candidate(
+        candidate_id="section:manual-1:6.2",
+        source_kind="section",
+        document_id="manual-1",
+        section_id="6.2",
+        evidence_refs=("section-record-1", "section-record-2"),
+    )
+    graph = replace(
+        _candidate(
+            candidate_id="graph:path-1",
+            source_kind="graph",
+            document_id="manual-1",
+            section_id="6.2",
+            evidence_refs=("fault-row-7",),
+            path_id="path-1",
+        ),
+        dimensions={
+            "document_id": "manual-1",
+            "section_id": "6.2",
+            "component": "clutch",
+            "component_id": "component-1",
+            "fault_id": "fault-1",
+            "path_id": "path-1",
+        },
+    )
+
+    result = CandidateFusionEngine().fuse((section,), (graph,), _contract())
+
+    assert len(result) == 1
+    assert result[0].candidate_id == "graph:path-1"
+    assert result[0].evidence_refs == ("fault-row-7",)
+    assert result[0].source_chunk_uids == ("fault-row-7",)
 
 
 def test_fusion_never_joins_same_label_across_documents() -> None:

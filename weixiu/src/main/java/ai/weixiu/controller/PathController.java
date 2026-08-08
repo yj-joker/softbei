@@ -4,6 +4,7 @@ import ai.weixiu.pojo.Result;
 import ai.weixiu.pojo.query.DiagnosisSearchQuery;
 import ai.weixiu.pojo.query.GraphCandidateQuery;
 import ai.weixiu.pojo.vo.GraphCandidateVO;
+import ai.weixiu.pojo.vo.GraphCandidateBatchVO;
 import ai.weixiu.pojo.vo.ComponentDeviceVO;
 import ai.weixiu.pojo.vo.DiagnosisSearchVO;
 import ai.weixiu.service.GraphQueryService;
@@ -30,7 +31,7 @@ public class PathController {
 
     @PostMapping("/candidates")
     @Operation(summary = "返回受文档和证据范围约束的反问候选")
-    public Result<List<GraphCandidateVO>> findClarificationCandidates(
+    public Result<GraphCandidateBatchVO> findClarificationCandidates(
             @RequestBody GraphCandidateQuery query) {
         return Result.success(graphQueryService.findClarificationCandidates(query));
     }

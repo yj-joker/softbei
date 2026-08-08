@@ -12,6 +12,7 @@ import httpx
 from config.settings import get_settings
 from services.clarification.graph_candidates import build_graph_candidates
 from services.retrieval.device_identity import QueryContract
+from services.retrieval.graph_evidence import GraphEvidenceBatch, normalize_graph_response
 
 logger = logging.getLogger(__name__)
 
@@ -33,15 +34,26 @@ class JavaGraphCandidateProvider:
         *,
         base_url: str | None = None,
         internal_token: str | None = None,
-        timeout_seconds: float = 3.0,
+        timeout_seconds: float | None = None,
         request_json: RequestJson | None = None,
     ) -> None:
         settings = get_settings()
         self.base_url = str(base_url or settings.java_service_url).rstrip("/")
         self.internal_token = str(internal_token or settings.internal_token or "")
-        self.timeout_seconds = max(float(timeout_seconds), 0.2)
+        configured_timeout = (
+            settings.graph_client_timeout_seconds
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+        self.timeout_seconds = max(float(configured_timeout), 0.2)
         self._request_json = request_json
         self.last_error: str = ""
+        self.last_error_code: str = ""
+        self.retrieval_status: dict[str, Any] = {
+            "status": "empty",
+            "reason": "not_queried",
+            "diagnostics": {},
+        }
 
     async def fetch_candidates(
         self,
@@ -56,6 +68,31 @@ class JavaGraphCandidateProvider:
         min_score: float = 0.70,
     ) -> tuple:
         """Fetch graph paths relevant to a structured query contract."""
+        self.last_error = ""
+        self.last_error_code = ""
+        intent = contract.intent or (
+            "fault_diagnosis" if contract.task_action == "find_cause" else ""
+        )
+        # A diagnostic question can be phrased as a parameter lookup.  The
+        # intent is authoritative; do not discard its graph route.
+        if contract.task_action == "parameter_lookup" and intent != "fault_diagnosis":
+            self.retrieval_status = {
+                "status": "not_applicable",
+                "reason": "parameter_lookup",
+                "diagnostics": {"record_count": 0, "candidate_count": 0},
+            }
+            return ()
+        if intent not in {
+            "fault_diagnosis",
+            "maintenance_guidance",
+            "procedure_planning",
+        }:
+            self.retrieval_status = {
+                "status": "not_applicable",
+                "reason": "non_diagnostic_request",
+                "diagnostics": {"record_count": 0, "candidate_count": 0},
+            }
+            return ()
         source_chunks = tuple(dict.fromkeys(
             str(value).strip()
             for value in (*allowed_source_chunk_uids, *allowed_evidence_refs)
@@ -72,11 +109,46 @@ class JavaGraphCandidateProvider:
         if image_urls:
             payload["imageUrls"] = list(image_urls)
         response = await self._request("POST", "/weixiu/path/candidates", json=payload)
+        if self.last_error_code:
+            reason = (
+                "candidate_timeout"
+                if self.last_error_code == "request_timeout"
+                else "candidate_request_failed"
+            )
+            self.retrieval_status = {
+                "status": "unavailable",
+                "reason": reason,
+                "diagnostics": {"record_count": 0, "candidate_count": 0},
+            }
+            return ()
         data = response.get("data") if isinstance(response, Mapping) else None
+        status_payload = data if isinstance(data, Mapping) else response
+        response_status = self._retrieval_status(status_payload)
+        java_reason = str(status_payload.get("reason") or "") if isinstance(status_payload, Mapping) else ""
+        java_diagnostics = (
+            dict(status_payload.get("diagnostics") or {})
+            if isinstance(status_payload, Mapping)
+            and isinstance(status_payload.get("diagnostics"), Mapping)
+            else {}
+        )
         if isinstance(data, Mapping):
             data = data.get("records") or data.get("candidates") or data.get("paths") or ()
         records = [dict(item) for item in (data or ()) if isinstance(item, Mapping)]
-        return build_graph_candidates(records, query=contract.raw_query)
+        candidates = build_graph_candidates(records, query=contract.raw_query)
+        status = response_status or ("found" if candidates else "empty")
+        if records and not candidates:
+            status = "filtered_out"
+        self.retrieval_status = {
+            "status": status,
+            "reason": java_reason or ("" if status in {"found", "degraded"} else "no_matching_candidates"),
+            "diagnostics": {
+                **java_diagnostics,
+                "record_count": len(records),
+                "candidate_count": len(candidates),
+                "filtered_count": max(0, len(records) - len(candidates)),
+            },
+        }
+        return candidates
 
     @staticmethod
     def _text_list(values: Any) -> list[str]:
@@ -88,6 +160,7 @@ class JavaGraphCandidateProvider:
     def _contract_payload(contract: QueryContract) -> dict[str, Any]:
         return {
             "rawQuery": contract.raw_query,
+            "intent": contract.intent,
             "deviceIdentity": contract.raw_device_span or contract.device_name,
             "component": contract.component,
             "partSpec": contract.part_spec,
@@ -167,6 +240,87 @@ class JavaGraphCandidateProvider:
             data = data.get("records") or data.get("paths") or ()
         return [dict(item) for item in (data or ()) if isinstance(item, Mapping)]
 
+    async def retrieve_path_evidence(
+        self,
+        *,
+        keyword: str = "",
+        fault_description: str = "",
+        component_description: str = "",
+        image_urls: list[str] | tuple[str, ...] = (),
+        limit: int = 10,
+        min_score: float = 0.70,
+        allowed_device_ids: list[str] | tuple[str, ...] = (),
+        allowed_component_ids: list[str] | tuple[str, ...] = (),
+        allowed_fault_ids: list[str] | tuple[str, ...] = (),
+        allowed_path_ids: list[str] | tuple[str, ...] = (),
+    ) -> GraphEvidenceBatch:
+        """Retrieve and normalize path evidence under a server-owned scope."""
+        self.last_error = ""
+        self.last_error_code = ""
+        body: dict[str, Any] = {
+            "page": 0,
+            "size": max(1, int(limit)),
+            "minScore": float(min_score),
+        }
+        # The caller has already enforced a non-empty server scope. Preserve
+        # only the populated dimensions so unspecified dimensions do not turn
+        # into explicit empty allow-lists during evidence normalization.
+        for key, values in (
+            ("allowedDeviceIds", allowed_device_ids),
+            ("allowedComponentIds", allowed_component_ids),
+            ("allowedFaultIds", allowed_fault_ids),
+            ("allowedPathIds", allowed_path_ids),
+        ):
+            normalized = self._text_list(values)
+            if normalized:
+                body[key] = normalized
+        for key, value in (
+            ("keyword", keyword),
+            ("faultDescription", fault_description),
+            ("componentDescription", component_description),
+        ):
+            if str(value or "").strip():
+                body[key] = str(value).strip()
+        if image_urls:
+            body["imageUrls"] = list(image_urls)
+
+        payload = await self._request("POST", "/weixiu/path/search", json=body)
+        if self.last_error_code:
+            reason = (
+                "graph_path_timeout"
+                if self.last_error_code == "request_timeout"
+                else "graph_path_request_failed"
+            )
+            return normalize_graph_response({
+                "evidence_status": "unavailable",
+                "reason": reason,
+                "raw_records": [],
+            })
+
+        data = payload.get("data") if isinstance(payload, Mapping) else None
+        data = data if isinstance(data, Mapping) else {}
+        records = data.get("records") or data.get("paths") or []
+        status = self._retrieval_status(data) or ("found" if records else "empty")
+        scope = {
+            snake: body[camel]
+            for snake, camel in (
+                ("allowed_device_ids", "allowedDeviceIds"),
+                ("allowed_component_ids", "allowedComponentIds"),
+                ("allowed_fault_ids", "allowedFaultIds"),
+                ("allowed_path_ids", "allowedPathIds"),
+            )
+            if camel in body
+        }
+        return normalize_graph_response(
+            {
+                "evidence_status": status,
+                "reason": data.get("reason") or "",
+                "diagnostics": data.get("diagnostics") or {},
+                "raw_records": records,
+            },
+            scope=scope,
+        )
+
     async def _request(self, method: str, path: str, **kwargs: Any) -> Mapping[str, Any]:
         url = f"{self.base_url}{path}"
         headers = dict(kwargs.pop("headers", {}) or {})
@@ -186,8 +340,27 @@ class JavaGraphCandidateProvider:
                 return result if isinstance(result, Mapping) else {}
         except Exception as exc:
             self.last_error = str(exc)
+            self.last_error_code = (
+                "request_timeout"
+                if isinstance(exc, (TimeoutError, httpx.TimeoutException))
+                else "request_failed"
+            )
             logger.info("[graph-routing] candidate query unavailable: %s", exc)
             return {}
+
+    @staticmethod
+    def _retrieval_status(payload: Any) -> str:
+        if not isinstance(payload, Mapping):
+            return ""
+        value = str(
+            payload.get("retrievalStatus")
+            or payload.get("retrieval_status")
+            or payload.get("status")
+            or ""
+        ).strip()
+        return value if value in {
+            "found", "empty", "not_applicable", "degraded", "unavailable", "filtered_out"
+        } else ""
 
     @staticmethod
     def _component_description(contract: QueryContract) -> str:

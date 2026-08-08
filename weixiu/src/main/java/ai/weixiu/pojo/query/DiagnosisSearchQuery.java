@@ -29,6 +29,18 @@ public class DiagnosisSearchQuery {
     /** 图片 URL 列表（MinIO 地址）→ 图片向量搜多模态索引 */
     private List<String> imageUrls;
 
+    /** 服务端确认的路径范围。传入后必须严格过滤，不允许回退为全图查询。 */
+    private List<String> allowedPathIds;
+
+    /** 服务端确认的设备业务 ID 范围。 */
+    private List<String> allowedDeviceIds;
+
+    /** 服务端确认的部件业务 ID 范围。 */
+    private List<String> allowedComponentIds;
+
+    /** 服务端确认的故障业务 ID 范围。 */
+    private List<String> allowedFaultIds;
+
     /** 页码，默认 0 */
     private int page = 0;
 

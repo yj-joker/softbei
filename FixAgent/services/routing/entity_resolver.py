@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from services.retrieval.device_identity import MATCHED, DeviceCatalog, QueryContract
 from services.retrieval.section_index import SectionRef
@@ -37,6 +37,27 @@ def _section_matches_span(raw_span: str, section: SectionRef) -> bool:
         previous = current
     shared = previous[-1]
     return shared >= 4 and shared / min(len(span), len(title)) >= 0.60
+
+
+def _graph_dimension(candidate: Any, *names: str) -> str:
+    if isinstance(candidate, Mapping):
+        dimensions = candidate.get("dimensions")
+        dimensions = dimensions if isinstance(dimensions, Mapping) else {}
+        for name in names:
+            value = candidate.get(name)
+            if value in (None, ""):
+                value = dimensions.get(name)
+            if value not in (None, ""):
+                return str(value).strip()
+        return ""
+    dimensions = getattr(candidate, "dimensions", {}) or {}
+    for name in names:
+        value = getattr(candidate, name, None)
+        if value in (None, "") and isinstance(dimensions, Mapping):
+            value = dimensions.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
 
 
 _OPERATION_TARGET_RE = re.compile(
@@ -237,19 +258,48 @@ class EntityResolver:
         contract: QueryContract,
         catalog: DeviceCatalog,
         section_refs: Iterable[SectionRef],
+        *,
+        graph_candidates: Iterable[Any] = (),
     ) -> EntityResolution:
         sections = tuple(section_refs)
+        graph_values = tuple(graph_candidates or ())
         section_document_ids = tuple(dict.fromkeys(
             section.document_id
             for section in sections
             if section.document_id and catalog.document(section.document_id) is not None
         ))
+        span = _normalized(contract.raw_device_span or contract.component)
+        graph_component_document_ids = tuple(dict.fromkeys(
+            document_id
+            for candidate in graph_values
+            if (
+                (component_name := _normalized(_graph_dimension(
+                    candidate, "componentName", "component_name", "component"
+                )))
+                and span
+                and (span == component_name or span in component_name or component_name in span)
+                and (device_name := _normalized(_graph_dimension(
+                    candidate, "deviceName", "device_name", "device_identity"
+                )))
+                and device_name != span
+                and (document_id := _graph_dimension(
+                    candidate, "documentId", "document_id"
+                ))
+                and catalog.document(document_id) is not None
+            )
+        ))
         if not contract.has_explicit_device:
             return EntityResolution(
                 contract=contract,
-                entity_role="document_component" if section_document_ids else "unspecified",
-                reason="matched_dynamic_section" if section_document_ids else "no_explicit_identity",
-                matched_section_document_ids=section_document_ids,
+                entity_role="document_component" if section_document_ids or graph_component_document_ids else "unspecified",
+                reason=(
+                    "graph_parent_device_proves_component"
+                    if graph_component_document_ids
+                    else "matched_dynamic_section"
+                    if section_document_ids
+                    else "no_explicit_identity"
+                ),
+                matched_section_document_ids=graph_component_document_ids or section_document_ids,
             )
 
         comparisons = catalog.match(contract)
@@ -259,6 +309,27 @@ class EntityResolver:
                 entity_role="device_identity",
                 reason="matched_dynamic_document_identity",
                 matched_section_document_ids=section_document_ids,
+            )
+
+        if graph_component_document_ids:
+            payload = contract.to_dict()
+            for field in (
+                "raw_device_span",
+                "device_name",
+                "device_category",
+                "carrier_or_application",
+                "manufacturer",
+                "model",
+                "identity_resolution",
+            ):
+                payload[field] = ""
+            payload["identity_resolution"] = "confirmed_absent"
+            demoted = QueryContract.from_mapping(payload, raw_query=contract.raw_query)
+            return EntityResolution(
+                contract=demoted,
+                entity_role="document_component",
+                reason="graph_parent_device_proves_component",
+                matched_section_document_ids=graph_component_document_ids,
             )
 
         section_suffix_identity = _resolve_section_suffix_dynamic_identity(contract, catalog, sections)

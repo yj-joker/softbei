@@ -13,6 +13,7 @@ import ai.weixiu.mapper.StandardProcedureMapper;
 import ai.weixiu.mapper.TaskChatMessageMapper;
 import ai.weixiu.mapper.TaskStepRecordMapper;
 import ai.weixiu.service.TaskCompletionTransitionService;
+import ai.weixiu.service.TaskEvidenceBundleService;
 import ai.weixiu.service.ExpirationService;
 import ai.weixiu.service.MemoryPreferenceService;
 import ai.weixiu.service.MioIOUpLoadService;
@@ -61,7 +62,8 @@ class MaintenanceTaskFocusResolutionTest {
                 mock(MultimodalEmbeddingUtils.class),
                 mock(WebClient.class),
                 mock(ExpirationService.class),
-                mock(TaskCompletionTransitionService.class)
+                mock(TaskCompletionTransitionService.class),
+                mock(TaskEvidenceBundleService.class)
         );
         when(taskMapper.selectById(9L)).thenReturn(task());
     }

@@ -14,6 +14,7 @@ from evaluation.maintenance_eval_schema import (
     ConflictConstraint,
     MaintenanceEvalTurn,
 )
+from services.retrieval.graph_evidence import normalize_graph_response
 
 
 SourceType = Literal["manual", "domain_rule", "graph"]
@@ -138,6 +139,13 @@ def _manual_envelopes(payload: Any, diagnostics: list[str]) -> list[EvidenceEnve
             "page": metadata.get("page") if metadata.get("page") is not None else metadata.get("page_number"),
             "chunk_id": chunk_id,
         }
+        stable_chunk_ids = list(dict.fromkeys(
+            value
+            for key in ("chunk_uid", "row_id", "table_id", "parent_chunk_id", "continuation_id")
+            for value in _string_list(metadata.get(key))
+        ))
+        if stable_chunk_ids:
+            source["chunk_ids"] = stable_chunk_ids
         envelopes.append(
             EvidenceEnvelope(
                 evidence_id=f"manual:{document_id}:{chunk_id}",
@@ -198,12 +206,26 @@ def _graph_record_text(record: Mapping[str, Any]) -> str:
 def _graph_envelopes(payload: Any, diagnostics: list[str]) -> list[EvidenceEnvelope]:
     if not isinstance(payload, Mapping):
         return []
-    records = payload.get("raw_records") or payload.get("records") or []
-    if not isinstance(records, list):
-        return []
+    if "evidence" in payload:
+        records = payload.get("evidence")
+        records = records if isinstance(records, list) else []
+    else:
+        raw_records = payload.get("raw_records") or payload.get("records") or []
+        if not isinstance(raw_records, list):
+            return []
+        batch = normalize_graph_response({
+            "status": payload.get("status") or "found",
+            "records": raw_records,
+        })
+        records = [item.to_dict() for item in batch.evidence]
+        if batch.diagnostics.get("rejected_count"):
+            diagnostics.append("graph_raw_record_rejected")
     envelopes: list[EvidenceEnvelope] = []
     for record in records:
         if not isinstance(record, Mapping):
+            continue
+        qualification = _string(record.get("qualification"))
+        if qualification != "qualified":
             continue
         path_ids = _string_list(_first_value(record, "pathIds", "path_ids", "pathId", "path_id"))
         node_ids = _string_list(_first_value(record, "nodeIds", "node_ids", "nodeId", "node_id"))
@@ -213,14 +235,31 @@ def _graph_envelopes(payload: Any, diagnostics: list[str]) -> list[EvidenceEnvel
         if not path_ids and not node_ids:
             diagnostics.append("graph_source_identity_missing")
             continue
-        stable_id = path_ids[0] if path_ids else ":".join(node_ids)
+        evidence_id = _string(record.get("evidence_id"))
+        if not evidence_id:
+            stable_id = path_ids[0] if path_ids else ":".join(node_ids)
+            solution = record.get("solution") if isinstance(record.get("solution"), Mapping) else {}
+            solution_id = _string(solution.get("id")) or "none"
+            evidence_id = f"graph:{stable_id}:{solution_id}"
+        if not evidence_id.startswith("graph:"):
+            diagnostics.append("graph_evidence_id_invalid")
+            continue
+        record_source = record.get("source") if isinstance(record.get("source"), Mapping) else {}
+        pages = _string_list(_first_value(record_source, "pages", "page"))
+        chunk_ids = _string_list(
+            _first_value(record_source, "source_chunk_uids", "chunk_ids", "chunk_uid", "chunk_id")
+        )
         envelopes.append(
             EvidenceEnvelope(
-                evidence_id=f"graph:{stable_id}",
+                evidence_id=evidence_id,
                 source_type="graph",
                 text=_graph_record_text(record),
-                qualification="qualified",
+                qualification=qualification,
                 source={
+                    "document_id": _string(record_source.get("document_id")),
+                    "document_version": _string(record_source.get("document_version")),
+                    "pages": pages,
+                    "chunk_ids": chunk_ids,
                     "node_ids": node_ids,
                     "relationship_types": relationship_types,
                     "path_ids": path_ids,
@@ -394,6 +433,7 @@ class _ConflictObservation:
 
 def _normalized(value: Any) -> str:
     text = unicodedata.normalize("NFKC", _string(value)).casefold()
+    text = text.replace("跟换", "更换")
     return "".join(character for character in text if character.isalnum())
 
 
@@ -461,20 +501,44 @@ def _assertion_after_refusal(patterns: Sequence[str], answer: str) -> bool:
     )
 
 
-def _list_dimension_matches(expected: Sequence[Any], actual: Any) -> bool:
+def _any_dimension_matches(expected: Sequence[Any], actual: Any) -> bool:
     if not expected:
         return True
     actual_values = actual if isinstance(actual, (list, tuple, set)) else [actual]
     return bool({_string(value) for value in expected} & {_string(value) for value in actual_values})
 
 
+def _all_dimensions_match(expected: Sequence[Any], actual: Any) -> bool:
+    if not expected:
+        return True
+    actual_values = actual if isinstance(actual, (list, tuple, set)) else [actual]
+    expected_set = {_string(value) for value in expected if _string(value)}
+    actual_set = {_string(value) for value in actual_values if _string(value)}
+    return expected_set.issubset(actual_set)
+
+
+def _path_dimension_matches(expected: Sequence[Any], actual: Any) -> bool:
+    if not expected:
+        return True
+    actual_values = actual if isinstance(actual, (list, tuple, set)) else [actual]
+    expected_set = {_string(value) for value in expected if _string(value)}
+    actual_set = {_string(value) for value in actual_values if _string(value)}
+    return expected_set == actual_set
+
+
 def _page_dimension_matches(expected: Sequence[int], actual: Any) -> bool:
     if not expected:
         return True
+    actual_values = actual if isinstance(actual, (list, tuple, set)) else [actual]
     try:
-        return int(actual) in {int(page) for page in expected}
+        expected_pages = {int(page) for page in expected}
+        actual_pages = {int(page) for page in actual_values}
     except (TypeError, ValueError):
         return False
+    if len(actual_pages) == 2:
+        start, end = sorted(actual_pages)
+        return any(start <= page <= end for page in expected_pages)
+    return bool(expected_pages & actual_pages)
 
 
 def _allowed_source_matches(envelope: EvidenceEnvelope, allowed: AllowedSource) -> bool:
@@ -482,6 +546,7 @@ def _allowed_source_matches(envelope: EvidenceEnvelope, allowed: AllowedSource) 
         return False
     source = envelope.source
     if envelope.source_type == "manual":
+        chunk_ids = [source.get("chunk_id"), *(source.get("chunk_ids") or [])]
         return bool(
             (not allowed.document_id or source.get("document_id") == allowed.document_id)
             and (
@@ -489,7 +554,7 @@ def _allowed_source_matches(envelope: EvidenceEnvelope, allowed: AllowedSource) 
                 or source.get("document_version") == allowed.document_version
             )
             and _page_dimension_matches(allowed.pages, source.get("page"))
-            and _list_dimension_matches(allowed.chunk_ids, source.get("chunk_id"))
+            and _any_dimension_matches(allowed.chunk_ids, chunk_ids)
         )
     if envelope.source_type == "domain_rule":
         return bool(
@@ -498,11 +563,18 @@ def _allowed_source_matches(envelope: EvidenceEnvelope, allowed: AllowedSource) 
         )
     if envelope.source_type == "graph":
         return bool(
-            _list_dimension_matches(allowed.node_ids, source.get("node_ids") or [])
-            and _list_dimension_matches(
+            (not allowed.document_id or source.get("document_id") == allowed.document_id)
+            and (
+                not allowed.document_version
+                or source.get("document_version") == allowed.document_version
+            )
+            and _page_dimension_matches(allowed.pages, source.get("pages") or [])
+            and _all_dimensions_match(allowed.chunk_ids, source.get("chunk_ids") or [])
+            and _all_dimensions_match(allowed.node_ids, source.get("node_ids") or [])
+            and _all_dimensions_match(
                 allowed.relationship_types, source.get("relationship_types") or []
             )
-            and _list_dimension_matches(allowed.path_ids, source.get("path_ids") or [])
+            and _path_dimension_matches(allowed.path_ids, source.get("path_ids") or [])
         )
     return False
 
@@ -540,12 +612,26 @@ def _observe_claims(
     envelopes: Sequence[EvidenceEnvelope],
     *,
     force_unsupported: bool,
+    require_graph_binding: bool,
+    final_bound_graph_ids: set[str],
     diagnostics: list[str],
 ) -> list[_ClaimObservation]:
     observations: list[_ClaimObservation] = []
     for constraint in constraints:
         text_matches, allowed_matches = _qualified_claim_envelopes(constraint, envelopes)
         supported = bool(allowed_matches) and not force_unsupported
+        graph_constraint = any(
+            allowed.source_type == "graph" for allowed in constraint.allowed_sources
+        )
+        if supported and require_graph_binding and graph_constraint:
+            matched_graph_ids = {
+                envelope.evidence_id
+                for envelope in allowed_matches
+                if envelope.source_type == "graph"
+            }
+            if not matched_graph_ids.intersection(final_bound_graph_ids):
+                supported = False
+                diagnostics.append(f"claim:{constraint.claim_id}:final_binding_missing")
         answer_asserted = _any_pattern_asserted(constraint.answer_patterns, answer)
         disclosure_present = _matches_any(constraint.missing_disclosure_patterns, answer)
         forbidden_asserted = _any_pattern_asserted(
@@ -790,12 +876,36 @@ def score_turn_output(
     answer = answer or ""
     trace = extract_evidence_envelopes(metadata)
     diagnostics = list(trace.diagnostics)
+    raw_used_ids = (metadata or {}).get("graph_evidence_used_ids") or []
+    used_graph_ids = set(_string_list(raw_used_ids))
+    raw_bindings = (metadata or {}).get("claim_evidence_bindings") or []
+    if isinstance(raw_bindings, str):
+        try:
+            import json
+
+            raw_bindings = json.loads(raw_bindings)
+        except (TypeError, ValueError):
+            raw_bindings = []
+    if isinstance(raw_bindings, Mapping):
+        raw_bindings = [raw_bindings]
+    bound_graph_ids: set[str] = set()
+    for binding in raw_bindings if isinstance(raw_bindings, Sequence) else []:
+        if not isinstance(binding, Mapping) or binding.get("emitted") is False:
+            continue
+        bound_graph_ids.update(
+            evidence_id
+            for evidence_id in _string_list(binding.get("evidence_ids"))
+            if evidence_id.startswith("graph:")
+        )
+    final_bound_graph_ids = used_graph_ids.intersection(bound_graph_ids)
     force_unsupported = turn.expected_scope == "out_of_scope"
     claims = _observe_claims(
         turn.claim_constraints,
         answer,
         trace.envelopes,
         force_unsupported=force_unsupported,
+        require_graph_binding=turn.graph_dependency.strip().lower() == "required",
+        final_bound_graph_ids=final_bound_graph_ids,
         diagnostics=diagnostics,
     )
     conflicts = _observe_conflicts(turn.conflict_constraints, trace.envelopes)

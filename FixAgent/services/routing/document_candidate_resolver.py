@@ -23,6 +23,7 @@ class DocumentCandidateResolver:
         *,
         request_document_id: str = "",
         session_document_id: str = "",
+        graph_document_ids: Iterable[str] = (),
     ) -> DocumentCandidateResolution:
         requested = str(request_document_id or "").strip()
         session = str(session_document_id or "").strip()
@@ -62,11 +63,16 @@ class DocumentCandidateResolver:
             for section in section_refs
             if section.document_id and catalog.document(section.document_id) is not None
         ))
+        graph_documents = tuple(dict.fromkeys(
+            str(document_id).strip()
+            for document_id in graph_document_ids or ()
+            if str(document_id).strip() and catalog.document(str(document_id).strip()) is not None
+        ))
         # Present document options in the authoritative catalog order. Section
         # index scan order is an implementation detail and may change after
         # re-indexing, which would make a user's ordinal answer select a
         # different manual on the same query.
-        section_document_set = set(section_documents)
+        section_document_set = set((*section_documents, *graph_documents))
         section_documents = tuple(
             document.document_id
             for document in catalog.documents

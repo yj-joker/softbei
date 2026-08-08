@@ -9,6 +9,7 @@ import java.util.List;
 @Data
 public class GraphQueryContract {
     private String rawQuery = "";
+    private String intent = "";
     private String deviceIdentity = "";
     private String component = "";
     private String partSpec = "";

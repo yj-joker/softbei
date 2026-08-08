@@ -149,7 +149,7 @@ def test_domain_rule_requires_rule_id_and_active_status() -> None:
     assert "domain_rule_identity_or_status_invalid" in invalid_result.diagnostics
 
 
-def test_graph_requires_stable_path_or_node_identity() -> None:
+def test_graph_raw_record_requires_production_qualification() -> None:
     metadata = {
         "react_trace": [
             {
@@ -176,9 +176,374 @@ def test_graph_requires_stable_path_or_node_identity() -> None:
 
     result = extract_evidence_envelopes(metadata)
 
-    assert [item.source_type for item in result.envelopes] == ["graph"]
-    assert result.envelopes[0].source["path_ids"] == ["path-1"]
-    assert "graph_source_identity_missing" in result.diagnostics
+    assert result.envelopes == []
+    assert "graph_raw_record_rejected" in result.diagnostics
+
+
+def test_graph_trace_accepts_qualified_evidence_payload_contract() -> None:
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "java_graph_diagnosis_path",
+                        "result_data": {
+                            "evidence": [
+                                {
+                                    "evidence_id": "graph:path-1:none",
+                                    "qualification": "qualified",
+                                    "text": "纯电动客车 -> OWNS -> 助力油泵 -> CAUSES -> 保险熔断",
+                                    "path_id": "path-1",
+                                    "node_ids": ["device-1", "component-1", "fault-1"],
+                                    "relationship_types": ["OWNS", "CAUSES"],
+                                    "source": {
+                                        "document_id": "manual-v1",
+                                        "document_version": "1.0",
+                                        "pages": [60],
+                                        "source_chunk_uids": ["section:pump:table:0002"],
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    turn = MaintenanceEvalTurn(
+        query="助力油泵保险熔断",
+        expected_coverage_status="complete",
+        claim_constraints=[
+            ClaimConstraint(
+                claim_id="graph_relation",
+                answer_patterns=["助力油泵", "保险熔断"],
+                evidence_patterns=["助力油泵", "保险熔断"],
+                allowed_sources=[
+                    AllowedSource(
+                        source_type="graph",
+                        document_id="manual-v1",
+                        document_version="1.0",
+                        pages=[60],
+                        chunk_ids=["section:pump:table:0002"],
+                        node_ids=["device-1", "component-1", "fault-1"],
+                        relationship_types=["OWNS", "CAUSES"],
+                        path_ids=["path-1"],
+                    )
+                ],
+            )
+        ],
+    )
+
+    result = extract_evidence_envelopes(metadata)
+    score = score_turn_output(turn, "助力油泵的故障为保险熔断。", metadata)
+
+    assert len(result.envelopes) == 1
+    assert result.envelopes[0].source["chunk_ids"] == ["section:pump:table:0002"]
+    assert score.final_pass is True
+
+
+def test_graph_required_claim_needs_final_binding_not_only_qualified_trace() -> None:
+    graph_id = "graph:path-required:none"
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {
+                    "evidence": [{
+                        "evidence_id": graph_id,
+                        "qualification": "qualified",
+                        "text": "vehicle -> OWNS -> pump -> CAUSES -> fuse fault",
+                        "path_id": "path-required",
+                        "node_ids": ["vehicle", "pump", "fault"],
+                        "relationship_types": ["OWNS", "CAUSES"],
+                        "source": {"document_id": "manual-v1"},
+                    }]
+                },
+            }],
+        }],
+        "graph_evidence_used_ids": [],
+        "claim_evidence_bindings": [],
+    }
+    turn = MaintenanceEvalTurn(
+        query="fault relation",
+        graph_dependency="required",
+        expected_coverage_status="complete",
+        claim_constraints=[ClaimConstraint(
+            claim_id="graph_relation",
+            answer_patterns=["fuse fault"],
+            evidence_patterns=["fuse fault"],
+            allowed_sources=[AllowedSource(
+                source_type="graph",
+                document_id="manual-v1",
+                node_ids=["vehicle", "pump", "fault"],
+                relationship_types=["OWNS", "CAUSES"],
+                path_ids=["path-required"],
+            )],
+        )],
+    )
+
+    score = score_turn_output(turn, "The pump has a fuse fault.", metadata)
+
+    assert score.final_pass is False
+    assert score.evidence_source_pass is False
+    assert "claim:graph_relation:final_binding_missing" in score.diagnostics
+
+
+def test_graph_required_claim_accepts_matching_final_binding() -> None:
+    graph_id = "graph:path-required:none"
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {
+                    "evidence": [{
+                        "evidence_id": graph_id,
+                        "qualification": "qualified",
+                        "text": "vehicle -> OWNS -> pump -> CAUSES -> fuse fault",
+                        "path_id": "path-required",
+                        "node_ids": ["vehicle", "pump", "fault"],
+                        "relationship_types": ["OWNS", "CAUSES"],
+                        "source": {"document_id": "manual-v1"},
+                    }]
+                },
+            }],
+        }],
+        "graph_evidence_used_ids": [graph_id],
+        "claim_evidence_bindings": [{
+            "claim_id": "aspect-fault",
+            "claim_type": "fault_relation",
+            "emitted": True,
+            "evidence_ids": [graph_id],
+        }],
+    }
+    turn = MaintenanceEvalTurn(
+        query="fault relation",
+        graph_dependency="required",
+        expected_coverage_status="complete",
+        claim_constraints=[ClaimConstraint(
+            claim_id="graph_relation",
+            answer_patterns=["fuse fault"],
+            evidence_patterns=["fuse fault"],
+            allowed_sources=[AllowedSource(
+                source_type="graph",
+                document_id="manual-v1",
+                node_ids=["vehicle", "pump", "fault"],
+                relationship_types=["OWNS", "CAUSES"],
+                path_ids=["path-required"],
+            )],
+        )],
+    )
+
+    score = score_turn_output(turn, "The pump has a fuse fault.", metadata)
+
+    assert score.final_pass is True
+    assert score.evidence_source_pass is True
+
+
+def test_graph_trace_prefers_canonical_evidence_over_raw_records() -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {
+                    "raw_records": [{
+                        "pathId": "raw-path",
+                        "nodeIds": ["raw-node"],
+                        "relationshipTypes": ["OWNS"],
+                    }],
+                    "evidence": [{
+                        "evidence_id": "graph:canonical-path:none",
+                        "qualification": "qualified",
+                        "text": "设备 -> OWNS -> 部件 -> CAUSES -> 故障",
+                        "path_id": "canonical-path",
+                        "node_ids": ["device-1", "component-1", "fault-1"],
+                        "relationship_types": ["OWNS", "CAUSES"],
+                        "source": {"document_id": "manual-v1"},
+                    }],
+                },
+            }],
+        }],
+    }
+
+    result = extract_evidence_envelopes(metadata)
+
+    assert [item.evidence_id for item in result.envelopes] == ["graph:canonical-path:none"]
+
+
+def test_graph_source_requires_all_expected_nodes_and_relationships() -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {
+                    "evidence": [{
+                        "evidence_id": "graph:path-1:none",
+                        "qualification": "qualified",
+                        "text": "设备 -> OWNS -> 部件",
+                        "path_id": "path-1",
+                        "node_ids": ["node-1"],
+                        "relationship_types": ["OWNS"],
+                        "source": {"document_id": "manual-v1"},
+                    }],
+                },
+            }],
+        }],
+    }
+    turn = MaintenanceEvalTurn(
+        query="故障关系",
+        expected_coverage_status="complete",
+        claim_constraints=[ClaimConstraint(
+            claim_id="graph_relation",
+            answer_patterns=["故障关系"],
+            evidence_patterns=["设备"],
+            allowed_sources=[AllowedSource(
+                source_type="graph",
+                document_id="manual-v1",
+                node_ids=["node-1", "node-2"],
+                relationship_types=["OWNS", "CAUSES"],
+                path_ids=["path-1"],
+            )],
+        )],
+    )
+
+    score = score_turn_output(turn, "故障关系", metadata)
+
+    assert score.evidence_source_pass is False
+    assert score.final_pass is False
+    assert "claim:graph_relation:allowed_source_missing" in score.diagnostics
+
+
+def test_graph_source_page_range_contains_expected_page() -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {
+                    "evidence": [{
+                        "evidence_id": "graph:range-path:none",
+                        "qualification": "qualified",
+                        "text": "设备 -> OWNS -> 部件 -> CAUSES -> 故障",
+                        "path_id": "range-path",
+                        "node_ids": ["device-1", "component-1", "fault-1"],
+                        "relationship_types": ["OWNS", "CAUSES"],
+                        "source": {"document_id": "manual-v1", "pages": [58, 61]},
+                    }],
+                },
+            }],
+        }],
+    }
+    turn = MaintenanceEvalTurn(
+        query="故障关系",
+        claim_constraints=[ClaimConstraint(
+            claim_id="graph_relation",
+            answer_patterns=["故障关系"],
+            evidence_patterns=["设备"],
+            allowed_sources=[AllowedSource(
+                source_type="graph",
+                document_id="manual-v1",
+                pages=[60],
+                node_ids=["device-1", "component-1", "fault-1"],
+                relationship_types=["OWNS", "CAUSES"],
+                path_ids=["range-path"],
+            )],
+        )],
+    )
+
+    score = score_turn_output(turn, "故障关系", metadata)
+
+    assert score.evidence_source_pass is True
+
+
+def test_graph_canonical_path_and_solution_evidence_keep_distinct_ids() -> None:
+    common = {
+        "qualification": "qualified",
+        "path_id": "path-1",
+        "node_ids": ["device-1", "component-1", "fault-1"],
+        "relationship_types": ["OWNS", "CAUSES", "HAS_SOLUTION"],
+        "source": {"document_id": "manual-v1"},
+    }
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {
+                    "evidence": [
+                        {
+                            **common,
+                            "evidence_id": "graph:path-1:none",
+                            "text": "设备 -> OWNS -> 部件 -> CAUSES -> 故障",
+                        },
+                        {
+                            **common,
+                            "evidence_id": "graph:path-1:solution-1",
+                            "text": "故障 -> HAS_SOLUTION -> 更换保险",
+                            "solution": {"id": "solution-1", "title": "更换保险"},
+                        },
+                    ],
+                },
+            }],
+        }],
+    }
+
+    result = extract_evidence_envelopes(metadata)
+
+    assert [item.evidence_id for item in result.envelopes] == [
+        "graph:path-1:none",
+        "graph:path-1:solution-1",
+    ]
+
+
+def test_manual_score_accepts_stable_table_alias_and_minor_source_typo() -> None:
+    metadata = {
+        "react_trace": [
+            {
+                "tool_calls": [
+                    {
+                        "name": "knowledge_retrieval",
+                        "result_data": {
+                            "results": [
+                                {
+                                    "content": "保险熔断；跟换同种规格保险",
+                                    "metadata": {
+                                        "qualification": "qualified",
+                                        "document_id": "manual-v1",
+                                        "document_version": "1.0",
+                                        "page": 60,
+                                        "chunk_id": "internal-vector-id",
+                                        "table_id": "section:pump:table:0002",
+                                    },
+                                }
+                            ]
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+    turn = MaintenanceEvalTurn(
+        query="保险熔断怎么处理",
+        expected_coverage_status="complete",
+        claim_constraints=[
+            ClaimConstraint(
+                claim_id="manual_solution",
+                answer_patterns=["更换同种规格保险"],
+                evidence_patterns=["更换同种规格保险"],
+                allowed_sources=[
+                    AllowedSource(
+                        source_type="manual",
+                        document_id="manual-v1",
+                        document_version="1.0",
+                        pages=[60],
+                        chunk_ids=["section:pump:table:0002"],
+                    )
+                ],
+            )
+        ],
+    )
+
+    score = score_turn_output(turn, "更换同种规格保险。", metadata)
+
+    assert score.final_pass is True
 
 
 def test_coverage_status_has_one_deterministic_priority_order() -> None:
@@ -398,9 +763,15 @@ def test_conflict_requires_two_distinct_evidence_sources_and_disclosure() -> Non
                 {
                     "name": "java_graph_diagnosis_path",
                     "result_data": {
-                        "raw_records": [
-                            {"pathId": "pump-path", "content": "Pump bolt torque is 25 Nm."}
-                        ]
+                        "evidence": [{
+                            "evidence_id": "graph:pump-path:none",
+                            "qualification": "qualified",
+                            "path_id": "pump-path",
+                            "node_ids": ["pump"],
+                            "relationship_types": ["HAS_VALUE"],
+                            "text": "Pump bolt torque is 25 Nm.",
+                            "source": {},
+                        }]
                     },
                 }
             ]

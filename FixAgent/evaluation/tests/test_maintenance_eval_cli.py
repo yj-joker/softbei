@@ -1,10 +1,15 @@
+import csv
 import json
+import threading
+import time
 from pathlib import Path
 
+import evaluation.maintenance_eval_cli as eval_cli
 from evaluation.maintenance_eval_cli import (
     MaintenanceEvalCase,
     MaintenanceEvalTurn,
     aggregate_case_rows,
+    build_run_manifest,
     evaluate_case_output,
     main,
     read_jsonl_dataset,
@@ -50,6 +55,58 @@ def test_read_jsonl_dataset_loads_structured_maintenance_case(tmp_path: Path):
     assert cases[0].required_nuggets == ["取下滑动挺柱", "使用气门拆装器压缩气门弹簧"]
     assert cases[0].expected_images[0]["page"] == 16
     assert cases[0].trap_type == ["opposite_action", "adjacent_page"]
+
+
+def test_run_cases_executes_independent_cases_in_parallel_and_returns_input_order(monkeypatch) -> None:
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def fake_request(*args, **kwargs):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        time.sleep(0.03)
+        with lock:
+            active -= 1
+        return eval_cli.CaseRunResult(answer="ok", metadata={})
+
+    monkeypatch.setattr(eval_cli, "_chat_api_request", fake_request)
+    cases = [
+        MaintenanceEvalCase(case_id=f"parallel-{index}", query="q")
+        for index in range(6)
+    ]
+    rows = run_cases(
+        cases,
+        mode="api",
+        endpoint="http://test/ai/chat",
+        timeout=5,
+        run_id="parallel-run",
+        concurrency=3,
+    )
+
+    assert [row["case_id"] for row in rows] == [f"parallel-{index}" for index in range(6)]
+    assert max_active >= 2
+
+
+def test_request_context_exposes_only_internal_paired_route_contract() -> None:
+    contract = {
+        "intent_decision": {"intent": "knowledge_query", "task_action": "find_cause"},
+        "query_contract": {"raw_query": "pump fault", "component": "pump"},
+    }
+    case = MaintenanceEvalCase(
+        case_id="paired-contract",
+        query="pump fault",
+        candidate_metadata={
+            "_paired_route_contract": contract,
+            "unrelated_candidate_metadata": "must-not-leak",
+        },
+    )
+
+    assert eval_cli._request_context_for_case(case) == {
+        "_evaluation_route_contract": contract,
+    }
 
 
 def test_evaluate_case_output_scores_nuggets_order_forbidden_and_images():
@@ -103,7 +160,226 @@ def test_evaluate_case_output_scores_nuggets_order_forbidden_and_images():
     assert row["image_pass"] is True
     assert row["image_order_pass"] is True
     assert row["step_image_binding_pass"] is True
+    assert row["answer_correct_pass"] is True
+    assert row["evidence_pass"] is True
+    assert row["delivery_pass"] is True
+    assert row["mechanism_pass"] is True
     assert row["final_pass"] is True
+
+
+def test_evaluate_case_output_exports_rag_variant_audit_fields():
+    case = MaintenanceEvalCase(
+        case_id="kg_ablation_audit",
+        query="气门间隙是多少？",
+        required_nuggets=["进气门0.13～0.20 mm"],
+    )
+    metadata = {
+        "rag_variant": "no_graph",
+        "graph_candidate_query_count": 0,
+        "graph_candidate_count": 0,
+        "graph_tool_call_count": 0,
+        "graph_tools_used": [],
+        "graph_review_enabled": False,
+        "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        "cost": 0.0123,
+    }
+
+    row = evaluate_case_output(
+        case,
+        "进气门间隙为0.13～0.20 mm。",
+        metadata=metadata,
+    )
+
+    assert row["rag_variant"] == "no_graph"
+    assert row["graph_candidate_query_count"] == 0
+    assert row["graph_candidate_count"] == 0
+    assert row["graph_tool_call_count"] == 0
+    assert row["graph_tools_used"] == ""
+    assert row["graph_review_enabled"] is False
+    assert row["input_tokens"] == 10
+    assert row["output_tokens"] == 20
+    assert row["total_tokens"] == 30
+    assert row["cost"] == 0.0123
+
+
+def test_evaluate_case_output_exports_complete_graph_mechanism_fields(tmp_path: Path):
+    case = MaintenanceEvalCase(case_id="graph-mechanism-audit", query="Why did it fail?")
+    metadata = {
+        "graph_candidate_status": "found",
+        "graph_candidate_reason": "candidate_match",
+        "graph_retrieval_status": "partial",
+        "graph_retrieval_reason": "one_path_rejected",
+        "graph_qualified_count": 4,
+        "graph_routing_only_count": 2,
+        "graph_rejected_count": 1,
+        "graph_evidence_ids": ["graph:z", "", "graph:a", "graph:z"],
+        "claim_evidence_bindings": [
+            {
+                "claim_text": "cause claim",
+                "evidence_ids": ["graph:z"],
+                "claim_id": "claim-1",
+            }
+        ],
+        "graph_evidence_used_ids": ["graph:z", "", "graph:z", "graph:a"],
+        "graph_relationship_types": ["CAUSES", "", "OWNS", "CAUSES"],
+        "graph_provenance_statuses": ["manual_backed", "", "verified", "manual_backed"],
+        "graph_retrieval_latency_ms": "27",
+    }
+
+    row = evaluate_case_output(case, "The graph-backed cause is shown.", metadata=metadata)
+
+    assert row["graph_candidate_status"] == "found"
+    assert row["graph_candidate_reason"] == "candidate_match"
+    assert row["graph_retrieval_status"] == "partial"
+    assert row["graph_retrieval_reason"] == "one_path_rejected"
+    assert row["graph_qualified_count"] == 4
+    assert row["graph_routing_only_count"] == 2
+    assert row["graph_rejected_count"] == 1
+    assert row["graph_evidence_ids"] == "graph:z;graph:a"
+    assert row["claim_evidence_bindings"] == (
+        '[{"claim_id":"claim-1","claim_text":"cause claim",'
+        '"evidence_ids":["graph:z"]}]'
+    )
+    assert row["graph_evidence_used_ids"] == "graph:z;graph:a"
+    assert row["graph_evidence_used_count"] == 2
+    assert row["graph_relationship_types"] == "CAUSES;OWNS"
+    assert row["graph_provenance_statuses"] == "manual_backed;verified"
+    assert row["graph_retrieval_latency_ms"] == 27
+
+    csv_path = tmp_path / "graph-mechanism.csv"
+    eval_cli.write_rows(csv_path, [row])
+    with csv_path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        written = next(reader)
+
+    expected_fields = {
+        "graph_candidate_status",
+        "graph_candidate_reason",
+        "graph_retrieval_status",
+        "graph_retrieval_reason",
+        "graph_qualified_count",
+        "graph_routing_only_count",
+        "graph_rejected_count",
+        "graph_evidence_ids",
+        "claim_evidence_bindings",
+        "graph_evidence_used_ids",
+        "graph_evidence_used_count",
+        "graph_relationship_types",
+        "graph_provenance_statuses",
+        "graph_retrieval_latency_ms",
+    }
+    assert expected_fields <= set(reader.fieldnames or [])
+    assert written["graph_evidence_used_ids"] == "graph:z;graph:a"
+    assert written["graph_evidence_used_count"] == "2"
+
+
+def test_graph_required_case_cannot_pass_without_complete_used_binding_chain() -> None:
+    case = MaintenanceEvalCase(
+        case_id="graph-required-unbound",
+        query="Which graph relation explains the fault?",
+        graph_dependency="required",
+        required_nuggets=["fault relation"],
+    )
+    metadata = {
+        "rag_variant": "graph_full",
+        "graph_candidate_count": 1,
+        "graph_qualified_count": 1,
+        "graph_evidence_ids": ["graph:path-1:none"],
+        "graph_evidence_used_ids": [],
+        "claim_evidence_bindings": [],
+    }
+
+    row = evaluate_case_output(case, "fault relation", metadata=metadata)
+
+    assert row["grounding_pass"] is True
+    assert row["graph_required_mechanism_pass"] is False
+    assert row["final_pass"] is False
+    assert "graph_evidence_used_count" in row["graph_required_mechanism_failures"]
+    assert "graph_claim_binding_count" in row["graph_required_mechanism_failures"]
+
+
+def test_graph_required_case_passes_mechanism_gate_with_bound_graph_evidence() -> None:
+    case = MaintenanceEvalCase(
+        case_id="graph-required-bound",
+        query="Which graph relation explains the fault?",
+        graph_dependency="required",
+        required_nuggets=["fault relation"],
+    )
+    metadata = {
+        "rag_variant": "graph_full",
+        "graph_candidate_count": 1,
+        "graph_qualified_count": 1,
+        "graph_evidence_ids": ["graph:path-1:none"],
+        "graph_evidence_used_ids": ["graph:path-1:none"],
+        "claim_evidence_bindings": [
+            {
+                "claim_id": "aspect-fault",
+                "claim_type": "fault_relation",
+                "emitted": True,
+                "evidence_ids": ["graph:path-1:none"],
+            }
+        ],
+    }
+
+    row = evaluate_case_output(case, "fault relation", metadata=metadata)
+
+    assert row["graph_required_mechanism_pass"] is True
+    assert row["graph_required_mechanism_failures"] == ""
+    assert row["final_pass"] is True
+
+
+def test_summarize_rows_reports_p50_and_p95_latency():
+    rows = [
+        {"answerable": True, "latency_ms": 100},
+        {"answerable": True, "latency_ms": 200},
+    ]
+
+    summary = summarize_rows(rows)
+
+    assert summary["avg_latency_ms"] == 150.0
+    assert summary["p50_latency_ms"] == 150.0
+    assert summary["p95_latency_ms"] == 195.0
+
+
+def test_evaluate_case_output_exports_v2_grouping_fields():
+    case = MaintenanceEvalCase(
+        case_id="blind_group_001",
+        schema_version="2.0",
+        split="blind_test",
+        question_type="relation_disambiguation",
+        graph_dependency="required",
+        question_origin="human_authored",
+        query="两个相似故障应如何区分？",
+    )
+
+    row = evaluate_case_output(case, "需要依据证据区分。")
+
+    assert row["schema_version"] == "2.0"
+    assert row["split"] == "blind_test"
+    assert row["question_type"] == "relation_disambiguation"
+    assert row["graph_dependency"] == "required"
+    assert row["question_origin"] == "human_authored"
+
+
+def test_run_manifest_records_server_reported_rag_variants(tmp_path: Path):
+    dataset = tmp_path / "blind.jsonl"
+    dataset.write_text('{"case_id":"case-1","query":"测试"}\n', encoding="utf-8")
+    case = MaintenanceEvalCase(case_id="case-1", query="测试", dataset_source=dataset.name)
+
+    manifest = build_run_manifest(
+        run_id="run-1",
+        started_at="2026-08-05T00:00:00+00:00",
+        dataset_paths=[dataset],
+        cases=[case],
+        turn_rows=[{"rag_variant": "no_graph"}],
+        mode="api",
+        endpoint="http://127.0.0.1:8001/ai/chat",
+        timeout=120,
+        default_device_type="",
+        default_document_id="",
+    )
+
+    assert manifest["rag_variants"] == ["no_graph"]
 
 
 def test_evaluate_case_output_catches_good_page_bad_order_and_unsupported_claims():

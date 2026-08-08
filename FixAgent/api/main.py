@@ -49,11 +49,11 @@ from schemas.response import (
     CaseExtractResponse,
 )
 from services.case.case_agent import draft_case, check_compliance, extract_material, validate_task_text, validate_graph_entities
-from agents.fix_agent import get_fix_agent
+from agents.fix_agent import FixAgent, get_fix_agent
 from agents.voice_task_agent import get_voice_task_agent
 from guardrails import get_review_agent
 from agents.memory_agent import get_memory_agent
-from agents.base_agent import AgentInput, AgentOutput
+from agents.base_agent import AgentInput, AgentOutput, make_experiment_tool_profile
 from services.knowledge.vector_service import build_redis_filter, get_vector_service
 from services.domain_rules import (
     DOMAIN_RULE_TOOL_NAME,
@@ -101,6 +101,11 @@ from services.retrieval.device_identity import (
     reconcile_query_device_span,
 )
 from services.retrieval.evidence import EvidenceLedger
+from services.retrieval.graph_pre_retrieval import GraphPreRetrievalService
+from services.retrieval.manual_scope import (
+    build_manual_retrieval_kwargs,
+    build_manual_retrieval_scope,
+)
 from services.retrieval.provenance import canonical_manual_chunk_id, dedupe_and_sort_manual_records
 from services.retrieval.query_constraints import (
     candidate_constraint_conflicts,
@@ -119,6 +124,7 @@ from services.routing.evidence_gate import EvidenceDocumentGate
 from services.routing.models import RouteAction, RoutePlan
 from services.routing.orchestrator import SemanticRoutingOrchestrator
 from services.routing.graph_candidate_provider import get_graph_candidate_provider
+from services.routing.graph_policy import decide_graph_use
 from services.routing.document_selection import (
     clear_pending_document_selection,
     load_pending_document_selection,
@@ -389,6 +395,7 @@ async def health() -> dict[str, Any]:
     return {
         "status": "ok" if runtime["catalog_available"] else "degraded",
         "build_id": runtime["build_id"],
+        "rag_variant": _current_rag_variant(),
     }
 
 
@@ -397,6 +404,7 @@ async def runtime_info() -> dict[str, Any]:
     runtime = _runtime_snapshot()
     return {
         "status": "ok" if runtime["catalog_available"] else "degraded",
+        "rag_variant": _current_rag_variant(),
         "runtime": runtime,
     }
 
@@ -460,6 +468,222 @@ _DOMAIN_RULE_INTENTS = {
     "procedure_planning",
 }
 
+_GRAPH_RAG_TOOL_NAMES = frozenset({
+    "java_graph_diagnosis_path",
+    "java_graph_device_search",
+    "component_reverse_device",
+})
+
+
+def _current_rag_variant() -> str:
+    return str(getattr(get_settings(), "rag_variant", "production") or "production")
+
+
+def _graph_candidates_enabled(rag_variant: str) -> bool:
+    return str(rag_variant or "production") != "no_graph"
+
+
+def _graph_candidate_query_count_for_status(status: Any) -> int:
+    normalized = str(status or "").strip().lower()
+    return 0 if normalized in {"", "not_applicable"} else 1
+
+
+def _server_graph_scope_from_candidate(candidate: Any) -> dict[str, Any]:
+    dimensions = getattr(candidate, "dimensions", {}) or {}
+    scope: dict[str, Any] = {}
+    for source, target in (
+        ("path_id", "allowed_path_ids"),
+        ("device_id", "allowed_device_ids"),
+        ("component_id", "allowed_component_ids"),
+        ("fault_id", "allowed_fault_ids"),
+    ):
+        value = str(dimensions.get(source) or "").strip()
+        if value:
+            scope[target] = [value]
+    return scope
+
+
+def _review_level_for_rag_variant(
+    rag_variant: str,
+    requested_level: str,
+    context: Mapping[str, Any] | None = None,
+) -> str:
+    requested = str(requested_level or "full").lower()
+    if requested != "full":
+        return requested
+    context = context or {}
+    policy = context.get("graph_policy")
+    policy = policy if isinstance(policy, Mapping) else {}
+    graph_batch = context.get("graph_pre_retrieval")
+    graph_batch = graph_batch if isinstance(graph_batch, Mapping) else {}
+    diagnostics = graph_batch.get("diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, Mapping) else {}
+    graph_review_enabled = bool(
+        str(rag_variant or "") in {"graph", "graph_full", "production"}
+        and policy.get("graph_review_enabled") is True
+        and int(diagnostics.get("qualified_count") or 0) > 0
+    )
+    return "full" if graph_review_enabled else "standard"
+
+
+def _initialize_rag_variant_context(context: dict[str, Any]) -> str:
+    rag_variant = _current_rag_variant()
+    context["rag_variant"] = rag_variant
+    context["graph_candidate_query_count"] = 0
+    context["graph_candidate_count"] = 0
+    context["graph_candidate_retrieval"] = {
+        "status": "not_applicable",
+        "reason": "not_queried",
+        "diagnostics": {},
+    }
+    context["graph_pre_retrieval"] = {
+        "status": "not_applicable",
+        "reason": "not_queried",
+        "evidence": [],
+        "diagnostics": {},
+    }
+    context.pop("_experiment_tool_profile", None)
+    if rag_variant == "no_graph":
+        context["_experiment_tool_profile"] = make_experiment_tool_profile("rag_only")
+    elif rag_variant == "graph_full":
+        context["_experiment_tool_profile"] = make_experiment_tool_profile("rag_kg")
+    elif rag_variant == "graph_shadow":
+        context["_experiment_tool_profile"] = make_experiment_tool_profile("rag_only")
+    return rag_variant
+
+
+def _rag_variant_audit_metadata(
+    *,
+    context: Mapping[str, Any] | None,
+    metadata: Mapping[str, Any] | None,
+    review_level: str,
+) -> dict[str, Any]:
+    context = context or {}
+    metadata = metadata or {}
+    graph_tool_calls: list[str] = []
+    for step in metadata.get("react_trace") or []:
+        if not isinstance(step, Mapping):
+            continue
+        for call in step.get("tool_calls") or []:
+            if not isinstance(call, Mapping):
+                continue
+            name = str(call.get("name") or "")
+            executed = call.get("executed")
+            legacy_not_found = str(call.get("result_summary") or "").startswith("tool not found:")
+            if name in _GRAPH_RAG_TOOL_NAMES and executed is not False and not legacy_not_found:
+                graph_tool_calls.append(name)
+    rag_variant = str(context.get("rag_variant") or "production")
+    candidate_retrieval = context.get("graph_candidate_retrieval")
+    candidate_retrieval = candidate_retrieval if isinstance(candidate_retrieval, Mapping) else {}
+    graph_retrieval = context.get("graph_pre_retrieval")
+    graph_retrieval = graph_retrieval if isinstance(graph_retrieval, Mapping) else {}
+    graph_diagnostics = graph_retrieval.get("diagnostics")
+    graph_diagnostics = graph_diagnostics if isinstance(graph_diagnostics, Mapping) else {}
+    graph_evidence = [
+        item for item in graph_retrieval.get("evidence") or []
+        if isinstance(item, Mapping)
+    ]
+    graph_evidence_ids = list(dict.fromkeys(
+        str(item.get("evidence_id") or "")
+        for item in graph_evidence
+        if str(item.get("evidence_id") or "").strip()
+    ))
+    claim_evidence_bindings = [
+        {
+            **dict(binding),
+            "evidence_ids": list(binding.get("evidence_ids") or []),
+        }
+        for binding in metadata.get("claim_evidence_bindings") or []
+        if isinstance(binding, Mapping)
+    ]
+    bound_evidence_ids = {
+        str(evidence_id)
+        for binding in claim_evidence_bindings
+        for evidence_id in binding.get("evidence_ids") or []
+        if str(evidence_id).strip()
+    }
+    declared_graph_used = {
+        str(evidence_id)
+        for evidence_id in metadata.get("graph_evidence_used_ids") or []
+        if str(evidence_id).strip()
+    }
+    graph_evidence_used_ids = [
+        evidence_id
+        for evidence_id in graph_evidence_ids
+        if evidence_id in bound_evidence_ids and evidence_id in declared_graph_used
+    ]
+    intent_decision = context.get("intent_decision")
+    intent_decision = dict(intent_decision) if isinstance(intent_decision, Mapping) else {}
+    query_contract = context.get("query_contract")
+    query_contract = dict(query_contract) if isinstance(query_contract, Mapping) else {}
+    frozen_route_contract = context.get("_evaluation_route_contract")
+    if (
+        context.get("evaluation_route_contract_applied") is True
+        and isinstance(frozen_route_contract, Mapping)
+        and isinstance(frozen_route_contract.get("intent_decision"), Mapping)
+        and isinstance(frozen_route_contract.get("query_contract"), Mapping)
+    ):
+        route_contract = {
+            "intent_decision": dict(frozen_route_contract["intent_decision"]),
+            "query_contract": dict(frozen_route_contract["query_contract"]),
+        }
+    else:
+        route_contract = {
+            "intent_decision": intent_decision,
+            "query_contract": query_contract,
+        }
+    route_contract_signature = hashlib.sha256(
+        json.dumps(
+            route_contract,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "rag_variant": rag_variant,
+        "graph_candidate_query_count": int(context.get("graph_candidate_query_count") or 0),
+        "graph_candidate_count": int(context.get("graph_candidate_count") or 0),
+        "graph_candidate_status": str(candidate_retrieval.get("status") or "not_applicable"),
+        "graph_candidate_reason": str(candidate_retrieval.get("reason") or ""),
+        "graph_retrieval_status": str(graph_retrieval.get("status") or "not_applicable"),
+        "graph_retrieval_reason": str(graph_retrieval.get("reason") or ""),
+        "graph_scope": dict(context.get("graph_scope") or {}),
+        "graph_qualified_count": int(graph_diagnostics.get("qualified_count") or 0),
+        "graph_routing_only_count": int(graph_diagnostics.get("routing_only_count") or 0),
+        "graph_rejected_count": int(graph_diagnostics.get("rejected_count") or 0),
+        "graph_evidence_ids": graph_evidence_ids,
+        "claim_evidence_bindings": claim_evidence_bindings,
+        "graph_evidence_used_ids": graph_evidence_used_ids,
+        "graph_relationship_types": sorted({
+            str(relation)
+            for item in graph_evidence
+            for relation in item.get("relationship_types") or []
+            if str(relation).strip()
+        }),
+        "graph_provenance_statuses": sorted({
+            str(item.get("provenance_status"))
+            for item in graph_evidence
+            if str(item.get("provenance_status") or "").strip()
+        }),
+        "graph_retrieval_latency_ms": int(graph_diagnostics.get("latency_ms") or 0),
+        "graph_tool_call_count": len(graph_tool_calls),
+        "graph_tools_used": sorted(set(graph_tool_calls)),
+        "graph_review_enabled": bool(
+            isinstance(context.get("graph_policy"), Mapping)
+            and context["graph_policy"].get("graph_review_enabled") is True
+            and int(graph_diagnostics.get("qualified_count") or 0) > 0
+            and str(review_level or "").lower() == "full"
+        ),
+        "intent_decision": intent_decision,
+        "query_contract": query_contract,
+        "evaluation_route_contract_applied": bool(
+            context.get("evaluation_route_contract_applied")
+        ),
+        "route_contract_signature": route_contract_signature,
+    }
+
 
 def _execution_mode(metadata: dict | None) -> str:
     return (metadata or {}).get("execution_mode") or ""
@@ -502,10 +726,12 @@ def _is_knowledge_output(output: AgentOutput) -> bool:
 
 
 def _manual_bundle_from_trace(metadata: dict | None) -> dict[str, Any]:
-    for step in reversed((metadata or {}).get("react_trace") or []):
+    normalized_trace: list[dict[str, Any]] = []
+    for step in (metadata or {}).get("react_trace") or []:
         if not isinstance(step, dict):
             continue
-        for call in reversed(step.get("tool_calls") or []):
+        normalized_calls: list[dict[str, Any]] = []
+        for call in step.get("tool_calls") or []:
             if not isinstance(call, dict) or call.get("name") != "knowledge_retrieval":
                 continue
             payload = next(
@@ -516,18 +742,48 @@ def _manual_bundle_from_trace(metadata: dict | None) -> dict[str, Any]:
                 nested = payload.get("data")
                 if isinstance(nested, (dict, list)):
                     payload = nested
-            if isinstance(payload, dict) and any(
-                key in payload for key in ("aspect_support", "coverage_status", "conflict_eligible")
-            ):
-                return dict(payload)
             if isinstance(payload, list):
-                for item in payload:
-                    if not isinstance(item, dict):
-                        continue
-                    bundle = (item.get("metadata") or {}).get("evidence_bundle")
-                    if isinstance(bundle, dict):
-                        return dict(bundle)
-    return {}
+                nested_bundle = next((
+                    (item.get("metadata") or {}).get("evidence_bundle")
+                    for item in payload
+                    if isinstance(item, dict)
+                    and isinstance(item.get("metadata"), dict)
+                    and isinstance((item.get("metadata") or {}).get("evidence_bundle"), dict)
+                ), None)
+                if isinstance(nested_bundle, dict):
+                    bundle = dict(nested_bundle)
+                    bundle.setdefault("qualified_evidence", [
+                        item
+                        for item in payload
+                        if isinstance(item, dict)
+                        and str(
+                            item.get("qualification")
+                            or (item.get("metadata") or {}).get("qualification")
+                            or ""
+                        ).strip() == "qualified"
+                    ])
+                    bundle.setdefault("reference_evidence", [
+                        item
+                        for item in payload
+                        if isinstance(item, dict)
+                        and str(
+                            item.get("qualification")
+                            or (item.get("metadata") or {}).get("qualification")
+                            or ""
+                        ).strip() == "reference_only"
+                    ])
+                    payload = bundle
+            if isinstance(payload, dict) and not any(
+                key in payload
+                for key in ("aspect_support", "coverage_status", "conflict_eligible")
+            ):
+                continue
+            if not isinstance(payload, (dict, list)):
+                continue
+            normalized_calls.append({**call, "result_data": payload})
+        if normalized_calls:
+            normalized_trace.append({**step, "tool_calls": normalized_calls})
+    return FixAgent._merged_knowledge_bundle(normalized_trace)
 
 
 def _bundle_for_knowledge_output(output: AgentOutput, ledger: EvidenceLedger) -> dict[str, Any]:
@@ -786,11 +1042,25 @@ def _direct_manual_text_supports_query(direct_text: str, query: str) -> bool:
                 direct_text or "",
             )
         ]
-        if (
-            _manual_query_kind(query)
-            and any(title and title in query_text for title in section_titles)
-        ):
-            return True
+        allow_action_prefixed_title = _manual_query_kind(query) == "procedure"
+        if allow_action_prefixed_title:
+            for title in section_titles:
+                if not title:
+                    continue
+                if title in query_text:
+                    return True
+                # Section headings often lead with the operation being
+                # documented ("检查火花塞", "安装起动电机").  For a fault
+                # treatment question, the component title is still a
+                # deterministic anchor even when the query does not repeat
+                # that heading verbatim.
+                core_title = re.sub(
+                    r"^(?:检查|安装|拆卸|调整|测量|更换|维修|诊断)",
+                    "",
+                    title,
+                )
+                if len(core_title) >= 2 and core_title in query_text:
+                    return True
         return False
 
     action = _manual_query_action(query)
@@ -833,6 +1103,34 @@ def _finalize_knowledge_output(
     audited = finalize_response(plan, output.message, evidence_rendered=evidence_rendered)
     output.message = audited.answer
     output.metadata.update(plan.to_metadata())
+    output.metadata.update(audited.to_metadata())
+    if "graph_evidence_ids" in output.metadata:
+        retrieved_graph_ids = {
+            str(evidence_id)
+            for evidence_id in output.metadata.get("graph_evidence_ids") or []
+            if str(evidence_id).strip()
+        }
+        used_graph_ids = [
+            evidence_id
+            for evidence_id in output.metadata.get("graph_evidence_used_ids") or []
+            if evidence_id in retrieved_graph_ids
+        ]
+        output.metadata["graph_evidence_used_ids"] = used_graph_ids
+        output.metadata["claim_evidence_bindings"] = [
+            {
+                **dict(binding),
+                "evidence_ids": [
+                    evidence_id
+                    for evidence_id in binding.get("evidence_ids") or []
+                    if evidence_id in used_graph_ids
+                ],
+            }
+            for binding in output.metadata.get("claim_evidence_bindings") or []
+            if any(
+                evidence_id in used_graph_ids
+                for evidence_id in binding.get("evidence_ids") or []
+            )
+        ]
     output.metadata.setdefault("scope_decision", {"status": "unknown"})
     intent_data = output.metadata.get("intent_decision")
     if isinstance(intent_data, dict) and intent_data.get("intent"):
@@ -861,12 +1159,34 @@ def _attach_stream_done_metadata(event: dict[str, Any], metadata: dict | None) -
             "coverage_status",
             "response_plan_id",
             "evidence_ledger_digest",
+            "authorized_claim_evidence_bindings",
+            "claim_evidence_bindings",
+            "graph_evidence_bound_ids",
+            "graph_evidence_used_ids",
             "pending_clarification",
             "_deterministic_answer_evidence_pages",
             "_deterministic_answer_document_ids",
             "_deterministic_answer_section_title",
             "_deterministic_answer_section_ids",
             "_deterministic_answer_table_complete",
+            "rag_variant",
+            "graph_candidate_query_count",
+            "graph_candidate_count",
+            "graph_candidate_status",
+            "graph_candidate_reason",
+            "graph_retrieval_status",
+            "graph_retrieval_reason",
+            "graph_scope",
+            "graph_qualified_count",
+            "graph_routing_only_count",
+            "graph_rejected_count",
+            "graph_evidence_ids",
+            "graph_relationship_types",
+            "graph_provenance_statuses",
+            "graph_retrieval_latency_ms",
+            "graph_tool_call_count",
+            "graph_tools_used",
+            "graph_review_enabled",
         )
         if key in (metadata or {})
     }
@@ -1397,6 +1717,8 @@ async def _finalize_knowledge_output_with_fallback(
         isinstance(route_plan, Mapping)
         and route_plan.get("action") in {RouteAction.CLARIFY.value, RouteAction.CLARIFY_DOCUMENT.value}
     ):
+        if candidate_message is not None:
+            output.message = candidate_message
         return output
     audited = _finalize_knowledge_output(
         input_data.user_message,
@@ -1952,10 +2274,38 @@ def _apply_resolved_scope_authority(
     })
 
 
+def _apply_graph_scope_authority(
+    decision: ScopeDecision,
+    *,
+    route_plan: RoutePlan,
+) -> ScopeDecision:
+    """Authorize a graph-selected document after graph provenance has converged."""
+    if decision.status != OUT_OF_SCOPE:
+        return decision
+    if not route_plan.selected_graph_candidate_id or not route_plan.selected_document_id:
+        return decision
+    graph_scope = route_plan.graph_scope if isinstance(route_plan.graph_scope, Mapping) else {}
+    selected_document_id = str(route_plan.selected_document_id or "").strip()
+    if str(graph_scope.get("document_id") or "").strip() != selected_document_id:
+        return decision
+    if str(decision.document_id or "").strip() != selected_document_id:
+        return decision
+    if str(decision.reason or "").strip() != "device_document_conflict":
+        return decision
+    return ScopeDecision(**{
+        **decision.to_dict(),
+        "status": IN_SCOPE,
+        "source": "resolved_graph_scope",
+        "reason": "server_authoritative_graph_scope",
+        "document_id": selected_document_id,
+    })
+
+
 async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     raw_message = request.message or ""
     effective_message = raw_message.strip() or IMAGE_ONLY_DEFAULT_MESSAGE
     context = dict(request.context or {})
+    rag_variant = _initialize_rag_variant_context(context)
     authoritative_query_contract: QueryContract | None = None
     _restore_trusted_pending_context(request.session_id, context)
     # 统一反问状态优先于客户端上下文；客户端只能提交答案，不能替换候选集合。
@@ -2149,11 +2499,23 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
     session_device_type = context.get("confirmed_device_type")
 
     intent_router = get_intent_router()
-    intent_decision = await intent_router.classify(
-        raw_message,
-        images=request.images,
-        context=context,
-    )
+    frozen_contract = context.get("_evaluation_route_contract")
+    frozen_intent = frozen_contract.get("intent_decision") if isinstance(frozen_contract, Mapping) else None
+    frozen_query = frozen_contract.get("query_contract") if isinstance(frozen_contract, Mapping) else None
+    if isinstance(frozen_intent, Mapping) and isinstance(frozen_query, Mapping):
+        intent_decision = IntentDecision.model_validate(dict(frozen_intent))
+        authoritative_query_contract = QueryContract.from_mapping(
+            frozen_query,
+            raw_query=raw_message,
+        )
+        context["evaluation_route_contract_applied"] = True
+    else:
+        intent_decision = await intent_router.classify(
+            raw_message,
+            images=request.images,
+            context=context,
+        )
+        context["evaluation_route_contract_applied"] = False
     context["intent_decision"] = intent_decision.model_dump()
     context["intention"] = intent_decision.intent
     query_contract = authoritative_query_contract or QueryContract.from_mapping(
@@ -2169,10 +2531,11 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
             device_catalog = await load_dynamic_device_catalog()
         except Exception as exc:
             logger.error("[scope] dynamic document catalog unavailable: %s", exc)
-        inferred_contract = infer_query_identity_from_catalog(query_contract, device_catalog)
-        if inferred_contract is not query_contract:
-            query_contract = inferred_contract
-            context["query_contract"] = query_contract.to_dict()
+        if authoritative_query_contract is None:
+            inferred_contract = infer_query_identity_from_catalog(query_contract, device_catalog)
+            if inferred_contract is not query_contract:
+                query_contract = inferred_contract
+                context["query_contract"] = query_contract.to_dict()
         try:
             section_index = SectionTitleIndex.get_instance()
             section_index.build(get_vector_service())
@@ -2234,24 +2597,35 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
                     context["query_contract"] = query_contract.to_dict()
             except Exception as exc:
                 logger.warning("[scope] focused identity refinement unavailable: %s", exc)
-    query_contract = reconcile_query_device_span(query_contract, device_catalog)
-    context["query_contract"] = query_contract.to_dict()
-    if (
-        not query_contract.has_explicit_device
-        and any(
-            query_has_grounded_operation_target(query_contract, document)
-            for document in device_catalog.documents
-        )
-    ):
-        resolved_payload = query_contract.to_dict()
-        resolved_payload["identity_resolution"] = "confirmed_absent"
-        query_contract = QueryContract.from_mapping(
-            resolved_payload,
-            raw_query=raw_message,
-        )
+    if authoritative_query_contract is None:
+        query_contract = reconcile_query_device_span(query_contract, device_catalog)
         context["query_contract"] = query_contract.to_dict()
+        if (
+            not query_contract.has_explicit_device
+            and any(
+                query_has_grounded_operation_target(query_contract, document)
+                for document in device_catalog.documents
+            )
+        ):
+            resolved_payload = query_contract.to_dict()
+            resolved_payload["identity_resolution"] = "confirmed_absent"
+            query_contract = QueryContract.from_mapping(
+                resolved_payload,
+                raw_query=raw_message,
+            )
+            context["query_contract"] = query_contract.to_dict()
+    graph_policy = decide_graph_use(rag_variant, query_contract.to_dict())
+    context["graph_policy"] = {
+        "candidate_enabled": graph_policy.candidate_enabled,
+        "pre_retrieval_enabled": graph_policy.pre_retrieval_enabled,
+        "may_influence_route": graph_policy.may_influence_route,
+        "may_enter_evidence": graph_policy.may_enter_evidence,
+        "graph_review_enabled": graph_policy.graph_review_enabled,
+        "allowed_claim_types": list(graph_policy.allowed_claim_types),
+        "reason": graph_policy.reason,
+    }
     graph_candidates = ()
-    if technical_route:
+    if technical_route and graph_policy.candidate_enabled:
         try:
             graph_scope = ResolvedScope.from_constraints(context.get("resolved_scope") or {})
             graph_provider = get_graph_candidate_provider()
@@ -2267,8 +2641,24 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
                 allowed_source_chunk_uids=graph_scope.allowed_source_chunk_uids if graph_scope else (),
                 allowed_evidence_refs=graph_scope.allowed_evidence_refs if graph_scope else (),
             )
+            candidate_retrieval = dict(graph_provider.retrieval_status)
+            context["graph_candidate_retrieval"] = candidate_retrieval
+            context["graph_candidate_query_count"] = _graph_candidate_query_count_for_status(
+                candidate_retrieval.get("status")
+            )
         except Exception as exc:
             logger.info("[routing] graph candidate query unavailable: %s", exc)
+            context["graph_candidate_query_count"] = 1
+            context["graph_candidate_retrieval"] = {
+                "status": "unavailable",
+                "reason": "candidate_query_exception",
+                "diagnostics": {"error": str(exc)},
+            }
+    elif not graph_policy.candidate_enabled:
+        context["graph_candidate_retrieval"]["reason"] = graph_policy.reason
+    else:
+        context["graph_candidate_retrieval"]["reason"] = "non_technical_route"
+    context["graph_candidate_count"] = len(graph_candidates)
     route_plan = await SemanticRoutingOrchestrator().build_plan(
         query=raw_message,
         decision=intent_decision,
@@ -2277,7 +2667,8 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
         request_document_id=str(request.document_id or ""),
         session_document_id=str(session_document_id or ""),
         query_contract=query_contract,
-        graph_candidates=graph_candidates,
+        graph_candidates=(graph_candidates if graph_policy.may_influence_route else ()),
+        preserve_query_contract=authoritative_query_contract is not None,
     )
     query_contract = route_plan.query_contract
     context["query_contract"] = query_contract.to_dict()
@@ -2299,45 +2690,65 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
         selected_document_id=selected_document_id,
         selected_section_id=route_plan.selected_section_id,
     )
-    context["scope_decision"] = scope_decision.to_dict()
-    context["graph_scope"] = dict(route_plan.graph_scope)
-    context["retrieval_scope"] = (
-        {
-            "document_id": selected_document_id,
-            "device_type": "",
-            **(
-                {"parent_section_id": route_plan.selected_section_id}
-                if route_plan.selected_section_id
-                else {}
-            ),
-            **(
-                {
-                    "allowed_section_ids": list(resolved_scope.allowed_section_ids),
-                    "allowed_evidence_refs": list(resolved_scope.allowed_evidence_refs),
-                    "allowed_source_chunk_uids": list(resolved_scope.allowed_source_chunk_uids),
-                    "pages": list(resolved_scope.pages),
-                }
-                if resolved_scope is not None
-                else {}
-            ),
-            **(
-                {
-                    "graph_scope": dict(route_plan.graph_scope),
-                    "allowed_source_chunk_uids": list(
-                        route_plan.graph_scope.get("allowed_source_chunk_uids") or ()
-                    ),
-                }
-                if route_plan.graph_scope
-                else {}
-            ),
-        }
-        if (
-            route_plan.action == RouteAction.GROUNDED_RETRIEVAL
-            and selected_document_id
-            and scope_decision.status == "in_scope"
-        )
-        else {}
+    scope_decision = _apply_graph_scope_authority(
+        scope_decision,
+        route_plan=route_plan,
     )
+    context["scope_decision"] = scope_decision.to_dict()
+    effective_graph_scope = dict(route_plan.graph_scope)
+    if rag_variant == "graph_shadow" and graph_candidates:
+        effective_graph_scope = _server_graph_scope_from_candidate(graph_candidates[0])
+    context["graph_scope"] = effective_graph_scope
+    graph_pre_started = time.time()
+    try:
+        graph_batch = await GraphPreRetrievalService().retrieve(
+            rag_variant=rag_variant,
+            route_plan=route_plan.to_dict(),
+            graph_scope=effective_graph_scope,
+            image_urls=list(request.images or ()),
+        )
+        graph_pre_payload = graph_batch.to_dict()
+        graph_pre_payload.setdefault("diagnostics", {})["latency_ms"] = int(
+            (time.time() - graph_pre_started) * 1000
+        )
+        if graph_policy.may_enter_evidence:
+            context["graph_pre_retrieval"] = graph_pre_payload
+        elif rag_variant == "graph_shadow":
+            context["graph_shadow_retrieval"] = graph_pre_payload
+            context["graph_pre_retrieval"] = {
+                "status": graph_pre_payload.get("status", "not_applicable"),
+                "reason": "shadow_audit_only",
+                "evidence": [],
+                "diagnostics": graph_pre_payload.get("diagnostics", {}),
+            }
+        else:
+            context["graph_pre_retrieval"] = graph_pre_payload
+    except Exception as exc:
+        logger.info("[routing] graph pre-retrieval unavailable: %s", exc)
+        context["graph_pre_retrieval"] = {
+            "status": "unavailable",
+            "reason": "graph_pre_retrieval_exception",
+            "evidence": [],
+            "diagnostics": {
+                "error": str(exc),
+                "latency_ms": int((time.time() - graph_pre_started) * 1000),
+            },
+        }
+    if (
+        route_plan.action == RouteAction.GROUNDED_RETRIEVAL
+        and selected_document_id
+        and scope_decision.status == "in_scope"
+    ):
+        context["retrieval_scope"] = build_manual_retrieval_scope(
+            selected_document_id=selected_document_id,
+            selected_section_id=route_plan.selected_section_id,
+            resolved_scope=(resolved_scope.to_dict() if resolved_scope is not None else None),
+            graph_scope=route_plan.graph_scope,
+        )
+        if route_plan.graph_scope:
+            context["retrieval_scope"]["graph_scope"] = dict(route_plan.graph_scope)
+    else:
+        context["retrieval_scope"] = {}
     response_policy = derive_response_policy(
         intent_decision,
         context["scope_decision"],
@@ -2580,6 +2991,25 @@ def _structured_contract_requests_table_lookup(metadata: dict | None) -> bool:
         for field in item.get("requested_fields") or []
     )
     return has_target and any(str(field or "").strip() for field in requested_fields)
+
+
+def _is_fault_diagnosis_route(metadata: dict | None) -> bool:
+    route_plan = (metadata or {}).get("route_plan")
+    if not isinstance(route_plan, Mapping):
+        return False
+    query_contract = route_plan.get("query_contract")
+    query_contract = query_contract if isinstance(query_contract, Mapping) else {}
+    intent = str(
+        route_plan.get("intent")
+        or query_contract.get("intent")
+        or ""
+    ).strip()
+    task_action = str(
+        route_plan.get("task_action")
+        or query_contract.get("task_action")
+        or ""
+    ).strip()
+    return intent == "fault_diagnosis" or task_action == "find_cause"
 
 
 def _inventory_cell(value) -> str:
@@ -3142,6 +3572,8 @@ def _format_inventory_table_answer_from_metadata(
     extra_items: list[dict] | None = None,
 ) -> str | None:
     """从检索 trace 中的表格证据直接生成清单回答，避免 LLM 把已命中的表格说成未找到。"""
+    if _is_fault_diagnosis_route(metadata):
+        return None
     if not (
         _is_inventory_table_query(message)
         or _structured_contract_requests_table_lookup(metadata)
@@ -5474,6 +5906,22 @@ def _format_manual_evidence_answer_from_metadata(message: str, metadata: dict) -
     metadata.setdefault("original_user_message", message)
     _register_direct_manual_evidence(metadata, records, "section_text_lookup")
     metadata["_deterministic_answer_mode"] = "evidence_rendered"
+    graph_batch = metadata.get("graph_pre_retrieval")
+    if (
+        isinstance(graph_batch, Mapping)
+        and str(graph_batch.get("status") or "") == "found"
+        and any(
+            isinstance(item, Mapping)
+            and str(item.get("qualification") or "") == "qualified"
+            for item in graph_batch.get("evidence") or []
+        )
+    ):
+        # Graph diagnostics must compose the path relation with the manual
+        # treatment.  The section renderer intentionally omits graph claims,
+        # so keep the audited composed answer while still registering these
+        # direct manual records for the final evidence plan.
+        metadata["_manual_evidence_registered_for_graph_composition"] = True
+        return None
     if _manual_answer_should_refuse_detail_query(message, records):
         return _format_manual_detail_refusal_answer(message, records)
 
@@ -5610,6 +6058,8 @@ def _extract_evidence_images(metadata: dict) -> List[EvidenceImage]:
 
 async def _collect_direct_section_table_items(message: str, metadata: dict) -> list[dict]:
     """清单直取通道：按确定性章节补全同节全部表格，解决跨页 BOM 只召回一页的问题。"""
+    if _is_fault_diagnosis_route(metadata):
+        return []
     if not (
         _is_inventory_table_query(message)
         or _structured_contract_requests_table_lookup(metadata)
@@ -6907,6 +7357,18 @@ def _narrow_evidence_images_to_query_target_pages(
         or (metadata or {}).get("message")
         or ""
     )
+    # A complete-procedure request intentionally needs every audited page.
+    # The lexical narrowing below is useful for a single visual target, but
+    # it used to collapse a multi-page installation/removal answer to the one
+    # page with the strongest action score (for example, piston/cylinder
+    # assembly).  Keep the deterministic page set intact unless the caller
+    # explicitly asks for one target page.
+    complete_procedure_request = any(
+        phrase in query
+        for phrase in ("完整步骤", "完整流程", "全部步骤", "所有步骤", "完整的步骤")
+    )
+    if complete_procedure_request and not force:
+        return sorted_images
     anchors = _image_specific_anchor_terms(query)
     semantic_anchors: list[str] = []
     structured_contract = _structured_query_contract(metadata or {})
@@ -7604,18 +8066,11 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
     retrieval_t0 = time.time()
     effective_query = input_data.user_message or request.message
     scope = (input_data.context or {}).get("retrieval_scope") or {}
-    retrieval_kwargs = {
-        "query": effective_query,
-        "top_k": 5,
-        "document_id": scope.get("document_id"),
-        "device_type": scope.get("device_type"),
-    }
-    if scope.get("parent_section_id"):
-        retrieval_kwargs["parent_section_id"] = scope["parent_section_id"]
-    if scope.get("allowed_section_ids"):
-        retrieval_kwargs["allowed_section_ids"] = list(scope["allowed_section_ids"])
-    if scope.get("allowed_evidence_refs"):
-        retrieval_kwargs["allowed_evidence_refs"] = list(scope["allowed_evidence_refs"])
+    retrieval_kwargs = build_manual_retrieval_kwargs(
+        effective_query,
+        scope,
+        top_k=5,
+    )
     retrieval = await get_knowledge_retrieval_tool().run(**retrieval_kwargs)
     retrieval_ms = int((time.time() - retrieval_t0) * 1000)
     if not retrieval.success or not retrieval.data:
@@ -7634,7 +8089,7 @@ async def _run_rag_fast_path(request: ChatRequest, input_data: AgentInput) -> Ag
         "duration_ms": retrieval_ms,
         "tool_calls": [{
             "name": "knowledge_retrieval",
-            "arguments": {"query": effective_query, "top_k": 5, **scope},
+            "arguments": dict(retrieval_kwargs),
             "result_summary": str(evidence_items)[:200],
             "result_data": [item.model_dump() if hasattr(item, "model_dump") else item for item in evidence_items],
         }],
@@ -7769,10 +8224,15 @@ async def chat(request: ChatRequest) -> ChatResponse:
         logger.info(f"[chat] 会话={request.session_id} 消息长度={len(request.message)}")
 
         input_data = await _prepare_chat_agent_input(request)
+        rag_variant = str((input_data.context or {}).get("rag_variant") or "production")
 
         fix_t0 = time.time()
         fix_result = None
-        review_level = "full"
+        review_level = _review_level_for_rag_variant(
+            rag_variant,
+            "full",
+            input_data.context,
+        )
         fix_result = await _try_causal_follow_up_resolution(request, input_data)
         if fix_result is not None:
             review_level = "light"
@@ -7842,6 +8302,13 @@ async def chat(request: ChatRequest) -> ChatResponse:
             final_result = await get_review_agent().review(fix_result, level=review_level)
         if "react_trace" not in final_result.metadata and fix_result.metadata.get("react_trace"):
             final_result.metadata["react_trace"] = fix_result.metadata["react_trace"]
+        final_result.metadata.update(
+            _rag_variant_audit_metadata(
+                context=input_data.context,
+                metadata=final_result.metadata,
+                review_level=review_level,
+            )
+        )
         review_phase_ms = int((time.time() - review_t0) * 1000)
 
         verification = final_result.metadata.get("verification", {})
@@ -8418,12 +8885,28 @@ async def chat_stream(request: ChatRequest):
                 # 运行3层确定性校验（~300ms），获取内联标记位置
                 if _is_deterministic_direct_output(fix_output):
                     verified_output = fix_output
+                    stream_review_level = "light"
                 else:
-                    verified_output = await get_review_agent().review(fix_output)
+                    stream_review_level = _review_level_for_rag_variant(
+                        str((input_data.context or {}).get("rag_variant") or "production"),
+                        "full",
+                        input_data.context,
+                    )
+                    verified_output = await get_review_agent().review(
+                        fix_output,
+                        level=stream_review_level,
+                    )
                 if "react_trace" not in verified_output.metadata and fix_output.metadata.get("react_trace"):
                     verified_output.metadata["react_trace"] = fix_output.metadata["react_trace"]
                 verified_output.metadata.setdefault("user_message", input_data.user_message)
                 verified_output.metadata.setdefault("original_user_message", request.message)
+                verified_output.metadata.update(
+                    _rag_variant_audit_metadata(
+                        context=input_data.context,
+                        metadata=verified_output.metadata,
+                        review_level=stream_review_level,
+                    )
+                )
                 stream_metadata = {**stream_metadata, **verified_output.metadata}
                 if input_data.context and input_data.context.get("retrieval_scope"):
                     stream_metadata.setdefault(

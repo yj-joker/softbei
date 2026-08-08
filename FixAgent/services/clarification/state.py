@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 
 class ClarificationStatus(str, Enum):
-    AWAITING = "awaiting"
+    AWAITING = "awaiting_answer"
     RESOLVED = "resolved"
     REASKED = "reasked"
     CANCELLED = "cancelled"
@@ -254,15 +254,36 @@ class ClarificationStateStore:
         if expected_version is not None and int(expected_version) != state.version:
             return None
         answer_key = str(answer or "").strip().casefold()
-        selected = next((item for item in state.candidates if str(item.get("id") or item.get("candidate_id") or "").strip().casefold() == answer_key), None)
+        selected = None
+        # 显示序号优先于候选标签中的章节号（例如“6.4 …”不能抢答“1”）。
+        ordinal = re.fullmatch(r"(?:我选|选择|选)?\s*(?:第\s*)?(\d+)(?:\s*(?:项|个|号))?", answer_key)
+        if ordinal:
+            index = int(ordinal.group(1)) - 1
+            if 0 <= index < len(state.candidates):
+                selected = state.candidates[index]
         if selected is None:
-            selected = next((item for item in state.candidates if answer_key and answer_key in str(item.get("label") or item.get("value") or "").casefold()), None)
-        if selected is None:
-            ordinal = re.fullmatch(r"(?:第\s*)?(\d+)(?:\s*(?:项|个|号))?", answer_key)
-            if ordinal:
-                index = int(ordinal.group(1)) - 1
-                if 0 <= index < len(state.candidates):
-                    selected = state.candidates[index]
+            selected = next((
+                item for item in state.candidates
+                if str(item.get("id") or item.get("candidate_id") or "").strip().casefold() == answer_key
+                or str(item.get("value") or "").strip().casefold() == answer_key
+                or str((item.get("constraints") or {}).get("document_id") or "").strip().casefold() == answer_key
+                or str(item.get("label") or "").strip().casefold() == answer_key
+            ), None)
+        if selected is None and answer_key:
+            # 自然语言答案只能在唯一候选命中时生效，公共子串必须继续澄清。
+            matches = [
+                item for item in state.candidates
+                if any(
+                    token and (token in answer_key or answer_key in token)
+                    for token in (
+                        str(item.get("label") or "").strip().casefold(),
+                        str(item.get("value") or "").strip().casefold(),
+                        str((item.get("constraints") or {}).get("document_id") or "").strip().casefold(),
+                    )
+                )
+            ]
+            if len(matches) == 1:
+                selected = matches[0]
         if selected is None:
             return None
         option_id = str(selected.get("id") or selected.get("candidate_id") or "")
@@ -307,7 +328,10 @@ class ClarificationStateStore:
         data["candidates"] = tuple(dict(item) for item in data.get("candidates") or () if isinstance(item, Mapping))
         data["route_snapshot"] = dict(data.get("route_snapshot") or {})
         data["selected_constraints"] = dict(data.get("selected_constraints") or {})
-        data["status"] = ClarificationStatus(str(data.get("status") or ClarificationStatus.AWAITING.value))
+        raw_status = str(data.get("status") or ClarificationStatus.AWAITING.value)
+        if raw_status == "awaiting":
+            raw_status = ClarificationStatus.AWAITING.value
+        data["status"] = ClarificationStatus(raw_status)
         return ClarificationState(**data)
 
 

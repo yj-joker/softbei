@@ -19,12 +19,14 @@ import hashlib
 import logging
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from config.settings import get_settings
 from services.knowledge.vector_service import get_vector_service
+from services.knowledge.diagnostic_chunk_selector import classify_diagnostic_chunk
 from services.llm.service import get_llm_service
 
 logger = logging.getLogger(__name__)
@@ -106,6 +108,8 @@ _FAULT_SOLUTION_SYSTEM = """你是工业设备维修领域的专家。给定一�
 规则：
 - 一段内容可能包含多个故障，每个故障对应一个条目
 - 故障名称要简洁（10字以内），描述可详细
+- `source_subject` 必须是原文明确出现的故障/处置对象；禁止从“设备/章节部件”上下文推断
+- 如果条件句没有明确主语，`source_subject` 返回空字符串，不能补写总成名称
 - 解决方案步骤从内容中提取，保持原文表述
 - 如果内容不包含明确的故障信息，返回空列表
 
@@ -115,6 +119,8 @@ _FAULT_SOLUTION_SYSTEM = """你是工业设备维修领域的专家。给定一�
   "items": [
     {
       "fault_name": "气缸盖螺栓断裂",
+      "source_subject": "气缸盖螺栓",
+      "component_name": "气缸盖螺栓",
       "fault_description": "拧紧过程中螺栓断裂，无法正常密封，通常因超扭矩或螺栓疲劳所致",
       "solution_title": "气缸盖螺栓更换",
       "solution_description": "更换断裂螺栓，检查缸盖平面度",
@@ -155,6 +161,7 @@ class ExtractedFaultSolution:
     confidence: float
     source_chunk_uid: str
     component_name: str = ""
+    source_subject: str = ""
 
 
 @dataclass
@@ -172,6 +179,13 @@ class ExtractionResult:
     errors: List[str] = field(default_factory=list)
     skipped: bool = False        # 结构质检未通过，整本跳过入图（0 污染）
     skip_reason: str = ""        # 跳过原因，供前端/日志展示
+    diagnostic_chunks_scanned: int = 0
+    diagnostic_chunks_selected: int = 0
+    fault_items_extracted: int = 0
+    fault_items_unanchored: int = 0
+    fault_upserts_succeeded: int = 0
+    fault_upserts_failed: int = 0
+    unique_fault_paths: int = 0
 
 
 # ──────────────── 主服务 ────────────────
@@ -215,16 +229,17 @@ class ManualKGExtractor:
             ExtractionResult 统计结果
         """
         result = ExtractionResult(document_id=document_id)
+        manifest: Dict[str, Any] = {}
         logger.info("[KG抽取] 开始: document_id=%s device_hint=%s", document_id, device_type_hint)
 
         try:
+            manifest = self.vector_svc.get_document_manifest(document_id) or {}
             # 1. 获取所有chunk
             chunks = self.vector_svc.list_document_chunks(document_id)
             if not chunks:
                 logger.warning("[KG抽取] 无chunk: document_id=%s", document_id)
                 return result
 
-            manifest = self.vector_svc.get_document_manifest(document_id) or {}
             document_version = _manifest_document_version(manifest)
 
             # 结构质检闸门：section_title 结构塌陷的手册（如流程叙述型、
@@ -278,7 +293,11 @@ class ManualKGExtractor:
             # Component MERGE 专用串行锁：根治 Neo4j 并发 MERGE 重复节点
             sem_component = asyncio.Semaphore(self._COMPONENT_CONCURRENCY)
 
-            async def process_section(sec_title: str, sec_chunks: List[Dict]) -> None:
+            component_by_section: Dict[str, tuple[Optional[ExtractedComponent], str]] = {}
+            component_ids_by_name: Dict[str, List[str]] = {}
+            projected_fault_keys: set[str] = set()
+
+            async def process_component(sec_title: str, sec_chunks: List[Dict]) -> None:
                 section_provenance = _section_provenance(
                     document_id,
                     document_version,
@@ -315,57 +334,148 @@ class ManualKGExtractor:
                     comp_id = (comp_resp or {}).get("componentId", "")
                     if comp_id:
                         result.components_created += 1
+                        normalized_name = _normalize_component_name(component.name)
+                        if normalized_name:
+                            ids = component_ids_by_name.setdefault(normalized_name, [])
+                            if comp_id not in ids:
+                                ids.append(comp_id)
+                component_by_section[sec_title] = (component, comp_id)
 
-                # 5b. 抽取 troubleshooting chunk 里的 Fault+Solution
-                troubleshooting = [
-                    c for c in sec_chunks
-                    if (c.get("metadata") or {}).get("chunk_label") == "troubleshooting"
-                ]
-                for chunk in troubleshooting:
+            component_results = await asyncio.gather(
+                *[
+                    process_component(title, sec_chunks)
+                    for title, sec_chunks in sections.items()
+                ],
+                return_exceptions=True,
+            )
+            for section_title, section_result in zip(sections, component_results):
+                if isinstance(section_result, Exception):
+                    result.errors.append(f"section={section_title}: {section_result}")
+                    component_by_section.setdefault(section_title, (None, ""))
+
+            async def process_diagnostics(sec_title: str, sec_chunks: List[Dict]) -> None:
+                component, current_comp_id = component_by_section.get(sec_title, (None, ""))
+                for chunk in sec_chunks:
+                    result.diagnostic_chunks_scanned += 1
+                    decision = classify_diagnostic_chunk(chunk)
+                    if not decision.selected:
+                        continue
+                    result.diagnostic_chunks_selected += 1
                     raw_text = (chunk.get("metadata") or {}).get("raw_text") or chunk.get("text", "")
                     chunk_uid = (chunk.get("metadata") or {}).get("chunk_uid", "")
                     if not raw_text.strip():
                         continue
 
-                    async with sem_llm:
-                        items = await self._extract_fault_solutions(
-                            raw_text,
-                            device_name=device.name,
-                            component_name=component.name if component else "",
-                            chunk_uid=chunk_uid,
-                        )
+                    fact_items = []
+                    for source_fact in _split_diagnostic_facts(raw_text):
+                        async with sem_llm:
+                            items = await self._extract_fault_solutions(
+                                source_fact,
+                                device_name=device.name,
+                                component_name=component.name if component else "",
+                                chunk_uid=chunk_uid,
+                            )
+                        fact_items.extend((source_fact, item) for item in items)
 
-                    for item in items:
-                        # comp_id 为空说明当前 section 没有识别出 Component：
-                        # 不能用全局 MERGE 写 Fault（会跨设备污染），统一进 review_items 等人工处理。
-                        if not comp_id:
+                    for source_fact, item in fact_items:
+                        result.fault_items_extracted += 1
+                        source_subject = (
+                            item.source_subject.strip()
+                            or _extract_source_subject(source_fact)
+                        )
+                        section_component_name = component.name if component else ""
+                        llm_component_name = item.component_name.strip()
+                        requested_name = llm_component_name or source_subject
+                        if not _subject_supported_by_source(
+                            source_fact,
+                            requested_name,
+                            section_component_name=section_component_name,
+                        ):
+                            result.fault_items_unanchored += 1
                             result.review_items.append({
-                                "reason": "no_component_id",
+                                "reason": "source_subject_missing_or_unsupported",
                                 "fault_name": item.fault_name,
                                 "solution_title": item.solution_title,
                                 "confidence": item.confidence,
                                 "chunk_uid": item.source_chunk_uid,
                                 "section_title": sec_title,
                                 "device_name": device.name,
+                                "component_name": requested_name,
+                                "source_subject": source_subject,
+                                "source_excerpt": _source_excerpt(source_fact),
+                            })
+                            continue
+                        if not requested_name:
+                            requested_name = section_component_name
+                        normalized_name = _normalize_component_name(requested_name)
+                        candidates = component_ids_by_name.get(normalized_name, [])
+                        if not requested_name and current_comp_id:
+                            candidates = [current_comp_id]
+                        if len(candidates) != 1:
+                            result.fault_items_unanchored += 1
+                            result.review_items.append({
+                                "reason": "component_anchor_not_unique",
+                                "fault_name": item.fault_name,
+                                "solution_title": item.solution_title,
+                                "confidence": item.confidence,
+                                "chunk_uid": item.source_chunk_uid,
+                                "section_title": sec_title,
+                                "device_name": device.name,
+                                "component_name": requested_name,
+                                "candidate_component_ids": list(candidates),
                             })
                             continue
 
-                        async with sem_api:
-                            fs_resp = await self._call_java("/weixiu/kg/internal/upsert-fault-solution", {
-                                "componentId": comp_id,
-                                "faultName": item.fault_name,
-                                "faultDescription": item.fault_description,
-                                "solutionTitle": item.solution_title,
-                                "solutionDescription": item.solution_description,
-                                "solutionSteps": item.solution_steps,
-                                "sourceChunkUid": item.source_chunk_uid,
-                                **section_provenance,
-                                "confidence": item.confidence,
-                                "documentId": document_id,
-                                "manualId": manual_id,
-                            })
+                        chunk_provenance = _section_provenance(
+                            document_id,
+                            document_version,
+                            sec_title,
+                            [chunk],
+                        )
+                        source_excerpt = _source_excerpt(source_fact)
+                        fault_identity_key, solution_identity_key = _diagnostic_fact_identity(
+                            document_id=document_id,
+                            component_id=candidates[0],
+                            chunk_uid=item.source_chunk_uid,
+                            source_fact=source_fact,
+                            action_text=source_fact,
+                        )
+                        try:
+                            async with sem_api:
+                                fs_resp = await self._call_java("/weixiu/kg/internal/upsert-fault-solution", {
+                                    "componentId": candidates[0],
+                                    "faultName": item.fault_name,
+                                    "faultDescription": source_excerpt,
+                                    "solutionTitle": item.solution_title,
+                                    "solutionDescription": source_excerpt,
+                                    "solutionSteps": [],
+                                    "sourceSubject": source_subject or requested_name,
+                                    "sourceExcerpt": source_excerpt,
+                                    "faultIdentityKey": fault_identity_key,
+                                    "solutionIdentityKey": solution_identity_key,
+                                    "sourceChunkUid": item.source_chunk_uid,
+                                    **chunk_provenance,
+                                    "confidence": item.confidence,
+                                    "documentId": document_id,
+                                    "manualId": manual_id,
+                                })
+                        except Exception as exc:
+                            result.fault_upserts_failed += 1
+                            result.errors.append(
+                                f"section={sec_title} chunk={chunk_uid} "
+                                f"path=/weixiu/kg/internal/upsert-fault-solution: {exc}"
+                            )
+                            continue
                         if (fs_resp or {}).get("faultId"):
                             result.faults_created += 1
+                            result.fault_upserts_succeeded += 1
+                            projected_fault_keys.add(fault_identity_key)
+                            result.unique_fault_paths = len(projected_fault_keys)
+                        else:
+                            result.fault_upserts_failed += 1
+                            result.errors.append(
+                                f"section={sec_title} chunk={chunk_uid}: fault upsert returned no faultId"
+                            )
                         if (fs_resp or {}).get("solutionId"):
                             result.solutions_created += 1
                         if item.confidence < 0.7:
@@ -392,9 +502,9 @@ class ManualKGExtractor:
                 # 查询侧只读取 Fault-HAS_SOLUTION 诊断链，不再读取 HAS_PROCEDURE。
                 # result.procedures_created 保留字段但恒为 0，避免破坏调用方契约。
 
-            # 并发处理所有section；每个分区异常必须进入业务结果，不能静默丢弃。
+            # 组件索引完成后再并发处理诊断内容，避免跨 section 组件锚定竞态。
             section_results = await asyncio.gather(
-                *[process_section(title, sec_chunks)
+                *[process_diagnostics(title, sec_chunks)
                   for title, sec_chunks in sections.items()],
                 return_exceptions=True,
             )
@@ -408,6 +518,13 @@ class ManualKGExtractor:
         except Exception as e:
             logger.error("[KG抽取] 异常: document_id=%s err=%s", document_id, e, exc_info=True)
             result.errors.append(str(e))
+        finally:
+            _persist_kg_projection_manifest(
+                self.vector_svc,
+                document_id=document_id,
+                manifest=manifest,
+                result=result,
+            )
 
         logger.info(
             "[KG抽取] 完成: document_id=%s device=%s components=%d rejected=%d "
@@ -450,10 +567,19 @@ class ManualKGExtractor:
                 r = await self.extract_document(
                     doc_id,
                     device_type_hint=manifest.get("device_type", ""),
+                    manual_id=manifest.get("manual_id"),
+                    manual_name=manifest.get("manual_name", ""),
                 )
                 total.components_created += r.components_created
                 total.faults_created += r.faults_created
                 total.solutions_created += r.solutions_created
+                total.diagnostic_chunks_scanned += r.diagnostic_chunks_scanned
+                total.diagnostic_chunks_selected += r.diagnostic_chunks_selected
+                total.fault_items_extracted += r.fault_items_extracted
+                total.fault_items_unanchored += r.fault_items_unanchored
+                total.fault_upserts_succeeded += r.fault_upserts_succeeded
+                total.fault_upserts_failed += r.fault_upserts_failed
+                total.unique_fault_paths += r.unique_fault_paths
                 total.errors.extend(r.errors)
             except Exception as e:
                 logger.warning("[KG全量重抽] 文档失败: doc=%s err=%s", doc_id, e)
@@ -464,6 +590,12 @@ class ManualKGExtractor:
             "components_created": total.components_created,
             "faults_created": total.faults_created,
             "solutions_created": total.solutions_created,
+            "diagnostic_chunks_scanned": total.diagnostic_chunks_scanned,
+            "diagnostic_chunks_selected": total.diagnostic_chunks_selected,
+            "fault_items_extracted": total.fault_items_extracted,
+            "fault_items_unanchored": total.fault_items_unanchored,
+            "fault_upserts_succeeded": total.fault_upserts_succeeded,
+            "fault_upserts_failed": total.fault_upserts_failed,
             "errors": total.errors,
         }
 
@@ -669,7 +801,12 @@ class ManualKGExtractor:
                     solution_steps=item.get("solution_steps") or [],
                     confidence=float(item.get("confidence", 0.7)),
                     source_chunk_uid=chunk_uid,
-                    component_name=component_name,
+                    component_name=str(item.get("component_name") or "").strip()[:80],
+                    source_subject=str(
+                        item.get("source_subject")
+                        or _extract_source_subject(text)
+                        or ""
+                    ).strip()[:80],
                 )
                 for item in data["items"]
                 if item.get("fault_name") and item.get("solution_title")
@@ -719,6 +856,153 @@ def _group_by_section(chunks: List[Dict]) -> Dict[str, List[Dict]]:
         title = meta.get("section_title") or "（无标题）"
         groups.setdefault(title, []).append(chunk)
     return groups
+
+
+def _source_excerpt(text: str, limit: int = 400) -> str:
+    """Keep graph fact descriptions auditable against the source chunk."""
+    return str(text or "").strip()[: max(1, int(limit))]
+
+
+_FACT_BOUNDARY = re.compile(r"(?<=[。！？；;])\s*|\r?\n+")
+_FACT_PREFIX = re.compile(r"^\s*(?:[-*•·]|\(?\d+[.)、]|[①②③④⑤⑥⑦⑧⑨⑩])\s*")
+_FACT_ABNORMAL = re.compile(
+    r"故障|异常|损坏|磨损|弯曲|开裂|断裂|卡住|干涉|漏油|松动|"
+    r"不灵活|不顺畅|不能|无法|过大|过小|发黑|变形|相对滑动"
+)
+_FACT_ACTION = re.compile(
+    r"更换|修理|检查|调整|重新|安装|拆卸|清洁|清洗|校正|测量|排除|处理"
+)
+
+
+def _normalize_source_fact(text: str) -> str:
+    return re.sub(r"\s+", "", str(text or "")).strip("|，,；;。")
+
+
+_SUBJECT_HEADING = re.compile(
+    r"^\s*(?:检查|确认|查看|观察|测量)\s*([^：:，,。；;]{1,50})\s*[：:]"
+)
+
+
+def _extract_source_subject(text: str) -> str:
+    """Return only a subject explicitly named in a manual heading."""
+    match = _SUBJECT_HEADING.search(str(text or ""))
+    return match.group(1).strip() if match else ""
+
+
+def _subject_supported_by_source(
+    source_fact: str,
+    requested_name: str,
+    *,
+    section_component_name: str = "",
+) -> bool:
+    """Prevent a subjectless condition from inheriting the section-level assembly."""
+    normalized_source = _normalize_component_name(source_fact)
+    candidates = [requested_name, _extract_source_subject(source_fact), section_component_name]
+    return any(
+        candidate
+        and _normalize_component_name(candidate)
+        and _normalize_component_name(candidate) in normalized_source
+        for candidate in candidates
+    )
+
+
+def _split_diagnostic_facts(text: str) -> List[str]:
+    """Deterministically isolate condition/action facts before LLM naming."""
+    source = str(text or "").strip()
+    if not source:
+        return []
+
+    parts = [
+        _FACT_PREFIX.sub("", part).strip()
+        for part in _FACT_BOUNDARY.split(source)
+        if part and part.strip()
+    ]
+    facts: List[str] = []
+    pending = ""
+    for part in parts:
+        has_abnormal = bool(_FACT_ABNORMAL.search(part))
+        has_action = bool(_FACT_ACTION.search(part))
+        if has_abnormal and has_action:
+            facts.append(f"{pending}{part}" if pending else part)
+            pending = ""
+        elif has_abnormal:
+            pending = part
+        elif has_action and re.search(r"[：:]\s*$", part):
+            pending = part
+        elif pending and has_action:
+            facts.append(f"{pending}{part}")
+            pending = ""
+
+    # Explicit troubleshooting rows and compact prose may not contain our
+    # conservative keywords. Keeping the complete chunk preserves coverage.
+    return facts or [source]
+
+
+def _diagnostic_fact_identity(
+    *,
+    document_id: str,
+    component_id: str,
+    chunk_uid: str,
+    source_fact: str,
+    action_text: str,
+) -> tuple[str, str]:
+    fact_digest = hashlib.sha256(
+        _normalize_source_fact(source_fact).encode("utf-8")
+    ).hexdigest()[:16]
+    action_digest = hashlib.sha256(
+        _normalize_source_fact(action_text).encode("utf-8")
+    ).hexdigest()[:16]
+    fault_key = (
+        f"kgfault:{document_id}:{component_id}:{chunk_uid}:{fact_digest}"
+    )
+    return fault_key, f"kgsolution:{fault_key}:{action_digest}"
+
+
+def _kg_projection_status(result: ExtractionResult) -> str:
+    if result.skipped:
+        return "skipped"
+    has_progress = bool(
+        result.device_id
+        or result.components_created
+        or result.fault_upserts_succeeded
+    )
+    has_errors = bool(result.errors or result.fault_upserts_failed)
+    if has_errors:
+        return "partial" if has_progress else "failed"
+    return "ready" if result.device_id else "failed"
+
+
+def _persist_kg_projection_manifest(
+    vector_svc: Any,
+    *,
+    document_id: str,
+    manifest: Dict[str, Any],
+    result: ExtractionResult,
+) -> None:
+    writer = getattr(vector_svc, "put_document_manifest", None)
+    if not callable(writer):
+        return
+    updated = dict(manifest or {})
+    updated.update(
+        {
+            "document_id": document_id,
+            "kg_status": _kg_projection_status(result),
+            "kg_components": result.components_created,
+            "kg_fault_paths": result.unique_fault_paths,
+            "kg_fault_upserts": result.fault_upserts_succeeded,
+            "kg_failed_paths": result.fault_upserts_failed,
+            "kg_error_count": len(result.errors),
+            "kg_updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    )
+    try:
+        writer(document_id, updated)
+    except Exception as exc:
+        logger.warning(
+            "[KG抽取] manifest状态写回失败: document_id=%s err=%s",
+            document_id,
+            exc,
+        )
 
 
 # 标题脏特征：含公式符号、换行、制表等——说明 PDF 解析没切出干净的章节标题

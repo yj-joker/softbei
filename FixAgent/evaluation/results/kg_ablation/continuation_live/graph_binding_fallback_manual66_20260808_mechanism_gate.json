@@ -1,0 +1,63 @@
+{
+  "passed": true,
+  "exit_code": 0,
+  "failed_checks": [],
+  "checks": {
+    "no_graph_zero_activity": {
+      "name": "no_graph_zero_activity",
+      "status": "passed",
+      "passed": true,
+      "evaluated_turn_count": 66,
+      "totals": {
+        "graph_candidate_query_count": 0,
+        "graph_candidate_count": 0,
+        "graph_qualified_count": 0,
+        "graph_routing_only_count": 0,
+        "graph_rejected_count": 0,
+        "graph_evidence_used_count": 0,
+        "graph_tool_call_count": 0,
+        "graph_evidence_ids": 0,
+        "graph_evidence_used_ids": 0,
+        "graph_tools_used": 0,
+        "graph_review_enabled": 0
+      },
+      "violations": []
+    },
+    "graph_shadow_isolation": {
+      "name": "graph_shadow_isolation",
+      "status": "passed",
+      "passed": true,
+      "evaluated_turn_count": 66,
+      "totals": {
+        "graph_evidence_used_count": 0,
+        "graph_tool_call_count": 0,
+        "graph_evidence_used_ids": 0,
+        "graph_tools_used": 0,
+        "graph_review_enabled": 0
+      },
+      "violations": []
+    },
+    "graph_full_required_chain": {
+      "name": "graph_full_required_chain",
+      "status": "passed",
+      "passed": true,
+      "evaluated_turn_count": 26,
+      "totals": {
+        "graph_candidate_count": 260,
+        "graph_qualified_count": 26,
+        "graph_evidence_used_count": 26
+      },
+      "violations": [],
+      "failed_turn_count": 0
+    },
+    "paired_route_contract_consistency": {
+      "name": "paired_route_contract_consistency",
+      "status": "passed",
+      "passed": true,
+      "evaluated_pair_count": 66,
+      "violations": []
+    }
+  },
+  "run_name": "graph_binding_fallback_manual66_20260808",
+  "generated_at": "2026-08-08T07:25:30.288653+00:00"
+}

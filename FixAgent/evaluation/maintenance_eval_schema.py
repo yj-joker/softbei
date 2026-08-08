@@ -13,6 +13,20 @@ VALID_SOURCE_TYPES = {"manual", "domain_rule", "graph"}
 VALID_SCOPE_STATES = {"", "in_scope", "out_of_scope", "unknown"}
 VALID_COVERAGE_STATES = {"", "complete", "partial", "unsupported", "conflict"}
 VALID_SOURCE_MODES = {"normal", "quote", "page"}
+VALID_SCHEMA_VERSIONS = {"1.0", "2.0", "3.0"}
+VALID_SPLITS = {"dev", "regression", "blind_test"}
+VALID_QUESTION_TYPES = {
+    "",
+    "fact",
+    "procedure",
+    "relation_disambiguation",
+    "multi_hop",
+    "cross_document",
+    "safety",
+}
+VALID_GRAPH_DEPENDENCIES = {"unknown", "none", "helpful", "required"}
+VALID_INPUT_MODALITIES = {"text", "image", "text_image"}
+VALID_DIFFICULTIES = {"easy", "medium", "hard"}
 
 
 @dataclass
@@ -63,6 +77,7 @@ class StyleExpectation:
 @dataclass
 class MaintenanceEvalTurn:
     query: str
+    graph_dependency: str = "unknown"
     task_type: str = ""
     intent_action: str = ""
     target_section: str = ""
@@ -91,6 +106,14 @@ class MaintenanceEvalTurn:
 @dataclass
 class MaintenanceEvalCase:
     case_id: str
+    schema_version: str = "1.0"
+    split: str = "dev"
+    question_type: str = ""
+    graph_dependency: str = "unknown"
+    input_modality: str = "text"
+    image_inputs: list[dict[str, Any]] = field(default_factory=list)
+    gold_answer: str = ""
+    question_origin: str = ""
     query: str = ""
     task_type: str = ""
     intent_action: str = ""
@@ -165,6 +188,26 @@ def _as_dict_list(value: Any) -> list[dict[str, Any]]:
     if isinstance(value, list):
         return [dict(item) for item in value if isinstance(item, Mapping)]
     return []
+
+
+def _gold_evidence(value: Any, *, schema_version: str) -> list[dict[str, Any]]:
+    evidence = _as_dict_list(value)
+    for item in evidence:
+        raw_grade = item.get("relevance_grade")
+        if raw_grade in (None, ""):
+            if schema_version in {"1.0", "2.0"}:
+                item["relevance_grade"] = 1
+                continue
+            if schema_version == "3.0":
+                raise ValueError("schema 3.0 gold evidence requires relevance_grade")
+        try:
+            grade = int(raw_grade)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid relevance_grade: {raw_grade!r}") from exc
+        if grade < 0 or grade > 3:
+            raise ValueError(f"invalid relevance_grade: {grade!r}; expected 0..3")
+        item["relevance_grade"] = grade
+    return evidence
 
 
 def _as_bool(value: Any, default: bool = True) -> bool:
@@ -258,6 +301,7 @@ def _style_expectation(value: Any) -> StyleExpectation | None:
 def _turn_from_dict(data: Mapping[str, Any]) -> MaintenanceEvalTurn:
     return MaintenanceEvalTurn(
         query=str(data.get("query") or data.get("question") or "").strip(),
+        graph_dependency=str(data.get("graph_dependency") or "unknown").strip(),
         task_type=str(data.get("task_type") or "").strip(),
         intent_action=str(data.get("intent_action") or "").strip(),
         target_section=str(data.get("target_section") or "").strip(),
@@ -293,8 +337,59 @@ def _turn_from_dict(data: Mapping[str, Any]) -> MaintenanceEvalTurn:
 
 
 def _case_from_dict(data: Mapping[str, Any]) -> MaintenanceEvalCase:
+    schema_version = _validated_choice(
+        data.get("schema_version"), VALID_SCHEMA_VERSIONS, "schema_version", default="1.0"
+    )
+    split = str(data.get("split") or "dev").strip()
+    question_type = str(data.get("question_type") or "").strip()
+    graph_dependency = str(data.get("graph_dependency") or "unknown").strip()
+    input_modality = str(data.get("input_modality") or "text").strip()
+    image_inputs = _as_dict_list(data.get("image_inputs"))
+    if schema_version in {"2.0", "3.0"}:
+        split = _validated_choice(split, VALID_SPLITS, "split")
+        question_type = _validated_choice(question_type, VALID_QUESTION_TYPES, "question_type")
+        graph_dependency = _validated_choice(
+            graph_dependency, VALID_GRAPH_DEPENDENCIES, "graph_dependency"
+        )
+    if split == "blind_test":
+        if schema_version != "3.0":
+            raise ValueError("blind_test cases require schema_version 3.0")
+        if not question_type:
+            raise ValueError("blind_test cases require question_type")
+        if graph_dependency == "unknown":
+            raise ValueError("blind_test cases require graph_dependency")
+        if not str(data.get("question_origin") or "").strip():
+            raise ValueError("blind_test cases require question_origin")
+        difficulty = _validated_choice(data.get("difficulty"), VALID_DIFFICULTIES, "difficulty")
+        input_modality = _validated_choice(
+            input_modality, VALID_INPUT_MODALITIES, "input_modality", default="text"
+        )
+        if input_modality == "text" and image_inputs:
+            raise ValueError("text cases must not contain image_inputs")
+        if input_modality in {"image", "text_image"} and not image_inputs:
+            raise ValueError(f"{input_modality} cases require image_inputs")
+        for image in image_inputs:
+            missing = [
+                key for key in ("image_id", "document_id", "page", "asset_path", "sha256")
+                if image.get(key) in (None, "")
+            ]
+            if missing:
+                raise ValueError(f"image_inputs missing fields: {', '.join(missing)}")
+            digest = str(image.get("sha256") or "").lower()
+            if not re.fullmatch(r"[0-9a-f]{64}", digest):
+                raise ValueError("image_inputs sha256 must be 64 lowercase hex characters")
+    else:
+        difficulty = str(data.get("difficulty") or "").strip()
     return MaintenanceEvalCase(
         case_id=str(data.get("case_id") or data.get("id") or "").strip(),
+        schema_version=schema_version,
+        split=split,
+        question_type=question_type,
+        graph_dependency=graph_dependency,
+        input_modality=input_modality,
+        image_inputs=image_inputs,
+        gold_answer=str(data.get("gold_answer") or data.get("golden_answer") or ""),
+        question_origin=str(data.get("question_origin") or "").strip(),
         query=str(data.get("query") or data.get("question") or "").strip(),
         task_type=str(data.get("task_type") or "").strip(),
         intent_action=str(data.get("intent_action") or "").strip(),
@@ -309,8 +404,8 @@ def _case_from_dict(data: Mapping[str, Any]) -> MaintenanceEvalCase:
         expected_image_order=_as_int_list(data.get("expected_image_order")),
         step_image_mapping=_as_dict_list(data.get("step_image_mapping")),
         forbidden_images=_as_dict_list(data.get("forbidden_images")),
-        gold_evidence=_as_dict_list(data.get("gold_evidence")),
-        difficulty=str(data.get("difficulty") or "").strip(),
+        gold_evidence=_gold_evidence(data.get("gold_evidence"), schema_version=schema_version),
+        difficulty=difficulty,
         trap_type=_as_str_list(data.get("trap_type")),
         candidate_answer=str(data.get("candidate_answer") or ""),
         candidate_images=_as_dict_list(data.get("candidate_images")),

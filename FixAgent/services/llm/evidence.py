@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from services.retrieval.graph_evidence import normalize_graph_response
+
 
 def build_evidence_items(source_tool: str, result_payload: Any) -> List[Dict[str, Any]]:
     if source_tool == "knowledge_retrieval":
@@ -54,38 +56,16 @@ def _knowledge_retrieval_evidence(result_payload: Any) -> List[Dict[str, Any]]:
 def _graph_path_evidence(result_payload: Any) -> List[Dict[str, Any]]:
     if not isinstance(result_payload, dict):
         return []
-
-    records = result_payload.get("raw_records") or []
-    if not isinstance(records, list):
-        return []
-
-    evidence: List[Dict[str, Any]] = []
-    for index, record in enumerate(records):
-        if not isinstance(record, dict):
-            continue
-        solutions = record.get("solutions") or []
-        first_solution = solutions[0] if isinstance(solutions, list) and solutions else {}
-        solution = ""
-        if isinstance(first_solution, dict):
-            solution = str(first_solution.get("title") or first_solution.get("name") or "").strip()
-        solution = solution or str(record.get("solutionTitle") or "").strip()
-        device = record.get("deviceName")
-        component = record.get("componentName")
-        fault = record.get("faultName")
-        content_parts = [part for part in [device, component, fault, solution] if part]
-        evidence.append({
-            "evidence_id": f"java_graph_diagnosis_path:{index}",
-            "source_tool": "java_graph_diagnosis_path",
-            "source_type": "knowledge_graph",
-            "evidence_type": "graph_path",
-            "device": device,
-            "component": component,
-            "fault": fault,
-            "solution": solution,
-            "confidence": _to_float(record.get("matchScore"), record.get("score")),
-            "content": " -> ".join(str(part) for part in content_parts),
-        })
-    return evidence
+    scope = result_payload.get("graph_scope") or result_payload.get("scope")
+    batch = normalize_graph_response(
+        result_payload,
+        scope=scope if isinstance(scope, dict) else None,
+    )
+    return [
+        evidence.to_ledger_entry()
+        for evidence in batch.evidence
+        if evidence.qualification == "qualified"
+    ]
 
 
 def _to_float(*values: Any) -> float:

@@ -55,6 +55,10 @@ def test_evaluate_retrieval_rows_calculates_recall_and_mrr():
     assert summary["recall_at_3"] == 1.0
     assert summary["recall_at_5"] == 1.0
     assert summary["mrr"] == 0.666667
+    assert summary["hit_at_1"] == summary["recall_at_1"]
+    assert summary["hit_at_3"] == summary["recall_at_3"]
+    assert summary["hit_at_5"] == summary["recall_at_5"]
+    assert summary["legacy_recall_fields_are_hit_rate"] is True
 
 
 def test_evaluate_retrieval_rows_limits_mrr_to_top_k():

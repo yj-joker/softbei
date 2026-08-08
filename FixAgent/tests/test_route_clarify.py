@@ -56,6 +56,8 @@ def test_executor_does_not_run_downstream_tools_for_clarify():
     assert execution is not None
     assert execution.tools_used == ()
     assert execution.metadata["pending_clarification"]["kind"] == "document_selection"
+    assert execution.metadata["pending_clarification"]["status"] == "awaiting_answer"
+    assert "文档 ID：doc-a" in execution.message
 
 
 def test_same_document_ambiguous_sections_use_section_clarification():

@@ -18,8 +18,10 @@ from __future__ import annotations
 
 import argparse
 import csv
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import hashlib
 import json
+import math
 import os
 import re
 import subprocess
@@ -86,6 +88,10 @@ METRIC_DESCRIPTIONS_CN = {
     "case_count": "测评用例总数。",
     "answerable_case_count": "手册中应当能回答的用例数量。",
     "final_pass_rate": "最终通过率；必须同时满足必答点、禁答项、拒答、步骤顺序、图片等约束。",
+    "answer_correct_pass_rate": "答案内容正确率；只判断必答点、禁答项和应答/拒答是否正确，不包含图片、步骤和证据格式门禁。",
+    "evidence_pass_rate": "证据门禁通过率；答案中的证据来源和声明绑定满足当前测评合同。",
+    "delivery_pass_rate": "交付约束通过率；步骤顺序与图片要求均满足。",
+    "mechanism_pass_rate": "图谱机制门禁通过率；Graph-required题必须完成候选、资格筛选、证据使用和声明绑定。",
     "avg_required_nugget_recall": "必答信息点平均覆盖率；越高说明答案越完整。",
     "grounding_pass_rate": "证据忠实率；必答点覆盖且没有 forbidden_claims 中的无依据/错误说法。",
     "unsupported_claim_free_rate": "无禁答项命中率；越低说明模型越容易乱补或说手册没写的内容。",
@@ -110,6 +116,71 @@ class CaseRunResult:
     metadata: dict[str, Any] = field(default_factory=dict)
     latency_ms: int = 0
     error: str = ""
+
+
+def _metadata_number(metadata: Mapping[str, Any], *keys: str) -> int | float | str:
+    usage = metadata.get("usage") if isinstance(metadata.get("usage"), Mapping) else {}
+    for key in keys:
+        value = metadata.get(key)
+        if value in (None, ""):
+            value = usage.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        return int(number) if number.is_integer() else number
+    return ""
+
+
+def _stable_string_items(value: Any) -> tuple[str, ...]:
+    if value in (None, ""):
+        return ()
+    if isinstance(value, (set, frozenset)):
+        raw_items = sorted(value, key=str)
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        raw_items = value
+    else:
+        raw_items = (value,)
+
+    items: list[str] = []
+    seen: set[str] = set()
+    for raw_item in raw_items:
+        if raw_item is None:
+            continue
+        item = str(raw_item).strip()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+    return tuple(items)
+
+
+def _stable_json(value: Any, *, empty: Any) -> str:
+    normalized = empty if value in (None, "") else value
+    return json.dumps(
+        normalized,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+
+
+def _percentile(values: Sequence[float], probability: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    if len(ordered) == 1:
+        return float(ordered[0])
+    position = (len(ordered) - 1) * probability
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return float(ordered[lower])
+    fraction = position - lower
+    return float(ordered[lower] + (ordered[upper] - ordered[lower]) * fraction)
 
 
 def normalize_text(value: str) -> str:
@@ -366,6 +437,7 @@ def _case_has_evidence_constraints(case: MaintenanceEvalCase) -> bool:
 def _case_to_evidence_turn(case: MaintenanceEvalCase) -> MaintenanceEvalTurn:
     return MaintenanceEvalTurn(
         query=case.query,
+        graph_dependency=case.graph_dependency,
         task_type=case.task_type,
         intent_action=case.intent_action,
         target_section=case.target_section,
@@ -437,6 +509,7 @@ def evaluate_case_output(
 ) -> dict[str, Any]:
     answer = generated_answer or ""
     evidence_images = evidence_images or []
+    metadata = metadata or {}
 
     matched_required = _matched_phrases(case.required_nuggets, answer)
     matched_optional = _matched_phrases(case.optional_nuggets, answer)
@@ -460,21 +533,60 @@ def evaluate_case_output(
 
     image_metrics = _evaluate_images(case, evidence_images, answer)
     evidence_metrics = _evaluate_evidence(case, answer, metadata)
-    final_pass = bool(
-        grounding_pass
-        and refusal_pass
-        and procedure_order_pass
-        and image_metrics["image_pass"]
-        and (
-            not evidence_metrics["evidence_score_available"]
-            or evidence_metrics["evidence_final_pass"]
+    graph_evidence_ids = _stable_string_items(metadata.get("graph_evidence_ids"))
+    graph_evidence_used_ids = _stable_string_items(metadata.get("graph_evidence_used_ids"))
+    graph_relationship_types = _stable_string_items(metadata.get("graph_relationship_types"))
+    graph_provenance_statuses = _stable_string_items(metadata.get("graph_provenance_statuses"))
+    graph_binding_ids: set[str] = set()
+    raw_bindings = metadata.get("claim_evidence_bindings") or []
+    if isinstance(raw_bindings, str):
+        try:
+            raw_bindings = json.loads(raw_bindings)
+        except json.JSONDecodeError:
+            raw_bindings = []
+    if isinstance(raw_bindings, Mapping):
+        raw_bindings = [raw_bindings]
+    for binding in raw_bindings if isinstance(raw_bindings, Sequence) else []:
+        if not isinstance(binding, Mapping) or binding.get("emitted") is False:
+            continue
+        graph_binding_ids.update(
+            evidence_id
+            for evidence_id in _stable_string_items(binding.get("evidence_ids"))
+            if evidence_id.startswith("graph:")
         )
-        and not error
+    graph_required_mechanism_failures: list[str] = []
+    if case.graph_dependency.strip().lower() == "required":
+        if int(metadata.get("graph_candidate_count") or 0) <= 0:
+            graph_required_mechanism_failures.append("graph_candidate_count")
+        if int(metadata.get("graph_qualified_count") or 0) <= 0:
+            graph_required_mechanism_failures.append("graph_qualified_count")
+        if not graph_evidence_used_ids:
+            graph_required_mechanism_failures.append("graph_evidence_used_count")
+        if not graph_binding_ids.intersection(graph_evidence_used_ids):
+            graph_required_mechanism_failures.append("graph_claim_binding_count")
+    graph_required_mechanism_pass = not graph_required_mechanism_failures
+    answer_correct_pass = bool(grounding_pass and refusal_pass and not error)
+    evidence_pass = bool(
+        not evidence_metrics["evidence_score_available"]
+        or evidence_metrics["evidence_final_pass"]
+    )
+    delivery_pass = bool(procedure_order_pass and image_metrics["image_pass"])
+    mechanism_pass = bool(graph_required_mechanism_pass)
+    final_pass = bool(
+        answer_correct_pass
+        and evidence_pass
+        and delivery_pass
+        and mechanism_pass
     )
 
     return {
         "id": case.case_id,
         "case_id": case.case_id,
+        "schema_version": case.schema_version,
+        "split": case.split,
+        "question_type": case.question_type,
+        "graph_dependency": case.graph_dependency,
+        "question_origin": case.question_origin,
         "turn_index": 1,
         "turn_count": 1,
         "request_count": 1,
@@ -496,6 +608,39 @@ def evaluate_case_output(
             constraint.forbidden_without_evidence_patterns
             for constraint in case.claim_constraints
         ),
+        "rag_variant": str(metadata.get("rag_variant") or ""),
+        "graph_candidate_query_count": int(metadata.get("graph_candidate_query_count") or 0),
+        "graph_candidate_count": int(metadata.get("graph_candidate_count") or 0),
+        "graph_candidate_status": str(metadata.get("graph_candidate_status") or ""),
+        "graph_candidate_reason": str(metadata.get("graph_candidate_reason") or ""),
+        "graph_retrieval_status": str(metadata.get("graph_retrieval_status") or ""),
+        "graph_retrieval_reason": str(metadata.get("graph_retrieval_reason") or ""),
+        "graph_qualified_count": int(metadata.get("graph_qualified_count") or 0),
+        "graph_routing_only_count": int(metadata.get("graph_routing_only_count") or 0),
+        "graph_rejected_count": int(metadata.get("graph_rejected_count") or 0),
+        "graph_evidence_ids": ";".join(graph_evidence_ids),
+        "claim_evidence_bindings": _stable_json(
+            metadata.get("claim_evidence_bindings"),
+            empty=[],
+        ),
+        "graph_evidence_used_ids": ";".join(graph_evidence_used_ids),
+        "graph_evidence_used_count": len(graph_evidence_used_ids),
+        "graph_required_mechanism_pass": graph_required_mechanism_pass,
+        "graph_required_mechanism_failures": ";".join(graph_required_mechanism_failures),
+        "evaluation_route_contract_applied": bool(
+            metadata.get("evaluation_route_contract_applied")
+        ),
+        "route_contract_signature": str(metadata.get("route_contract_signature") or ""),
+        "graph_relationship_types": ";".join(graph_relationship_types),
+        "graph_provenance_statuses": ";".join(graph_provenance_statuses),
+        "graph_retrieval_latency_ms": int(metadata.get("graph_retrieval_latency_ms") or 0),
+        "graph_tool_call_count": int(metadata.get("graph_tool_call_count") or 0),
+        "graph_tools_used": ";".join(_stable_string_items(metadata.get("graph_tools_used"))),
+        "graph_review_enabled": bool(metadata.get("graph_review_enabled")),
+        "input_tokens": _metadata_number(metadata, "input_tokens", "prompt_tokens"),
+        "output_tokens": _metadata_number(metadata, "output_tokens", "completion_tokens"),
+        "total_tokens": _metadata_number(metadata, "total_tokens"),
+        "cost": _metadata_number(metadata, "cost", "cost_usd", "estimated_cost"),
         "generated_answer": answer,
         "required_nuggets": "；".join(case.required_nuggets),
         "matched_required_nuggets": "；".join(matched_required),
@@ -509,6 +654,10 @@ def evaluate_case_output(
         "hit_forbidden_claims": "；".join(hit_forbidden),
         "forbidden_claim_pass": forbidden_claim_pass,
         "refusal_pass": refusal_pass,
+        "answer_correct_pass": answer_correct_pass,
+        "evidence_pass": evidence_pass,
+        "delivery_pass": delivery_pass,
+        "mechanism_pass": mechanism_pass,
         "expected_step_order": "；".join(case.expected_step_order),
         "step_positions": ";".join(str(pos) for pos in step_positions),
         "procedure_order_pass": procedure_order_pass,
@@ -539,11 +688,16 @@ def summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     procedure_rows = [row for row in rows if str(row.get("expected_step_order") or "").strip()]
     image_rows = [row for row in rows if bool(row.get("image_eval_required"))]
     latency_rows = [row for row in rows if row.get("latency_ms") not in (None, "")]
+    latency_values = [float(row.get("latency_ms") or 0) for row in latency_rows]
 
     summary = {
         "case_count": len(rows),
         "answerable_case_count": len(answerable_rows),
         "final_pass_rate": rate("final_pass"),
+        "answer_correct_pass_rate": rate("answer_correct_pass"),
+        "evidence_pass_rate": rate("evidence_pass"),
+        "delivery_pass_rate": rate("delivery_pass"),
+        "mechanism_pass_rate": rate("mechanism_pass"),
         "avg_required_nugget_recall": avg("required_nugget_recall", answerable_rows),
         "grounding_pass_rate": rate("grounding_pass"),
         "unsupported_claim_free_rate": rate("forbidden_claim_pass"),
@@ -560,6 +714,8 @@ def summarize_rows(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "avg_latency_ms": round(sum(int(row.get("latency_ms") or 0) for row in latency_rows) / len(latency_rows), 2)
         if latency_rows
         else 0.0,
+        "p50_latency_ms": round(_percentile(latency_values, 0.5), 2),
+        "p95_latency_ms": round(_percentile(latency_values, 0.95), 2),
         "metric_descriptions_cn": METRIC_DESCRIPTIONS_CN,
     }
     return summary
@@ -570,6 +726,23 @@ def _api_request_headers(api_token: str) -> dict[str, str]:
     if api_token:
         headers["X-Api-Token"] = api_token
     return headers
+
+
+def _request_context_for_case(case: MaintenanceEvalCase) -> dict[str, Any]:
+    metadata = case.candidate_metadata or {}
+    contract = metadata.get("_paired_route_contract")
+    if not isinstance(contract, Mapping):
+        return {}
+    intent_decision = contract.get("intent_decision")
+    query_contract = contract.get("query_contract")
+    if not isinstance(intent_decision, Mapping) or not isinstance(query_contract, Mapping):
+        return {}
+    return {
+        "_evaluation_route_contract": {
+            "intent_decision": dict(intent_decision),
+            "query_contract": dict(query_contract),
+        }
+    }
 
 
 def _chat_api_request(
@@ -587,6 +760,9 @@ def _chat_api_request(
         "message": case.query,
         "stream": False,
     }
+    request_context = _request_context_for_case(case)
+    if request_context:
+        payload["context"] = request_context
     device_type = case.device_type or default_device_type
     document_id = case.document_id or default_document_id
     if device_type:
@@ -623,6 +799,12 @@ def _turn_to_eval_case(
 ) -> MaintenanceEvalCase:
     return MaintenanceEvalCase(
         case_id=f"{case.case_id}:t{turn_index}",
+        schema_version=case.schema_version,
+        split=case.split,
+        question_type=case.question_type,
+        graph_dependency=case.graph_dependency,
+        gold_answer=case.gold_answer,
+        question_origin=case.question_origin,
         query=turn.query,
         device_type=case.device_type,
         document_id=case.document_id,
@@ -673,6 +855,9 @@ def _chat_api_request_turn(
         "stream": False,
         "conversation_history": conversation_history,
     }
+    request_context = _request_context_for_case(case)
+    if request_context:
+        payload["context"] = request_context
     device_type = case.device_type or default_device_type
     document_id = case.document_id or default_document_id
     if device_type:
@@ -762,6 +947,7 @@ def _run_multi_turn_case(
     default_document_id: str,
     api_token: str,
     trace_rows: list[dict[str, Any]] | None,
+    progress: bool = True,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     conversation_history: list[dict[str, str]] = []
@@ -803,14 +989,79 @@ def _run_multi_turn_case(
             result=result,
         )
         rows.append(row)
-        print(
-            f"  turn {turn_index}/{len(case.turns)} {turn_case.case_id} final={row['final_pass']} "
-            f"nugget={row['required_nugget_recall']} latency_ms={row['latency_ms']}",
-            flush=True,
-        )
+        if progress:
+            print(
+                f"  turn {turn_index}/{len(case.turns)} {turn_case.case_id} final={row['final_pass']} "
+                f"nugget={row['required_nugget_recall']} latency_ms={row['latency_ms']}",
+                flush=True,
+            )
         conversation_history.append({"role": "user", "content": turn.query})
         conversation_history.append({"role": "assistant", "content": result.answer})
     return rows
+
+
+def _run_one_case_isolated(
+    index: int,
+    case: MaintenanceEvalCase,
+    *,
+    mode: str,
+    endpoint: str,
+    timeout: int,
+    run_id: str,
+    default_device_type: str,
+    default_document_id: str,
+    api_token: str,
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """Run one case with private trace state; safe to execute in a worker."""
+    local_trace: list[dict[str, Any]] = []
+    if case.turns:
+        rows = _run_multi_turn_case(
+            case,
+            mode=mode,
+            endpoint=endpoint,
+            timeout=timeout,
+            run_id=run_id,
+            default_device_type=default_device_type,
+            default_document_id=default_document_id,
+            api_token=api_token,
+            trace_rows=local_trace,
+            progress=False,
+        )
+        return index, rows, local_trace
+
+    if mode == "api":
+        result = _chat_api_request(
+            endpoint,
+            case,
+            timeout,
+            session_id=_session_id(run_id, case.case_id),
+            default_device_type=default_device_type,
+            default_document_id=default_document_id,
+            api_token=api_token,
+        )
+    else:
+        result = CaseRunResult(
+            answer=case.candidate_answer,
+            evidence_images=case.candidate_images,
+            metadata=case.candidate_metadata,
+        )
+    row = evaluate_case_output(
+        case,
+        result.answer,
+        result.evidence_images,
+        latency_ms=result.latency_ms,
+        error=result.error,
+        metadata=result.metadata,
+    )
+    _decorate_turn_row(row, case, 1)
+    _append_trace_row(
+        local_trace,
+        case=case,
+        turn_index=1,
+        row=row,
+        result=result,
+    )
+    return index, [row], local_trace
 
 
 def run_cases(
@@ -824,14 +1075,35 @@ def run_cases(
     default_document_id: str = "",
     api_token: str = "",
     trace_rows: list[dict[str, Any]] | None = None,
+    concurrency: int = 4,
 ) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
     active_run_id = run_id or uuid.uuid4().hex
-    for index, case in enumerate(cases, start=1):
-        if case.turns:
-            print(f"{index}/{len(cases)} {case.case_id} [multi-turn x{len(case.turns)}]", flush=True)
-            rows.extend(
-                _run_multi_turn_case(
+    case_list = list(cases)
+    if not case_list:
+        return []
+    worker_count = max(1, min(int(concurrency or 1), len(case_list)))
+    completed: dict[int, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}
+
+    if worker_count == 1:
+        for index, case in enumerate(case_list, start=1):
+            result = _run_one_case_isolated(
+                index,
+                case,
+                mode=mode,
+                endpoint=endpoint,
+                timeout=timeout,
+                run_id=active_run_id,
+                default_device_type=default_device_type,
+                default_document_id=default_document_id,
+                api_token=api_token,
+            )
+            completed[result[0]] = (result[1], result[2])
+    else:
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="maintenance-eval") as executor:
+            futures = [
+                executor.submit(
+                    _run_one_case_isolated,
+                    index,
                     case,
                     mode=mode,
                     endpoint=endpoint,
@@ -840,49 +1112,30 @@ def run_cases(
                     default_device_type=default_device_type,
                     default_document_id=default_document_id,
                     api_token=api_token,
-                    trace_rows=trace_rows,
                 )
-            )
-            continue
-        if mode == "api":
-            result = _chat_api_request(
-                endpoint,
-                case,
-                timeout,
-                session_id=_session_id(active_run_id, case.case_id),
-                default_device_type=default_device_type,
-                default_document_id=default_document_id,
-                api_token=api_token,
-            )
+                for index, case in enumerate(case_list, start=1)
+            ]
+            for future in as_completed(futures):
+                result = future.result()
+                completed[result[0]] = (result[1], result[2])
+
+    rows: list[dict[str, Any]] = []
+    for index in sorted(completed):
+        case = case_list[index - 1]
+        case_rows, case_trace = completed[index]
+        rows.extend(case_rows)
+        if trace_rows is not None:
+            trace_rows.extend(case_trace)
+        if case.turns:
+            print(f"{index}/{len(case_list)} {case.case_id} [multi-turn x{len(case.turns)}]", flush=True)
         else:
-            result = CaseRunResult(
-                answer=case.candidate_answer,
-                evidence_images=case.candidate_images,
-                metadata=case.candidate_metadata,
+            row = case_rows[0]
+            print(
+                f"{index}/{len(case_list)} {case.case_id} final={row['final_pass']} "
+                f"nugget={row['required_nugget_recall']} order={row['procedure_order_pass']} "
+                f"image={row['image_pass']} latency_ms={row['latency_ms']}",
+                flush=True,
             )
-        row = evaluate_case_output(
-            case,
-            result.answer,
-            result.evidence_images,
-            latency_ms=result.latency_ms,
-            error=result.error,
-            metadata=result.metadata,
-        )
-        _decorate_turn_row(row, case, 1)
-        _append_trace_row(
-            trace_rows,
-            case=case,
-            turn_index=1,
-            row=row,
-            result=result,
-        )
-        rows.append(row)
-        print(
-            f"{index}/{len(cases)} {case.case_id} final={row['final_pass']} "
-            f"nugget={row['required_nugget_recall']} order={row['procedure_order_pass']} "
-            f"image={row['image_pass']} latency_ms={row['latency_ms']}",
-            flush=True,
-        )
     return rows
 
 
@@ -951,6 +1204,26 @@ def aggregate_case_rows(
                     for index, member in enumerate(members, start=1)
                 ),
                 "latency_ms": sum(int(member.get("latency_ms") or 0) for member in members),
+                "input_tokens": sum(
+                    int(member.get("input_tokens") or 0) for member in members
+                )
+                if any(member.get("input_tokens") not in (None, "") for member in members)
+                else "",
+                "output_tokens": sum(
+                    int(member.get("output_tokens") or 0) for member in members
+                )
+                if any(member.get("output_tokens") not in (None, "") for member in members)
+                else "",
+                "total_tokens": sum(
+                    int(member.get("total_tokens") or 0) for member in members
+                )
+                if any(member.get("total_tokens") not in (None, "") for member in members)
+                else "",
+                "cost": round(
+                    sum(float(member.get("cost") or 0) for member in members), 8
+                )
+                if any(member.get("cost") not in (None, "") for member in members)
+                else "",
                 "error": "；".join(
                     str(member.get("error") or "")
                     for member in members
@@ -1022,6 +1295,10 @@ def summarize_results(
     summary = summarize_rows(case_rows)
     metric_counts = {
         "final_pass_rate": _metric_count(case_rows, "final_pass"),
+        "answer_correct_pass_rate": _metric_count(case_rows, "answer_correct_pass"),
+        "evidence_pass_rate": _metric_count(case_rows, "evidence_pass"),
+        "delivery_pass_rate": _metric_count(case_rows, "delivery_pass"),
+        "mechanism_pass_rate": _metric_count(case_rows, "mechanism_pass"),
         "forbidden_claim_pass_rate": _metric_count(case_rows, "forbidden_claim_pass"),
         "refusal_pass_rate": _metric_count(case_rows, "refusal_pass"),
         "procedure_order_pass_rate": _metric_count(
@@ -1131,6 +1408,17 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     fieldnames = [
         "id",
         "case_id",
+        "original_case_id",
+        "repetition",
+        "pair_position",
+        "request_sequence",
+        "variant_label",
+        "route_contract_frozen",
+        "schema_version",
+        "split",
+        "question_type",
+        "graph_dependency",
+        "question_origin",
         "turn_index",
         "turn_count",
         "request_count",
@@ -1149,6 +1437,34 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "source_request_mode",
         "claim_constraint_count",
         "has_forbidden_without_evidence",
+        "rag_variant",
+        "graph_candidate_query_count",
+        "graph_candidate_count",
+        "graph_candidate_status",
+        "graph_candidate_reason",
+        "graph_retrieval_status",
+        "graph_retrieval_reason",
+        "graph_qualified_count",
+        "graph_routing_only_count",
+        "graph_rejected_count",
+        "graph_evidence_ids",
+        "claim_evidence_bindings",
+        "graph_evidence_used_ids",
+        "graph_evidence_used_count",
+        "graph_required_mechanism_pass",
+        "graph_required_mechanism_failures",
+        "evaluation_route_contract_applied",
+        "route_contract_signature",
+        "graph_relationship_types",
+        "graph_provenance_statuses",
+        "graph_retrieval_latency_ms",
+        "graph_tool_call_count",
+        "graph_tools_used",
+        "graph_review_enabled",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+        "cost",
         "generated_answer",
         "required_nuggets",
         "matched_required_nuggets",
@@ -1160,10 +1476,14 @@ def write_rows(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         "hit_forbidden_claims",
         "forbidden_claim_pass",
         "refusal_pass",
+        "answer_correct_pass",
         "expected_step_order",
         "step_positions",
         "procedure_order_pass",
         "grounding_pass",
+        "evidence_pass",
+        "delivery_pass",
+        "mechanism_pass",
         "expected_image_pages",
         "retrieved_image_pages",
         "forbidden_image_pages",
@@ -1261,6 +1581,7 @@ def build_run_manifest(
     timeout: int,
     default_device_type: str,
     default_document_id: str,
+    concurrency: int = 1,
 ) -> dict[str, Any]:
     dataset_files = []
     for path in dataset_paths:
@@ -1283,6 +1604,7 @@ def build_run_manifest(
             "LLM_TEMPERATURE",
             "LLM_TOP_P",
             "LLM_SEED",
+            "RAG_VARIANT",
         )
         if os.environ.get(key)
     }
@@ -1293,11 +1615,17 @@ def build_run_manifest(
         "mode": mode,
         "endpoint": _sanitized_endpoint(endpoint),
         "timeout_seconds": timeout,
+        "concurrency": max(1, int(concurrency or 1)),
         "default_device_type": default_device_type,
         "default_document_id": default_document_id,
         "case_count": len(cases),
         "turn_count": len(turn_rows),
         "request_count": len(turn_rows),
+        "rag_variants": sorted({
+            str(row.get("rag_variant") or "")
+            for row in turn_rows
+            if str(row.get("rag_variant") or "")
+        }),
         "dataset_files": dataset_files,
         "model_config": model_config,
     }
@@ -1309,6 +1637,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("fixture", "api"), default="api", help="Run against fixture answers or HTTP API.")
     parser.add_argument("--endpoint", default="http://127.0.0.1:8000/ai/chat", help="Chat API endpoint for --mode api.")
     parser.add_argument("--timeout", type=int, default=120, help="Per-case HTTP timeout in seconds.")
+    parser.add_argument(
+        "--concurrency",
+        type=int,
+        default=4,
+        help="Maximum number of independent cases to run concurrently; turns within one case stay sequential.",
+    )
     parser.add_argument("--limit", type=int, default=0, help="Optional case limit.")
     parser.add_argument("--default-device-type", default="", help="Device scope used when a case omits device_type.")
     parser.add_argument("--default-document-id", default="", help="Document scope used when a case omits document_id.")
@@ -1337,6 +1671,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         default_document_id=args.default_document_id,
         api_token=api_token,
         trace_rows=trace_rows,
+        concurrency=args.concurrency,
     )
     case_rows = aggregate_case_rows(cases, turn_rows)
     summary = summarize_results(case_rows, turn_rows)
@@ -1351,6 +1686,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         timeout=args.timeout,
         default_device_type=args.default_device_type,
         default_document_id=args.default_document_id,
+        concurrency=args.concurrency,
     )
     out_dir = Path(args.out_dir)
     write_rows(out_dir / f"{args.result_name}.csv", case_rows)

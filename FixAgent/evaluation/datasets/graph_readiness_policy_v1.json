@@ -1,0 +1,22 @@
+{
+  "policy_version": "1.0",
+  "minimum_counts": {
+    "device_count": 1,
+    "component_count": 1,
+    "fault_count": 1,
+    "owns_count": 1,
+    "causes_count": 1,
+    "complete_path_count": 1
+  },
+  "minimum_coverage": {
+    "component_embedding_coverage": 1.0,
+    "fault_embedding_coverage": 1.0,
+    "path_identity_coverage": 1.0,
+    "path_provenance_coverage": 0.95,
+    "chunk_round_trip_coverage": 1.0
+  },
+  "maximum_counts": {
+    "orphan_fault_count": 0,
+    "orphan_solution_count": 0
+  }
+}

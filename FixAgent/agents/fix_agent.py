@@ -33,11 +33,15 @@ from agents.base_agent import (
     AgentInput,
     AgentOutput,
     AgentRunContext,
-    make_experiment_tool_profile,
 )
 from services.llm.output_style import USER_VISIBLE_PLAIN_TEXT_RULES
 from services.retrieval.evidence import EvidenceLedger
+from services.retrieval.manual_scope import (
+    apply_authoritative_manual_scope,
+    build_manual_retrieval_kwargs,
+)
 from services.retrieval.response_plan import build_response_plan, finalize_response
+from services.retrieval.evidence_fusion import fuse_evidence_support
 from services.visual_query_context import build_visual_query_context
 
 logger = logging.getLogger(__name__)
@@ -205,8 +209,18 @@ def build_fix_agent_system_prompt() -> str:
 _ALWAYS_ALLOWED_TOOLS = {"read_memory", "save_memory", "delete_memory"}
 _EXPERIMENT_TOOL_SETS = {
     "rag_only": {"knowledge_retrieval"},
-    "rag_kg": {"knowledge_retrieval", "java_graph_diagnosis_path"},
+    "rag_kg": {
+        "knowledge_retrieval",
+        "java_graph_diagnosis_path",
+        "java_graph_device_search",
+        "component_reverse_device",
+    },
 }
+_GRAPH_RAG_TOOL_NAMES = frozenset({
+    "java_graph_diagnosis_path",
+    "java_graph_device_search",
+    "component_reverse_device",
+})
 
 
 class FixAgent(BaseAgent):
@@ -262,6 +276,56 @@ class FixAgent(BaseAgent):
             "conflict：列出冲突值及来源，不自行选择。\n"
             "普通问题不要固定以‘根据手册第X页’开头；只有用户明确索要原文或页码时采用引用式表达。"
         )
+        graph_batch = run_context.graph_pre_retrieval or {}
+        graph_status = str(graph_batch.get("status") or "")
+        qualified_graph = [
+            item for item in graph_batch.get("evidence") or []
+            if isinstance(item, dict) and item.get("qualification") == "qualified"
+        ]
+        if qualified_graph:
+            # 服务器预检索已经完成图谱查询；移除基础提示中会诱导重复调用的工具说明。
+            graph_tool_names = _GRAPH_RAG_TOOL_NAMES
+            prompt = "\n".join(
+                line for line in prompt.splitlines()
+                if not any(tool_name in line for tool_name in graph_tool_names)
+            )
+        manual_only_experiment = (
+            run_context.experiment_tool_profile == "rag_only"
+            or (
+                run_context.experiment_tool_profile == "rag_kg"
+                and bool(graph_status)
+                and not qualified_graph
+            )
+        )
+        if manual_only_experiment:
+            prompt += (
+                "\n\n【无图谱消融模式】\n"
+                "本轮只能使用 knowledge_retrieval 获取维修手册证据。"
+                "不得调用或声称使用知识图谱、图谱候选、图谱路径、设备反查或流程推荐。"
+                "设备不明确时，只能依据手册检索结果克制回答或请求补充设备信息。"
+            )
+        elif run_context.experiment_tool_profile == "rag_kg" and qualified_graph:
+            prompt += (
+                "\n\n【图谱预检索已完成】\n"
+                "服务器已经完成本轮图谱查询，结构化图谱证据将在下方注入。"
+                "不要再次调用图谱工具；如需补充检查方法、拆装步骤、参数或安全要求，"
+                "只能调用 knowledge_retrieval 获取维修手册证据。"
+            )
+        elif run_context.experiment_tool_profile == "rag_kg":
+            prompt += (
+                "\n\n【图谱增强消融模式】\n"
+                "本轮只允许使用 knowledge_retrieval、java_graph_diagnosis_path、"
+                "java_graph_device_search 和 component_reverse_device。"
+                "不得调用流程推荐、记忆或其他结构化知识工具。"
+            )
+        if qualified_graph:
+            prompt += (
+                "\n\n【服务器预检索图谱证据】\n"
+                "以下 JSON 是服务器已限定设备/部件/故障范围后取得的结构化事实，只能用于设备身份、"
+                "部件归属、可能故障、故障关系和已验证方案。不得据此补写检查方法、拆装步骤、参数、"
+                "安全要求或图片内容。\n"
+                + json.dumps(qualified_graph, ensure_ascii=False, sort_keys=True)
+            )
         return prompt
 
     def get_tools(self) -> List[Any]:
@@ -300,12 +364,29 @@ class FixAgent(BaseAgent):
         tools = self._tools or []
         if run_context.experiment_tool_profile:
             allowed_set = _EXPERIMENT_TOOL_SETS[run_context.experiment_tool_profile]
-            return [tool for tool in tools if tool.name in allowed_set]
-        allowed = run_context.allowed_tools
-        if allowed is None:
-            return tools
-        allowed_set = set(allowed) | _ALWAYS_ALLOWED_TOOLS
-        return [tool for tool in tools if tool.name in allowed_set]
+            selected = [tool for tool in tools if tool.name in allowed_set]
+        else:
+            allowed = run_context.allowed_tools
+            if allowed is None:
+                selected = list(tools)
+            else:
+                allowed_set = set(allowed) | _ALWAYS_ALLOWED_TOOLS
+                selected = [tool for tool in tools if tool.name in allowed_set]
+        graph_batch = run_context.graph_pre_retrieval or {}
+        graph_status = str(graph_batch.get("status") or "")
+        diagnostics = graph_batch.get("diagnostics")
+        qualified_count = (
+            int(diagnostics.get("qualified_count") or 0)
+            if isinstance(diagnostics, dict)
+            else 0
+        )
+        # Server pre-retrieval is the only path query in a turn. Empty or
+        # unavailable results degrade to the manual chain without a retry.
+        if graph_status or (
+            run_context.experiment_tool_profile == "rag_kg" and not run_context.graph_scope
+        ):
+            selected = [tool for tool in selected if tool.name not in _GRAPH_RAG_TOOL_NAMES]
+        return selected
 
     def _customize_tool_kwargs_for_run(
         self,
@@ -337,6 +418,17 @@ class FixAgent(BaseAgent):
                 kwargs["fault_description"] = " ".join(str(item) for item in fault_signs)
             if device_clues and not kwargs.get("keyword"):
                 kwargs["keyword"] = " ".join(str(item) for item in device_clues[:2])
+        if tool_name == "java_graph_diagnosis_path":
+            graph_scope = run_context.graph_scope or {}
+            for scope_key in (
+                "allowed_path_ids",
+                "allowed_device_ids",
+                "allowed_component_ids",
+                "allowed_fault_ids",
+            ):
+                kwargs.pop(scope_key, None)
+                allowed = list(graph_scope.get(scope_key) or ())
+                kwargs[scope_key] = allowed
         if tool_name == "knowledge_retrieval" and run_context.enhanced_query:
             query = str(kwargs.get("query") or "").strip()
             kwargs["query"] = run_context.enhanced_query if not query else f"{query} {run_context.enhanced_query}"
@@ -346,18 +438,10 @@ class FixAgent(BaseAgent):
             if hint and hint not in query:
                 kwargs["query"] = hint if not query else f"{query} {hint}"
         if tool_name == "knowledge_retrieval":
-            # 强制范围隔离：用会话绑定的 scope 覆盖 LLM 传入的范围参数，杜绝跨设备/跨手册串台
-            scope = run_context.retrieval_scope or {}
-            if scope.get("device_type"):
-                kwargs["device_type"] = scope["device_type"]
-            if scope.get("document_id"):
-                kwargs["document_id"] = scope["document_id"]
-            if scope.get("parent_section_id"):
-                kwargs["parent_section_id"] = scope["parent_section_id"]
-            if scope.get("allowed_section_ids"):
-                kwargs["allowed_section_ids"] = list(scope["allowed_section_ids"])
-            if scope.get("allowed_evidence_refs"):
-                kwargs["allowed_evidence_refs"] = list(scope["allowed_evidence_refs"])
+            kwargs = apply_authoritative_manual_scope(
+                kwargs,
+                run_context.retrieval_scope,
+            )
         return kwargs
 
     async def _run_with_react_contextual(
@@ -372,6 +456,7 @@ class FixAgent(BaseAgent):
             return await self._run_knowledge_inventory_direct_for_run(run_context)
 
         output = await super().run_with_react(input_data, max_iterations, _event_sink=_event_sink)
+        self._attach_pre_retrieved_graph(output, run_context)
         if run_context.intent_decision:
             output.metadata["intent_decision"] = run_context.intent_decision
         self._attach_minimum_requirement_check(output, run_context)
@@ -398,10 +483,57 @@ class FixAgent(BaseAgent):
         # A 硬兜底：evidence-required 意图却没调 knowledge_retrieval → 强制检索 + 据证据重答
         forced = await self.grounded_fallback_if_unretrieved(input_data, output.tools_used or [])
         if forced is not None:
+            self._attach_pre_retrieved_graph(forced, run_context)
             return forced
 
         output = self._finalize_react_knowledge_output(output, run_context)
         return output
+
+    @staticmethod
+    def _attach_pre_retrieved_graph(
+        output: AgentOutput,
+        run_context: AgentRunContext,
+    ) -> None:
+        batch = dict(run_context.graph_pre_retrieval or {})
+        status = str(batch.get("status") or "")
+        evidence = [
+            item for item in batch.get("evidence") or []
+            if isinstance(item, dict) and item.get("qualification") == "qualified"
+        ]
+        if status != "found" or not evidence:
+            return
+        trace = output.metadata.setdefault("react_trace", [])
+        if not isinstance(trace, list):
+            trace = []
+            output.metadata["react_trace"] = trace
+        for step in trace:
+            calls = step.get("tool_calls") if isinstance(step, dict) else None
+            if any(
+                isinstance(call, dict)
+                and call.get("name") == "java_graph_diagnosis_path"
+                and (call.get("arguments") or {}).get("server_controlled") is True
+                for call in calls or []
+            ):
+                return
+        trace.insert(0, {
+            "iteration": 0,
+            "action": "server_pre_retrieval",
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "arguments": {
+                    "server_controlled": True,
+                    "graph_scope": dict(run_context.graph_scope or {}),
+                },
+                "executed": True,
+                "execution_status": "server_pre_retrieval",
+                "result_summary": f"{status}: {batch.get('reason') or ''}".strip(),
+                "result_data": batch,
+                "evidence": list(batch.get("evidence") or []),
+            }],
+        })
+        output.metadata["graph_pre_retrieval"] = batch
+        if "java_graph_diagnosis_path" not in output.tools_used:
+            output.tools_used.append("java_graph_diagnosis_path")
 
     async def grounded_fallback_if_unretrieved(
         self,
@@ -438,18 +570,7 @@ class FixAgent(BaseAgent):
             return None
         scope = run_context.retrieval_scope or {}
         try:
-            retrieval_kwargs = {
-                "query": query,
-                "top_k": 5,
-                "document_id": scope.get("document_id"),
-                "device_type": scope.get("device_type"),
-            }
-            if scope.get("parent_section_id"):
-                retrieval_kwargs["parent_section_id"] = scope["parent_section_id"]
-            if scope.get("allowed_section_ids"):
-                retrieval_kwargs["allowed_section_ids"] = list(scope["allowed_section_ids"])
-            if scope.get("allowed_evidence_refs"):
-                retrieval_kwargs["allowed_evidence_refs"] = list(scope["allowed_evidence_refs"])
+            retrieval_kwargs = build_manual_retrieval_kwargs(query, scope, top_k=5)
             retrieval = await get_knowledge_retrieval_tool().run(**retrieval_kwargs)
         except Exception as exc:
             logger.warning("[fix_agent][forced_retrieval] 检索异常: %s", exc)
@@ -479,9 +600,32 @@ class FixAgent(BaseAgent):
                 "result_data": serialized_evidence,
             }],
         }]
+        graph_batch = dict(run_context.graph_pre_retrieval or {})
+        graph_evidence = [
+            item for item in graph_batch.get("evidence") or []
+            if isinstance(item, dict) and item.get("qualification") == "qualified"
+        ]
+        if str(graph_batch.get("status") or "") == "found" and graph_evidence:
+            trace.insert(0, {
+                "iteration": 0,
+                "action": "server_pre_retrieval",
+                "tool_calls": [{
+                    "name": "java_graph_diagnosis_path",
+                    "arguments": {
+                        "server_controlled": True,
+                        "graph_scope": dict(run_context.graph_scope or {}),
+                    },
+                    "executed": True,
+                    "execution_status": "server_pre_retrieval",
+                    "result_summary": f"{graph_batch.get('status')}: {graph_batch.get('reason') or ''}".strip(),
+                    "result_data": graph_batch,
+                    "evidence": list(graph_batch.get("evidence") or []),
+                }],
+            })
         ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
         first_metadata = getattr(evidence_items[0], "metadata", {}) or {}
         evidence_bundle = dict(first_metadata.get("evidence_bundle") or {})
+        evidence_bundle = fuse_evidence_support(query, evidence_bundle, ledger)
         response_plan = build_response_plan(query, evidence_bundle, ledger)
         if response_plan.coverage_status == "conflict":
             return self._response_plan_output(
@@ -511,8 +655,15 @@ class FixAgent(BaseAgent):
             item.model_dump() if hasattr(item, "model_dump") else item
             for item in evidence_items
         ]
-        trace[0]["tool_calls"][0]["result_data"] = serialized_evidence
+        manual_call = next(
+            call
+            for step in trace
+            for call in step.get("tool_calls") or []
+            if call.get("name") == "knowledge_retrieval"
+        )
+        manual_call["result_data"] = serialized_evidence
         ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
+        evidence_bundle = fuse_evidence_support(query, evidence_bundle, ledger)
         response_plan = build_response_plan(query, evidence_bundle, ledger)
         evidence_text = "\n\n".join(
             self._forced_evidence_to_text(item, idx)
@@ -592,10 +743,18 @@ class FixAgent(BaseAgent):
         retrieval_top_score: float = 0.0,
         low_confidence: bool = False,
     ) -> AgentOutput:
+        graph_batch = dict(run_context.graph_pre_retrieval or {})
+        graph_evidence = [
+            item for item in graph_batch.get("evidence") or []
+            if isinstance(item, dict) and item.get("qualification") == "qualified"
+        ]
+        used_tools = ["knowledge_retrieval"]
+        if str(graph_batch.get("status") or "") == "found" and graph_evidence:
+            used_tools.append("java_graph_diagnosis_path")
         return AgentOutput(
             agent_name=self.name,
             message=message,
-            tools_used=["knowledge_retrieval"],
+            tools_used=used_tools,
             metadata={
                 "execution_mode": "forced_retrieval_grounded",
                 "react_trace": trace,
@@ -603,6 +762,8 @@ class FixAgent(BaseAgent):
                 "intent_decision": run_context.intent_decision,
                 "low_confidence_retrieval": low_confidence,
                 "retrieval_top_score": retrieval_top_score,
+                "graph_pre_retrieval": graph_batch,
+                "graph_scope": dict(run_context.graph_scope or {}),
                 **plan.to_metadata(),
                 "response_audit": {
                     "passed": audit_passed,
@@ -622,7 +783,7 @@ class FixAgent(BaseAgent):
         if "knowledge_retrieval" not in set(output.tools_used or []):
             return output
         trace = output.metadata.get("react_trace") or []
-        bundle = self._latest_knowledge_bundle(trace)
+        bundle = self._merged_knowledge_bundle(trace)
         if not bundle:
             return output
         ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
@@ -630,6 +791,7 @@ class FixAgent(BaseAgent):
         audited = finalize_response(plan, output.message)
         output.message = audited.answer
         output.metadata.update(plan.to_metadata())
+        output.metadata.update(audited.to_metadata())
         output.metadata["response_audit"] = {
             "passed": audited.passed,
             "violations": list(audited.violations),
@@ -638,24 +800,199 @@ class FixAgent(BaseAgent):
         return output
 
     @staticmethod
-    def _latest_knowledge_bundle(trace: list[dict[str, Any]]) -> dict[str, Any]:
-        for step in reversed(trace or []):
-            calls = step.get("tool_calls") if isinstance(step, dict) else None
-            for call in reversed(calls or []):
+    def _merged_knowledge_bundle(trace: list[dict[str, Any]]) -> dict[str, Any]:
+        calls: list[tuple[str, dict[str, Any]]] = []
+        for step in trace or []:
+            step_calls = step.get("tool_calls") if isinstance(step, dict) else None
+            for call in step_calls or []:
                 if not isinstance(call, dict) or call.get("name") != "knowledge_retrieval":
                     continue
+                bundle: dict[str, Any] = {}
                 for key in ("result_data", "data", "result"):
                     payload = call.get(key)
                     if isinstance(payload, dict):
-                        return dict(payload)
+                        bundle = dict(payload)
+                        break
                     if isinstance(payload, list):
                         for item in payload:
                             if not isinstance(item, dict):
                                 continue
                             metadata = item.get("metadata") or {}
-                            if isinstance(metadata.get("evidence_bundle"), dict):
-                                return dict(metadata["evidence_bundle"])
-        return {}
+                            nested = metadata.get("evidence_bundle") if isinstance(metadata, dict) else None
+                            if isinstance(nested, dict):
+                                bundle = dict(nested)
+                                break
+                        if bundle:
+                            break
+                if not bundle:
+                    continue
+                arguments = call.get("effective_arguments")
+                if not isinstance(arguments, dict):
+                    arguments = call.get("arguments")
+                fingerprint = ""
+                if isinstance(arguments, dict):
+                    fingerprint = str(arguments.get("scope_fingerprint") or "").strip()
+                if not fingerprint:
+                    fingerprint = str(bundle.get("scope_fingerprint") or "").strip()
+                calls.append((fingerprint, bundle))
+
+        if not calls:
+            return {}
+
+        # A later server-authoritative scope supersedes every earlier scope.
+        target_fingerprint = next(
+            (fingerprint for fingerprint, _ in reversed(calls) if fingerprint),
+            "",
+        )
+        selected = [
+            bundle
+            for fingerprint, bundle in calls
+            if not target_fingerprint or fingerprint == target_fingerprint
+        ]
+        if not selected:
+            return {}
+
+        merged = dict(selected[-1])
+
+        def row_key(row: dict[str, Any]) -> str:
+            metadata = row.get("metadata") if isinstance(row.get("metadata"), dict) else {}
+            document_id = str(
+                metadata.get("document_id") or row.get("document_id") or ""
+            ).strip()
+            for key in (
+                "evidence_id",
+                "doc_id",
+                "id",
+                "chunk_uid",
+                "source_chunk_uid",
+                "chunk_id",
+            ):
+                value = str(row.get(key) or metadata.get(key) or "").strip()
+                if value:
+                    return f"{document_id}:{key}:{value}"
+            return json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)
+
+        def merge_rows(field: str) -> list[dict[str, Any]]:
+            rows: list[dict[str, Any]] = []
+            seen: set[str] = set()
+            for bundle in selected:
+                for raw in bundle.get(field) or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    row = dict(raw)
+                    identity = row_key(row)
+                    if identity in seen:
+                        continue
+                    seen.add(identity)
+                    rows.append(row)
+            return rows
+
+        for field in (
+            "qualified_evidence",
+            "reference_evidence",
+            "excluded_evidence",
+            "conflicts",
+            "conflict_eligible",
+        ):
+            merged[field] = merge_rows(field)
+
+        aspect_order: list[str] = []
+        aspect_rows: dict[str, dict[str, Any]] = {}
+        all_aspect_ids: list[str] = []
+        for bundle in selected:
+            for raw in bundle.get("aspect_support") or []:
+                if not isinstance(raw, dict):
+                    continue
+                aspect_id = str(raw.get("aspect_id") or "").strip()
+                if not aspect_id:
+                    continue
+                if aspect_id not in all_aspect_ids:
+                    all_aspect_ids.append(aspect_id)
+                if aspect_id not in aspect_rows:
+                    aspect_order.append(aspect_id)
+                    aspect_rows[aspect_id] = dict(raw)
+                    aspect_rows[aspect_id]["evidence_ids"] = []
+                    aspect_rows[aspect_id]["supported"] = False
+                current = aspect_rows[aspect_id]
+                for key, value in raw.items():
+                    if key in {"supported", "evidence_ids"}:
+                        continue
+                    if current.get(key) in (None, "", [], {}):
+                        current[key] = value
+                current["supported"] = bool(current["supported"] or raw.get("supported"))
+                current["evidence_ids"] = list(dict.fromkeys([
+                    *current.get("evidence_ids", []),
+                    *(str(value) for value in raw.get("evidence_ids") or [] if str(value).strip()),
+                ]))
+            for aspect_id in bundle.get("missing_aspect_ids") or []:
+                value = str(aspect_id or "").strip()
+                if value and value not in all_aspect_ids:
+                    all_aspect_ids.append(value)
+
+        merged["aspect_support"] = [aspect_rows[aspect_id] for aspect_id in aspect_order]
+        supported_ids = [
+            aspect_id
+            for aspect_id in aspect_order
+            if aspect_rows[aspect_id].get("supported")
+        ]
+        merged["supported_aspect_ids"] = supported_ids
+        merged["missing_aspect_ids"] = [
+            aspect_id for aspect_id in all_aspect_ids if aspect_id not in supported_ids
+        ]
+
+        capabilities: dict[str, Any] = {}
+        for bundle in selected:
+            for key, value in (bundle.get("capabilities") or {}).items():
+                if isinstance(value, bool):
+                    capabilities[key] = bool(capabilities.get(key) or value)
+                elif isinstance(value, list):
+                    capabilities[key] = list(dict.fromkeys([
+                        *(capabilities.get(key) or []),
+                        *value,
+                    ]))
+                elif value not in (None, ""):
+                    capabilities[key] = value
+
+        conflicts = merged["conflict_eligible"] or merged["conflicts"]
+        qualified = merged["qualified_evidence"]
+        references = merged["reference_evidence"]
+        if conflicts:
+            coverage_status, coverage_reason = "conflict", "unresolved_conflict"
+        elif not qualified:
+            coverage_status, coverage_reason = "unsupported", "zero_qualified_evidence"
+        elif not supported_ids:
+            coverage_status, coverage_reason = "unsupported", "zero_supported_aspects"
+        elif merged["missing_aspect_ids"]:
+            coverage_status, coverage_reason = "partial", "missing_aspects"
+        else:
+            coverage_status, coverage_reason = "complete", "all_aspects_supported"
+
+        if conflicts:
+            capabilities["may_emit_exact_parameter"] = False
+            capabilities["may_emit_device_specific_procedure"] = False
+            capabilities["may_offer_generic_guidance"] = False
+        merged["capabilities"] = capabilities
+        merged["coverage_status"] = coverage_status
+        merged["coverage_reason"] = coverage_reason
+        merged["overall_status"] = (
+            "qualified"
+            if qualified and not conflicts
+            else "reference_only"
+            if references or conflicts
+            else "no_evidence"
+        )
+        merged["summary"] = {
+            **(merged.get("summary") or {}),
+            "qualified_count": len(qualified),
+            "reference_count": len(references),
+            "excluded_count": len(merged["excluded_evidence"]),
+        }
+        merged["scope_fingerprint"] = target_fingerprint
+        return merged
+
+    @staticmethod
+    def _latest_knowledge_bundle(trace: list[dict[str, Any]]) -> dict[str, Any]:
+        return FixAgent._merged_knowledge_bundle(trace)
 
     async def _generic_guidance_output(
         self,
@@ -801,10 +1138,34 @@ class FixAgent(BaseAgent):
 
     @staticmethod
     def _required_tools_for_policy(run_context: AgentRunContext) -> List[str]:
+        from services.routing.graph_policy import decide_graph_use
+
         decision = run_context.intent_decision or {}
         policy = decision.get("policy") or {}
         intent = decision.get("intent")
         required: List[str] = []
+        if run_context.experiment_tool_profile:
+            if (
+                intent in {
+                    "knowledge_query",
+                    "parameter_query",
+                    "fault_diagnosis",
+                    "maintenance_guidance",
+                    "procedure_planning",
+                    "document_understanding",
+                }
+                or policy.get("requires_knowledge_retrieval")
+                or decision.get("requires_knowledge_retrieval")
+            ):
+                required.append("knowledge_retrieval")
+            graph_decision = decide_graph_use(
+                "graph_full" if run_context.experiment_tool_profile == "rag_kg" else "no_graph",
+                decision,
+            )
+            graph_status = str((run_context.graph_pre_retrieval or {}).get("status") or "")
+            if graph_decision.pre_retrieval_enabled and not graph_status:
+                required.append("java_graph_diagnosis_path")
+            return list(dict.fromkeys(required))
         if intent == "knowledge_inventory":
             required.append("knowledge_inventory")
         if (
@@ -813,11 +1174,9 @@ class FixAgent(BaseAgent):
             or decision.get("requires_knowledge_retrieval")
         ):
             required.append("knowledge_retrieval")
-        if (
-            intent in {"fault_diagnosis", "maintenance_guidance", "procedure_planning"}
-            or policy.get("requires_graph_search")
-            or decision.get("requires_graph_search")
-        ):
+        graph_decision = decide_graph_use("production", decision)
+        graph_status = str((run_context.graph_pre_retrieval or {}).get("status") or "")
+        if graph_decision.pre_retrieval_enabled and not graph_status:
             required.append("java_graph_diagnosis_path")
         if intent in {"maintenance_guidance", "procedure_planning"}:
             required.append("procedure_recommend")

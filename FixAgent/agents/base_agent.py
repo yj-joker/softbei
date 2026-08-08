@@ -35,6 +35,36 @@ logger = logging.getLogger(__name__)
 
 _EXPERIMENT_PROFILE_CAPABILITY = object()
 _EXPERIMENT_TOOL_PROFILES = frozenset({"rag_only", "rag_kg"})
+_AUDIT_ARGUMENT_FIELDS = {
+    "knowledge_retrieval": frozenset({
+        "query",
+        "top_k",
+        "category",
+        "tags",
+        "document_id",
+        "parent_section_id",
+        "allowed_section_ids",
+        "allowed_evidence_refs",
+        "allowed_source_chunk_uids",
+        "pages",
+        "chunk_type",
+        "device_type",
+        "document_version",
+        "manual_type",
+    }),
+    "java_graph_diagnosis_path": frozenset({
+        "keyword",
+        "fault_description",
+        "component_description",
+        "limit",
+        "allowed_path_ids",
+        "allowed_device_ids",
+        "allowed_component_ids",
+        "allowed_fault_ids",
+    }),
+    "java_graph_device_search": frozenset({"keyword", "limit"}),
+    "component_reverse_device": frozenset({"component_description", "limit"}),
+}
 
 
 class _ExperimentToolProfile:
@@ -304,6 +334,8 @@ class AgentRunContext(BaseModel):
     intent_decision: Dict[str, Any] = Field(default_factory=dict)
     allowed_tools: Optional[List[str]] = None
     retrieval_scope: Dict[str, Any] = Field(default_factory=dict)
+    graph_scope: Dict[str, Any] = Field(default_factory=dict)
+    graph_pre_retrieval: Dict[str, Any] = Field(default_factory=dict)
     experiment_tool_profile: Optional[str] = None
     # 本轮用户消息毫秒时间戳：注入 save_memory 工具，供 Java 同轮写仲裁（漏洞#1）
     turn_ts: Optional[int] = None
@@ -420,6 +452,8 @@ class BaseAgent(ABC):
             intent_decision=dict(intent_decision),
             allowed_tools=[str(name) for name in allowed_tools] if isinstance(allowed_tools, list) else None,
             retrieval_scope=dict(context.get("retrieval_scope") or {}),
+            graph_scope=dict(context.get("graph_scope") or {}),
+            graph_pre_retrieval=dict(context.get("graph_pre_retrieval") or {}),
             experiment_tool_profile=_trusted_experiment_tool_profile(
                 context.get("_experiment_tool_profile")
             ),
@@ -495,11 +529,55 @@ class BaseAgent(ABC):
             if step.get("action") != "tool_call":
                 continue
             for tool_call in step.get("tool_calls") or []:
+                if "executed" in tool_call and not tool_call.get("executed"):
+                    continue
+                if str(tool_call.get("result_summary") or "").startswith("tool not found:"):
+                    continue
                 tool_name = tool_call.get("name")
                 if tool_name and tool_name not in seen:
                     tools_used.append(tool_name)
                     seen.add(tool_name)
         return tools_used
+
+    @staticmethod
+    def _effective_arguments_for_trace(
+        tool_name: str,
+        kwargs: Dict[str, Any],
+        run_context: AgentRunContext,
+    ) -> Dict[str, Any]:
+        allowed_fields = _AUDIT_ARGUMENT_FIELDS.get(tool_name, frozenset())
+        effective = {
+            key: value
+            for key, value in dict(kwargs).items()
+            if key in allowed_fields
+        }
+        if tool_name == "knowledge_retrieval":
+            fingerprint = str(
+                (run_context.retrieval_scope or {}).get("scope_fingerprint") or ""
+            ).strip()
+            if fingerprint:
+                effective["scope_fingerprint"] = fingerprint
+        return json.loads(json.dumps(effective, ensure_ascii=False, default=str))
+
+    @staticmethod
+    def _attach_effective_arguments_to_trace(
+        react_trace: List[Dict[str, Any]],
+        effective_tool_calls: List[Dict[str, Any]],
+    ) -> None:
+        effective_index = 0
+        for step in react_trace or []:
+            for call in step.get("tool_calls") or []:
+                if not isinstance(call, dict) or not call.get("executed"):
+                    continue
+                if effective_index >= len(effective_tool_calls):
+                    return
+                effective = effective_tool_calls[effective_index]
+                if effective.get("name") != call.get("name"):
+                    continue
+                call["effective_arguments"] = dict(
+                    effective.get("effective_arguments") or {}
+                )
+                effective_index += 1
 
     @staticmethod
     def _tool_accepts_event_sink(tool: Any) -> bool:
@@ -864,11 +942,20 @@ class BaseAgent(ABC):
             tools = self.get_tools_for_run(run_context)
             tool_schemas = [t.to_openai_schema() for t in tools]
             tool_handlers = {}
+            effective_tool_calls: List[Dict[str, Any]] = []
             for tool in tools:
                 def _make_handler(t):
                     async def handler(**kwargs):
                         # 允许子类为特定工具注入额外参数
                         kwargs = self._customize_tool_kwargs_for_run(t.name, kwargs, run_context)
+                        effective_tool_calls.append({
+                            "name": t.name,
+                            "effective_arguments": self._effective_arguments_for_trace(
+                                t.name,
+                                kwargs,
+                                run_context,
+                            ),
+                        })
                         tool_start = time.time()
                         logger.info(
                             "[%s][tool_start] tool=%s args=%s",
@@ -976,6 +1063,7 @@ class BaseAgent(ABC):
             # 5. 处理响应
             intention = input_data.context.get("intention") if input_data.context else None
             react_trace = response.get("trace", [])
+            self._attach_effective_arguments_to_trace(react_trace, effective_tool_calls)
             tools_used = self._extract_tools_used_from_trace(react_trace)
             output = self._process_response(
                 raw_response=response,
@@ -983,6 +1071,7 @@ class BaseAgent(ABC):
                 metadata={
                     "execution_mode": "react",
                     "react_trace": react_trace,
+                    "effective_tool_calls": effective_tool_calls,
                     "react_iterations": len(react_trace),
                     "style_regenerated": style_regenerated,
                 },

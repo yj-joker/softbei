@@ -47,9 +47,11 @@
         {
           "name": "java_graph_diagnosis_path",
           "result_data": {
-            "raw_records": [
+            "evidence": [
               {
-                "pathId": "rag-eval-conflict-head-torque",
+                "evidence_id": "graph:rag-eval-conflict-head-torque:none",
+                "qualification": "qualified",
+                "pathIds": ["rag-eval-conflict-head-torque"],
                 "nodeIds": ["fixture-head-m10", "fixture-torque-65"],
                 "relationshipTypes": ["HAS_TORQUE"],
                 "content": "隔离测试图谱声称气缸头M10螺母最终扭矩为65 N·m。"

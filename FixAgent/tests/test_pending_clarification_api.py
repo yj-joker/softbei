@@ -246,3 +246,41 @@ def test_pending_diagnostic_question_is_terminal_before_evidence_finalizer(monke
 
     assert result.message == pending["question"]
     assert result.metadata["pending_clarification"] == pending
+
+
+def test_pending_diagnostic_question_applies_candidate_message_before_bypass(monkeypatch) -> None:
+    pending = {
+        "kind": "diagnostic_cause",
+        "status": "awaiting_answer",
+        "question": "异常更接近哪个部位？",
+    }
+    output = AgentOutput(
+        agent_name="fix_agent",
+        message='{"message":"原始诊断","diagnosisItems":[]}',
+        metadata={"pending_clarification": pending},
+    )
+    request = ChatRequest(session_id="diagnostic-visible", message="设备存在异常")
+    input_data = AgentInput(user_message=request.message, session_id=request.session_id)
+
+    monkeypatch.setattr(
+        main,
+        "_finalize_knowledge_output",
+        lambda *args, **kwargs: pytest.fail("clarification must bypass evidence finalizer"),
+    )
+    monkeypatch.setattr(
+        main,
+        "_try_post_retrieval_ai_fallback",
+        lambda *args, **kwargs: pytest.fail("clarification must bypass AI fallback"),
+    )
+
+    result = asyncio.run(
+        main._finalize_knowledge_output_with_fallback(
+            request,
+            input_data,
+            output,
+            candidate_message=pending["question"],
+        )
+    )
+
+    assert result.message == pending["question"]
+    assert result.metadata["pending_clarification"] == pending
