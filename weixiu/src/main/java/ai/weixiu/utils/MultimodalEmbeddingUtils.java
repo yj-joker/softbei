@@ -146,6 +146,11 @@ public class MultimodalEmbeddingUtils {
             for (JsonNode v : vectorNode) {
                 vector.add(v.asDouble());
             }
+            if (vector.size() != EmbeddingUtils.TEXT_EMBEDDING_DIMENSIONS) {
+                log.error("多模态向量维度异常，期望{}，实际{}",
+                        EmbeddingUtils.TEXT_EMBEDDING_DIMENSIONS, vector.size());
+                return null;
+            }
             return vector;
 
         } catch (Exception e) {

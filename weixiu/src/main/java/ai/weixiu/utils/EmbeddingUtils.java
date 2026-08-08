@@ -15,7 +15,8 @@ import java.util.Map;
 
 @Component
 public class EmbeddingUtils {
-    static final int TEXT_EMBEDDING_DIMENSIONS = 1536;
+    /** 与 Neo4j 文本/多模态向量索引统一为 1024 维。 */
+    static final int TEXT_EMBEDDING_DIMENSIONS = 1024;
 
     private final ObjectMapper objectMapper;
     @Value("${apikey}")
@@ -65,7 +66,7 @@ public class EmbeddingUtils {
         }
         if (embedding.size() != TEXT_EMBEDDING_DIMENSIONS) {
             throw new EmbeddingException(
-                    "文本向量维度异常，期望" + TEXT_EMBEDDING_DIMENSIONS + "实际" + embedding.size()
+                    "文本向量维度异常，期望" + TEXT_EMBEDDING_DIMENSIONS + "，实际" + embedding.size()
             );
         }
         return embedding;

@@ -11,6 +11,7 @@ import time
 import redis
 from typing import List, Dict, Any, Optional
 from config.settings import get_settings
+from embeddings.constants import EMBEDDING_DIMENSIONS, ensure_embedding_dimensions
 from services.retrieval.provenance import dedupe_and_sort_manual_records
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ class VectorService:
     DOCUMENT_KEY_PREFIX = "document:"
     TEXT_CACHE_PATTERNS = ("cache:emb:text:*", "emb:*")
     IMAGE_CACHE_PATTERNS = ("cache:emb:image:*", "img_emb:*")
-    VECTOR_DIM = 1024  # text-embedding-v4 输出维度
+    VECTOR_DIM = EMBEDDING_DIMENSIONS
 
     def __init__(self):
         self.settings = get_settings()
@@ -258,6 +259,7 @@ class VectorService:
 
     def _to_bytes(self, vector: List[float]) -> bytes:
         """将向量列表转为字节数组"""
+        ensure_embedding_dimensions(vector, "Redis存储/检索")
         return struct.pack(f"{len(vector)}f", *vector)
 
     def _build_vector_mapping(

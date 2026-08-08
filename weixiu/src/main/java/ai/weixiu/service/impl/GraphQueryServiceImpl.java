@@ -33,8 +33,8 @@ import java.util.stream.Stream;
  * <p>
  * 流程：
  * 1. keyword → Device 模糊匹配 → deviceIds
- * 2. faultDescription → 文本向量(1536维) → 只搜 fault_embedding_index → faultIds
- * 3. componentDescription → 文本向量(1536维) → 只搜 component_embedding_index → componentIds
+ * 2. faultDescription → 文本向量(1024维) → 只搜 fault_embedding_index → faultIds
+ * 3. componentDescription → 文本向量(1024维) → 只搜 component_embedding_index → componentIds
  * 4. imageUrls → 图片向量(1024维，不融合文字) → 搜 fault_multimodal_index + component_multimodal_index
  * 5. 合并去重（同ID取最高分）
  * 6. OR Cypher + matchScore 多维度评分排序 → 分页返回
@@ -85,7 +85,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         // ===== 2. 故障文本向量检索（只搜 fault 索引）=====
         Map<String, Double> faultScoreMap = new HashMap<>();
         if (hasFaultDesc) {
-            List<FaultVO> faults = faultService.getFaultByEmbedding(query.getFaultDescription(), searchLimit, minScore);
+            List<FaultVO> faults = recallFaults(query.getFaultDescription(), searchLimit, minScore);
             for (FaultVO f : faults) {
                 faultScoreMap.merge(f.getId(), f.getScore(), Math::max);
             }
@@ -95,7 +95,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         // ===== 3. 部件文本向量检索（只搜 component 索引）=====
         Map<String, Double> compScoreMap = new HashMap<>();
         if (hasCompDesc) {
-            List<ComponentVO> components = componentService.getComponentByEmbedding(query.getComponentDescription(), searchLimit, minScore);
+            List<ComponentVO> components = recallComponents(query.getComponentDescription(), searchLimit, minScore);
             for (ComponentVO c : components) {
                 compScoreMap.merge(c.getId(), c.getScore(), Math::max);
             }
@@ -217,13 +217,13 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         Map<String, Double> faultScores = new HashMap<>();
         try {
             if (hasText(componentDescription)) {
-                for (ComponentVO component : componentService.getComponentByEmbedding(
+                for (ComponentVO component : recallComponents(
                         componentDescription, (long) limit, minScore)) {
                     componentScores.merge(component.getId(), component.getScore(), Math::max);
                 }
             }
             if (hasText(faultDescription) && !"parameter_lookup".equals(contract.getTaskAction())) {
-                for (FaultVO fault : faultService.getFaultByEmbedding(
+                for (FaultVO fault : recallFaults(
                         faultDescription, (long) limit, minScore)) {
                     faultScores.merge(fault.getId(), fault.getScore(), Math::max);
                 }
@@ -312,6 +312,63 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             return List.of();
         }
         return candidates;
+    }
+
+    /**
+     * 召回部件时兼容历史 Neo4j 向量索引。
+     *
+     * <p>正常路径统一使用 1024 维文本索引。历史部署可能仍存在索引或节点向量
+     * 维度不一致；文本索引无结果或不可用时，用同一文本生成 1024 维多模态向量
+     * 查询兼容索引，避免异常被误判为“图谱无候选”，从而跳过真实反问。</p>
+     */
+    private List<ComponentVO> recallComponents(String description, long limit, double minScore) {
+        if (!hasText(description)) {
+            return List.of();
+        }
+        try {
+            List<ComponentVO> results = componentService.getComponentByEmbedding(
+                    description, limit, minScore);
+            if (results != null && !results.isEmpty()) {
+                return results;
+            }
+        } catch (Exception textEx) {
+            log.info("部件文本向量索引不可用，回退多模态索引: {}", textEx.getMessage());
+        }
+        try {
+            List<Double> embedding = multimodalEmbeddingUtils.getMultimodalEmbedding(description, null);
+            if (embedding == null || embedding.isEmpty()) {
+                return List.of();
+            }
+            return componentService.getComponentByMultimodalEmbedding(embedding, limit, minScore);
+        } catch (Exception fallbackEx) {
+            log.info("部件多模态向量回退失败: {}", fallbackEx.getMessage());
+            return List.of();
+        }
+    }
+
+    /** 与 {@link #recallComponents(String, long, double)} 对称的故障召回兼容层。 */
+    private List<FaultVO> recallFaults(String description, long limit, double minScore) {
+        if (!hasText(description)) {
+            return List.of();
+        }
+        try {
+            List<FaultVO> results = faultService.getFaultByEmbedding(description, limit, minScore);
+            if (results != null && !results.isEmpty()) {
+                return results;
+            }
+        } catch (Exception textEx) {
+            log.info("故障文本向量索引不可用，回退多模态索引: {}", textEx.getMessage());
+        }
+        try {
+            List<Double> embedding = multimodalEmbeddingUtils.getMultimodalEmbedding(description, null);
+            if (embedding == null || embedding.isEmpty()) {
+                return List.of();
+            }
+            return faultService.getFaultByMultimodalEmbedding(embedding, limit, minScore);
+        } catch (Exception fallbackEx) {
+            log.info("故障多模态向量回退失败: {}", fallbackEx.getMessage());
+            return List.of();
+        }
     }
 
     private GraphCandidateVO mapGraphCandidate(Map<String, Object> row) {
@@ -648,7 +705,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         log.info("部件反查设备: desc={}, limit={}, minScore={}", componentDescription, safeLimit, safeMinScore);
 
         // 1. 向量召回 Component（复用现有 ComponentService）
-        List<ComponentVO> components = componentService.getComponentByEmbedding(componentDescription, safeLimit, safeMinScore);
+        List<ComponentVO> components = recallComponents(componentDescription, safeLimit, safeMinScore);
         if (components.isEmpty()) {
             log.info("部件反查设备: 向量召回0个部件");
             return List.of();
