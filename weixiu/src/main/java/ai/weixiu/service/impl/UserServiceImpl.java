@@ -33,10 +33,14 @@ import org.springframework.util.StringUtils;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
@@ -53,6 +57,9 @@ import java.util.stream.Collectors;
 @Service
 @Slf4j
 public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements UserService {
+
+    private static final SecureRandom SECURE_RANDOM = new SecureRandom();
+    private static final String PASSWORD_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%";
 
     private final RedisTemplate redisTemplate;
     private final PasswordEncoder passwordEncoder;
@@ -77,11 +84,17 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     @Override
     @Transactional
     public BatchRegisterResultVO batchRegister(MultipartFile file) {
+        if (file == null || file.isEmpty() || file.getSize() > 5 * 1024 * 1024) {
+            throw new FormatErrorException("Excel文件不能为空且不能超过5MB");
+        }
         // 1. 文件类型校验
         if (!ExcelUtils.isExcelFile(file)) {
             throw new FormatErrorException("必须上传excel文件");
         }
         List<User> rows = ExcelUtils.readExcel(file, User.class);
+        if (rows.size() > 1000) {
+            throw new FormatErrorException("单次最多导入1000名用户");
+        }
         log.info("共读取到 {} 条数据，开始处理", rows.size());
 
         BatchRegisterResultVO result = new BatchRegisterResultVO();
@@ -136,13 +149,16 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
 
         // 4. 服务端强制安全字段（防 Excel 越权）：
-        //    - 密码统一默认 123456（每行独立加盐，并行加密提速）
+        //    - 每个账号生成独立强随机初始密码（每行独立加盐）
         //    - type 强制 0(员工)，杜绝 Excel 把 用户类型 填成 1 批量造管理员
         //    - status 置 1(已激活)，避免 login 对 null status 拆箱 NPE
         LocalDateTime now = LocalDateTime.now();
-        candidates.parallelStream().forEach(u -> {
+        Map<String, String> initialPasswords = new LinkedHashMap<>();
+        candidates.forEach(u -> {
             u.setId(null);
-            u.setPassword(passwordEncoder.encode("123456"));
+            String initialPassword = generateInitialPassword();
+            initialPasswords.put(u.getUsername(), initialPassword);
+            u.setPassword(passwordEncoder.encode(initialPassword));
             u.setType(0);
             u.setStatus(1);
             u.setCreateTime(now);
@@ -151,6 +167,7 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
 
         // 5. 入库（方法 @Transactional，整批原子；候选已去重/校验，正常不会失败）
         this.saveBatch(candidates);
+        initialPasswords.forEach(result::addInitialCredential);
         result.setSuccess(candidates.size());
         log.info("批量注册完成：总{} 成功{} 失败{}", result.getTotal(), result.getSuccess(), result.getFailed());
         return result;
@@ -187,8 +204,15 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         }
         this.updateById(user);
         HttpSession httpSession = httpServletRequest.getSession();
+        String oldSessionId = httpSession.getId();
+        String oldSessionKey = RedisKey.USER_SESSION_ID + oldSessionId;
+        // 防止会话固定攻击：认证成功后轮换 Session ID，并删除旧 Redis 映射。
+        String newSessionId = httpServletRequest.changeSessionId();
+        if (!oldSessionId.equals(newSessionId)) {
+            redisTemplate.delete(oldSessionKey);
+        }
         //设置用户id到redis当中,过期时间1天
-        redisTemplate.opsForValue().set(RedisKey.USER_SESSION_ID + httpSession.getId(), user.getId(), 1, TimeUnit.DAYS);
+        redisTemplate.opsForValue().set(RedisKey.USER_SESSION_ID + newSessionId, user.getId(), 1, TimeUnit.DAYS);
         log.info("设置会话成功");
         //封装vo层数据
         UserVO userVO = new UserVO();
@@ -280,9 +304,12 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
                 throw new EmailException("该邮箱与当前账号不匹配");
             }
         }
-        //判断用户是否反复发送（Boolean.TRUE.equals 防止 hasKey 返回 null 导致 NPE）
-        if (Boolean.TRUE.equals(redisTemplate.hasKey(RedisKey.USER_EMAIL_CODE + BaseContext.getCurrentId()))) {
-            throw new EmailException("请勿重复发送验证码");
+        String userKey = String.valueOf(BaseContext.getCurrentId());
+        String codeKey = RedisKey.USER_EMAIL_CODE + userKey;
+        String attemptKey = RedisKey.USER_EMAIL_ATTEMPTS + userKey;
+        String lockKey = RedisKey.USER_EMAIL_LOCK + userKey;
+        if (Boolean.TRUE.equals(redisTemplate.hasKey(lockKey))) {
+            throw new EmailException("验证码尝试次数过多，请稍后再试");
         }
         SimpleMailMessage message = new SimpleMailMessage();
         //从配置文件中获取当前设置的邮箱
@@ -298,9 +325,18 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
         //设置邮件内容
         String code = getCode();
         message.setText("此次验证码:" + code);
-        //将验证码存入redis中，并设置过期时间
-        redisTemplate.opsForValue().set(RedisKey.USER_EMAIL_CODE + BaseContext.getCurrentId(), code, 1, TimeUnit.MINUTES);
-        javaMailSender.send(message);
+        // setIfAbsent 把检查和占位合为原子操作，避免并发请求重复发信。
+        String payload = mode + "|" + email + "|" + code;
+        Boolean reserved = redisTemplate.opsForValue().setIfAbsent(codeKey, payload, 1, TimeUnit.MINUTES);
+        if (!Boolean.TRUE.equals(reserved)) {
+            throw new EmailException("请勿重复发送验证码");
+        }
+        try {
+            javaMailSender.send(message);
+        } catch (RuntimeException ex) {
+            redisTemplate.delete(codeKey);
+            throw ex;
+        }
     }
 
     /*
@@ -309,12 +345,42 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
     @Override
     public void verifyEmail(String code, Integer mode,String emailOrPassword) {
      //从redis当中取出对应验证码
-     String redisCode = (String) redisTemplate.opsForValue().get(RedisKey.USER_EMAIL_CODE + BaseContext.getCurrentId());
-     if (redisCode == null) {
+     String userKey = String.valueOf(BaseContext.getCurrentId());
+     String codeKey = RedisKey.USER_EMAIL_CODE + userKey;
+     String attemptKey = RedisKey.USER_EMAIL_ATTEMPTS + userKey;
+     String lockKey = RedisKey.USER_EMAIL_LOCK + userKey;
+     Object stored = redisTemplate.opsForValue().get(codeKey);
+     if (stored == null) {
          throw new EmailException("请先发送验证码");
      }
+     String[] payload = stored.toString().split("\\|", 3);
+     if (payload.length != 3) {
+         redisTemplate.delete(codeKey);
+         throw new EmailException("验证码已失效，请重新发送");
+     }
+     Integer sentMode;
+     try {
+         sentMode = Integer.valueOf(payload[0]);
+     } catch (NumberFormatException ex) {
+         redisTemplate.delete(codeKey);
+         throw new EmailException("验证码已失效，请重新发送");
+     }
+     String redisEmail = payload[1];
+     String redisCode = payload[2];
+     if (!Objects.equals(mode, sentMode)
+             || (Objects.equals(mode, EmailEnum.ACTIVATION_EMAIL.getCode()) && !Objects.equals(redisEmail, emailOrPassword))) {
+         throw new EmailException("验证码操作与发送目标不匹配");
+     }
      //MessageDigest.isEqual() 时间恒定比较，防止验证码被计时攻击猜测
-     if (!MessageDigest.isEqual(code.getBytes(), redisCode.getBytes())) {
+     if (code == null || !MessageDigest.isEqual(code.getBytes(StandardCharsets.UTF_8), redisCode.getBytes(StandardCharsets.UTF_8))) {
+         Long attempts = redisTemplate.opsForValue().increment(attemptKey);
+         redisTemplate.expire(attemptKey, 1, TimeUnit.MINUTES);
+         if (attempts != null && attempts >= 5) {
+             redisTemplate.delete(codeKey);
+             redisTemplate.opsForValue().set(lockKey, "1", 5, TimeUnit.MINUTES);
+             redisTemplate.delete(attemptKey);
+             throw new EmailException("验证码错误次数过多，请稍后再试");
+         }
          throw new EmailException("验证码错误,请重新输入");
      }
      User user = this.getById(BaseContext.getCurrentId());
@@ -326,15 +392,21 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
          //激活邮箱
           user.setEmail(emailOrPassword);
           this.updateById(user);
-         redisTemplate.delete(RedisKey.USER_EMAIL_CODE + BaseContext.getCurrentId());
+         redisTemplate.delete(codeKey);
+         redisTemplate.delete(attemptKey);
          log.info("邮箱绑定成功");
      }
     else if(Objects.equals(mode, EmailEnum.RESET_PASSWORD_EMAIL.getCode())){
          //重置密码
+         if (emailOrPassword == null || emailOrPassword.length() < 8 || emailOrPassword.length() > 128
+                 || !emailOrPassword.matches(".*[A-Za-z].*") || !emailOrPassword.matches(".*\\d.*")) {
+             throw new EmailException("密码需为8到128位，且同时包含字母和数字");
+         }
          String encode = passwordEncoder.encode(emailOrPassword);
          user.setPassword(encode);
          this.updateById(user);
-         redisTemplate.delete(RedisKey.USER_EMAIL_CODE + BaseContext.getCurrentId());
+         redisTemplate.delete(codeKey);
+         redisTemplate.delete(attemptKey);
          log.info("密码重置成功");
      }
      else{
@@ -350,6 +422,14 @@ public class UserServiceImpl extends ServiceImpl<UserMapper, User> implements Us
             code.append(chars.charAt(random.nextInt(chars.length())));
         }
         return code.toString();
+    }
+
+    private String generateInitialPassword() {
+        StringBuilder password = new StringBuilder(16);
+        for (int i = 0; i < 16; i++) {
+            password.append(PASSWORD_CHARS.charAt(SECURE_RANDOM.nextInt(PASSWORD_CHARS.length())));
+        }
+        return password.toString();
     }
 
     @Override

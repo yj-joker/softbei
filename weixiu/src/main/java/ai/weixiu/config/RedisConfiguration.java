@@ -28,9 +28,10 @@ public class RedisConfiguration {
         // 配置 ObjectMapper，支持 Java 8 时间类型
         ObjectMapper mapper = new ObjectMapper();
         mapper.setVisibility(PropertyAccessor.ALL, JsonAutoDetect.Visibility.ANY);
-        // 允许所有非 final 类型的自动类型推断（可按需替换为白名单验证器）
         PolymorphicTypeValidator ptv = BasicPolymorphicTypeValidator.builder()
-                .allowIfBaseType(Object.class)
+                .allowIfSubType("ai.weixiu.")
+                .allowIfSubType("java.util.")
+                .allowIfSubType("java.time.")
                 .build();
         mapper.activateDefaultTyping(ptv, ObjectMapper.DefaultTyping.NON_FINAL, JsonTypeInfo.As.PROPERTY);
         mapper.registerModule(new JavaTimeModule());

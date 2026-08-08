@@ -67,7 +67,7 @@ class ExpirationServiceHttpContractTest {
     @Test
     void sendsApiTokenToEveryFixAgentExpirationEndpoint() throws Exception {
         List<CapturedRequest> requests = new CopyOnWriteArrayList<>();
-        CountDownLatch requestLatch = new CountDownLatch(4);
+        CountDownLatch requestLatch = new CountDownLatch(3);
         HttpServer server = startServer(requests, requestLatch);
 
         try (AnnotationConfigApplicationContext context = expirationContext(server)) {
@@ -83,9 +83,8 @@ class ExpirationServiceHttpContractTest {
 
         assertThat(requests).extracting(CapturedRequest::path)
                 .containsExactlyInAnyOrder(
-                        "/ai/expiration/check-task-promotion",
-                        "/ai/manual-kg/extract",
-                        "/ai/expiration/check-manual-upgrade",
+                "/ai/expiration/check-task-promotion",
+                "/ai/manual-kg/extract",
                         "/ai/manual-upgrade/sync");
         assertThat(requests).allSatisfy(request -> {
             assertThat(request.apiToken()).isEqualTo(API_TOKEN);

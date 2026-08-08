@@ -13,6 +13,6 @@ class EmbeddingUtilsContractTest {
         Field field = EmbeddingUtils.class.getDeclaredField("TEXT_EMBEDDING_DIMENSIONS");
         field.setAccessible(true);
 
-        assertEquals(1536, field.getInt(null));
+        assertEquals(1024, field.getInt(null));
     }
 }

@@ -6,6 +6,8 @@ import ai.weixiu.entity.CaseRecord;
 import ai.weixiu.entity.User;
 import ai.weixiu.exception.ForbiddenException;
 import ai.weixiu.mapper.UserMapper;
+import ai.weixiu.mapper.MaintenanceTaskMapper;
+import ai.weixiu.entity.MaintenanceTask;
 import ai.weixiu.pojo.PageResult;
 import ai.weixiu.utils.BaseContext;
 import ai.weixiu.pojo.Result;
@@ -31,8 +33,10 @@ public class CaseRecordController {
 
     private final CaseRecordService caseRecordService;
     private final UserMapper userMapper;
+    private final MaintenanceTaskMapper taskMapper;
 
     @PostMapping("/save")
+    @RequireAdmin
     @Operation(summary = "新增案例记录")
     public Result<CaseRecordVO> save(@RequestBody CaseRecordDTO caseRecordDTO) {
         return Result.success(VoConverter.convert(caseRecordService.save(caseRecordDTO), CaseRecordVO.class));
@@ -41,7 +45,10 @@ public class CaseRecordController {
     @GetMapping("/{id}")
     @Operation(summary = "根据 ID 查询案例记录")
     public Result<CaseRecordVO> findById(@PathVariable String id) {
-        return Result.success(VoConverter.convert(caseRecordService.findById(id).get(), CaseRecordVO.class));
+        CaseRecord record = caseRecordService.findById(id)
+                .orElseThrow(() -> new ai.weixiu.exception.NotFoundException("案例记录不存在"));
+        assertCaseReadable(record);
+        return Result.success(VoConverter.convert(record, CaseRecordVO.class));
     }
 
     @DeleteMapping("/{id}")
@@ -63,6 +70,15 @@ public class CaseRecordController {
     @PutMapping("/update")
     @Operation(summary = "更新案例记录信息")
     public Result<CaseRecordVO> update(@RequestBody CaseRecordDTO caseRecordDTO) {
+        CaseRecord record = caseRecordService.findById(caseRecordDTO.getId())
+                .orElseThrow(() -> new ai.weixiu.exception.NotFoundException("案例记录不存在"));
+        Long currentId = BaseContext.getCurrentId();
+        User user = userMapper.selectById(currentId);
+        boolean admin = user != null && user.getType() == 1;
+        if (!admin && (!currentId.equals(record.getSubmittedById())
+                || !("pending".equals(record.getStatus()) || "rejected".equals(record.getStatus())))) {
+            throw new ForbiddenException("无权修改该案例");
+        }
         return Result.success(VoConverter.convert(caseRecordService.update(caseRecordDTO), CaseRecordVO.class));
     }
 
@@ -71,6 +87,16 @@ public class CaseRecordController {
     @PostMapping("/draft-from-task/{taskId}")
     @Operation(summary = "从已关闭检修任务起草案例草稿(AI起草,不落库)")
     public Result<CaseDraftVO> draftFromTask(@PathVariable Long taskId) {
+        // 起草会读取任务完整上下文，先复用任务归属校验。
+        Long currentId = BaseContext.getCurrentId();
+        User user = userMapper.selectById(currentId);
+        MaintenanceTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new ai.weixiu.exception.NotFoundException("检修任务不存在");
+        }
+        if ((user == null || user.getType() != 1) && !currentId.equals(task.getReporterId())) {
+            throw new ForbiddenException("无权读取他人的检修任务");
+        }
         return Result.success(caseRecordService.draftFromTask(taskId));
     }
 
@@ -123,5 +149,15 @@ public class CaseRecordController {
     public Result<PageResult<CaseRecordVO>> mine(@RequestParam(defaultValue = "1") int page,
                                                  @RequestParam(defaultValue = "10") int size) {
         return Result.success(caseRecordService.mine(page, size));
+    }
+
+    private void assertCaseReadable(CaseRecord record) {
+        Long currentId = BaseContext.getCurrentId();
+        User user = userMapper.selectById(currentId);
+        if (user != null && user.getType() == 1) return;
+        if ("approved".equals(record.getStatus())) return;
+        if (!currentId.equals(record.getSubmittedById())) {
+            throw new ForbiddenException("无权查看该案例");
+        }
     }
 }

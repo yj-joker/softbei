@@ -58,7 +58,7 @@ public class AiServiceImpl implements AiService {
     private final MemoryRecallService memoryRecallService;
     private final MultimodalEmbeddingUtils multimodalEmbeddingUtils;
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final Integer maxMemory = 4;
+    private final Integer maxMemory = 10;
 
 
     @Override

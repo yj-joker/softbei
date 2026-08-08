@@ -33,6 +33,8 @@ public class TaskEvidenceCandidateServiceImpl implements TaskEvidenceCandidateSe
 
     @Override
     public PageResult<TaskEvidenceCandidateVO> page(int page, int size, String extractionStatus, String reviewStatus, String taskNumber, String deviceName, String resolutionStatus) {
+        page = Math.max(1, page);
+        size = Math.min(100, Math.max(1, size));
         LambdaQueryWrapper<MaintenanceTask> tq = new LambdaQueryWrapper<>();
         if (taskNumber != null) tq.like(MaintenanceTask::getTaskNumber, taskNumber);
         if (deviceName != null) tq.like(MaintenanceTask::getDeviceName, deviceName);

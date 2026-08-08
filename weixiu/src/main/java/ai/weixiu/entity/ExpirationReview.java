@@ -41,11 +41,17 @@ public class ExpirationReview implements Serializable {
     /** 候选旧节点 Neo4j ID */
     private String candidateNodeId;
 
+    /** 候选节点类型，目前过期审核只允许 Solution。 */
+    private String candidateNodeType;
+
     /** 旧故障名 */
     private String candidateFaultName;
 
     /** 旧方案标题 */
     private String candidateSolutionTitle;
+
+    /** 用于跨请求幂等去重的稳定键。 */
+    private String dedupKey;
 
     /** LLM 判定: REPLACE / SUPPLEMENT / UNRELATED */
     private String verdict;

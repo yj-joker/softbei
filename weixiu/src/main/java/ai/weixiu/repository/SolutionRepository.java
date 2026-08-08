@@ -17,7 +17,8 @@ public interface SolutionRepository extends Neo4jRepository<Solution, String> {
      */
     @Query("""
         MATCH (s:Solution)
-        WHERE ($title IS NULL OR $title = '' OR s.title CONTAINS $title)
+        WHERE (s.status IS NULL OR s.status <> 'deprecated')
+          AND ($title IS NULL OR $title = '' OR s.title CONTAINS $title)
           AND ($difficulty IS NULL OR $difficulty = '' OR s.difficulty = $difficulty)
           AND ($verified IS NULL OR s.verified = $verified)
         RETURN s.id AS id,
@@ -47,7 +48,8 @@ public interface SolutionRepository extends Neo4jRepository<Solution, String> {
      */
     @Query("""
         MATCH (s:Solution)
-        WHERE ($title IS NULL OR $title = '' OR s.title CONTAINS $title)
+        WHERE (s.status IS NULL OR s.status <> 'deprecated')
+          AND ($title IS NULL OR $title = '' OR s.title CONTAINS $title)
           AND ($difficulty IS NULL OR $difficulty = '' OR s.difficulty = $difficulty)
           AND ($verified IS NULL OR s.verified = $verified)
         RETURN count(s) AS total

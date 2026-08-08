@@ -8,6 +8,7 @@ from services.clarification.models import (
     RiskLevel,
 )
 from services.clarification.policy import ClarificationDecisionEngine, calculate_risk_level
+from services.clarification.llm_fallback import LLMClarificationService, LLMSlotClarification
 
 __all__ = [
     "ClarificationDecision",
@@ -15,6 +16,8 @@ __all__ = [
     "ClarificationOption",
     "ClarificationQuestion",
     "KnowledgeCandidate",
+    "LLMClarificationService",
+    "LLMSlotClarification",
     "RiskLevel",
     "calculate_risk_level",
 ]

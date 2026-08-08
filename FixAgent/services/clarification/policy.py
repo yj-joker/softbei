@@ -304,9 +304,16 @@ class ClarificationDecisionEngine:
             )
             for index, (value, grouped_candidates) in enumerate(sorted(groups.items()))
         )
+        prompts = {
+            "device_id": "请确认当前需要检修的是哪台设备？",
+            "document_id": "请确认应以哪份设备资料为准？",
+            "component_id": "异常更接近下列哪个部件？",
+            "fault_id": "现场表现更符合下列哪种故障现象？",
+            "path_id": "请确认更符合下列哪条诊断路径？",
+        }
         return ClarificationQuestion(
             dimension=dimension,
-            prompt=f"请确认更符合哪一种 {dimension}？",
+            prompt=prompts.get(dimension, "请确认更符合下列哪一种现场情况？"),
             options=options,
             score=round(score, 6),
             score_breakdown={

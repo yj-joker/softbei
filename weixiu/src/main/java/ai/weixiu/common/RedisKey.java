@@ -3,6 +3,8 @@ package ai.weixiu.common;
 public class RedisKey {
         public static final String USER_SESSION_ID="User:SessionId:";
         public static final String USER_EMAIL_CODE="User:Email:Code:";
+        public static final String USER_EMAIL_ATTEMPTS="User:Email:Attempts:";
+        public static final String USER_EMAIL_LOCK="User:Email:Lock:";
         @Deprecated
         public static final String PREFERENCE_CACHE = "Memory:Preference:";
         /** 用户级偏好缓存（不含sessionId，变更时一次清除） */

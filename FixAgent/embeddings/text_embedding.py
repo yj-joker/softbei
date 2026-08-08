@@ -6,7 +6,7 @@
 
 【模型信息】
 - 模型: qwen2.5-vl-embedding
-- 默认维度: 1024（可选 2048/768/512）
+- 固定维度: 1024
 - 输入格式: [{"text": "..."}]
 
 【并发与连接（2026-06 优化）】
@@ -37,6 +37,7 @@ except ImportError:
     AioMultiModalEmbedding = None
 
 from config.settings import get_settings
+from embeddings.constants import EMBEDDING_DIMENSIONS, ensure_embedding_dimensions
 from embeddings.rate_limiter import get_embedding_rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ class TextEmbedding:
     def __init__(self):
         self.settings = get_settings()
         self.model = "qwen2.5-vl-embedding"
-        self.dimensions = 1024
+        self.dimensions = EMBEDDING_DIMENSIONS
         dashscope.api_key = self.settings.dashscope_api_key
         self.redis = aioredis.Redis(
             host=self.settings.redis_host,
@@ -84,9 +85,15 @@ class TextEmbedding:
         return f"cache:emb:text:v2:{hashlib.md5(text.encode()).hexdigest()}"
 
     async def _get_from_cache(self, text: str) -> Optional[List[float]]:
-        data = await self.redis.get(self._get_cache_key(text))
+        cache_key = self._get_cache_key(text)
+        data = await self.redis.get(cache_key)
         if data:
-            return pickle.loads(data)
+            embedding = pickle.loads(data)
+            try:
+                return ensure_embedding_dimensions(embedding, "文本缓存")
+            except ValueError:
+                await self.redis.delete(cache_key)
+                logger.warning("已删除维度不匹配的文本向量缓存")
         return None
 
     async def _set_to_cache(self, text: str, embedding: List[float]) -> None:
@@ -121,7 +128,10 @@ class TextEmbedding:
 
         if resp.output and "embeddings" in resp.output:
             embeddings = sorted(resp.output["embeddings"], key=lambda x: x.get("index", 0))
-            result = [e["embedding"] for e in embeddings]
+            result = [
+                ensure_embedding_dimensions(e["embedding"], "文本模型返回")
+                for e in embeddings
+            ]
             if result:
                 logger.debug(f"文本向量化完成 模型={self.model} 维度={len(result[0])}")
             return result

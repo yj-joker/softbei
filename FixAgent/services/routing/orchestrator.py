@@ -161,7 +161,11 @@ class SemanticRoutingOrchestrator:
             if combined_clarification.should_clarify:
                 selected_section_id = ""
                 candidates = DocumentCandidateResolution(
-                    action=RouteAction.CLARIFY,
+                    action=(
+                        RouteAction.CLARIFY_DOCUMENT
+                        if document_scope_clarification and not graph_values
+                        else RouteAction.CLARIFY
+                    ),
                     candidate_document_ids=tuple(dict.fromkeys(
                         candidate.document_id
                         for candidate in fused_candidates
@@ -262,6 +266,14 @@ class SemanticRoutingOrchestrator:
                 if combined_clarification and combined_clarification.should_clarify
                 else "document_selection"
                 if candidates.action == RouteAction.CLARIFY
+                else ""
+            ),
+            clarification_question=(
+                combined_clarification.question.prompt
+                if combined_clarification
+                and combined_clarification.should_clarify
+                and combined_clarification.question
+                and graph_values
                 else ""
             ),
             selected_section_id=selected_section_id,

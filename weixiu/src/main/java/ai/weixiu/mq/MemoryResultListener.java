@@ -52,6 +52,8 @@ public class MemoryResultListener {
 
     @RabbitListener(queues = RabbitMQConfig.RESULT_QUEUE)
     public void onMemoryResult(Map<String, Object> msg, Channel channel, @Header(AmqpHeaders.DELIVERY_TAG) long tag) throws IOException {
+        String messageId = (String) msg.get("messageId");
+        boolean claimed = false;
         try {
             String type = (String) msg.get("type");
             boolean success = Boolean.TRUE.equals(msg.get("success"));
@@ -60,14 +62,15 @@ public class MemoryResultListener {
             Long userId = userIdNum != null ? userIdNum.longValue() : null;
 
             // 幂等检查
-            String messageId = (String) msg.get("messageId");
-            if (isDuplicate(messageId, type)) {
+            if (!claimMessage(messageId, type)) {
                 channel.basicAck(tag, false);
                 return;
             }
+            claimed = true;
 
             if (!success) {
                 log.warn("[MQ结果] 任务失败, type={}, sessionId={}, error={}", type, sessionId, msg.get("error"));
+                markProcessed(messageId);
                 channel.basicAck(tag, false);
                 return;
             }
@@ -76,6 +79,7 @@ public class MemoryResultListener {
             Map<String, Object> data = (Map<String, Object>) msg.get("data");
             if (data == null) {
                 log.warn("[MQ结果] data为空, type={}, sessionId={}", type, sessionId);
+                markProcessed(messageId);
                 channel.basicAck(tag, false);
                 return;
             }
@@ -88,9 +92,11 @@ public class MemoryResultListener {
                 log.warn("[MQ结果] 未知type: {}", type);
             }
 
+            markProcessed(messageId);
             channel.basicAck(tag, false);
         } catch (Exception e) {
             log.error("[MQ结果] 处理失败: {}", e.getMessage(), e);
+            if (claimed) releaseClaim(messageId);
             channel.basicNack(tag, false, false);
         }
     }
@@ -419,29 +425,50 @@ public class MemoryResultListener {
     /**
      * 幂等检查：如果消息已处理过则返回 true（跳过），否则插入记录返回 false（继续处理）。
      */
-    private boolean isDuplicate(String messageId, String messageType) {
+    private boolean claimMessage(String messageId, String messageType) {
         if (messageId == null || messageId.isEmpty()) {
-            return false;
+            return true;
         }
         try {
             MemoryIdempotent existing = idempotentMapper.selectById(messageId);
             if (existing != null) {
                 log.warn("[幂等] 消息已处理过, messageId:{}, type:{}", messageId, messageType);
-                return true;
+                return false;
             }
             MemoryIdempotent record = new MemoryIdempotent();
             record.setMessageId(messageId);
             record.setMessageType(messageType);
-            record.setStatus("processed");
+            record.setStatus("processing");
+            record.setCreatedAt(LocalDateTime.now());
             idempotentMapper.insert(record);
-            return false;
+            return true;
         } catch (Exception e) {
             if (e.getMessage() != null && e.getMessage().contains("Duplicate")) {
                 log.warn("[幂等] 并发重复消息, messageId:{}", messageId);
-                return true;
+                return false;
             }
-            log.warn("[幂等] 检查失败（放行处理）: {}", e.getMessage());
-            return false;
+            throw new IllegalStateException("幂等检查失败", e);
+        }
+    }
+
+    private void markProcessed(String messageId) {
+        if (messageId == null || messageId.isEmpty()) return;
+        MemoryIdempotent record = idempotentMapper.selectById(messageId);
+        if (record != null) {
+            record.setStatus("processed");
+            idempotentMapper.updateById(record);
+        }
+    }
+
+    private void releaseClaim(String messageId) {
+        if (messageId == null || messageId.isEmpty()) return;
+        try {
+            MemoryIdempotent record = idempotentMapper.selectById(messageId);
+            if (record != null && "processing".equals(record.getStatus())) {
+                idempotentMapper.deleteById(messageId);
+            }
+        } catch (Exception e) {
+            log.error("[幂等] 释放处理占位失败 messageId={}", messageId, e);
         }
     }
 

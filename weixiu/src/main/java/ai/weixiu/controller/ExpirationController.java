@@ -9,6 +9,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.neo4j.core.Neo4jClient;
 import org.springframework.web.bind.annotation.*;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
@@ -48,13 +49,16 @@ public class ExpirationController {
         }
 
         try {
-            var result = neo4jClient.query(
-                    "MATCH (n:" + label + ") WHERE n.id IN $ids " +
-                    "RETURN n.id AS id, n.name AS name, n.title AS title, " +
-                    "n.description AS description, n.severity AS severity, " +
-                    "n.status AS status, n.created_at AS createdAt"
-            ).bind(ids).to("ids")
-             .fetch().all();
+            String cypher = "Solution".equals(label)
+                    ? "MATCH (n:Solution) WHERE n.id IN $ids " +
+                      "OPTIONAL MATCH (f:Fault)-[:HAS_SOLUTION]->(n) " +
+                      "RETURN n.id AS id, n.title AS title, n.description AS description, " +
+                      "n.status AS status, n.created_at AS createdAt, " +
+                      "f.name AS faultName, f.description AS faultDescription"
+                    : "MATCH (n:Fault) WHERE n.id IN $ids " +
+                      "RETURN n.id AS id, n.name AS name, n.description AS description, " +
+                      "n.severity AS severity, n.status AS status, n.created_at AS createdAt";
+            var result = neo4jClient.query(cypher).bind(ids).to("ids").fetch().all();
 
             List<Map<String, Object>> nodes = new ArrayList<>();
             for (var r : result) {
@@ -66,6 +70,8 @@ public class ExpirationController {
                 node.put("severity", r.get("severity"));
                 node.put("status", r.get("status"));
                 node.put("createdAt", r.get("createdAt"));
+                node.put("faultName", r.get("faultName"));
+                node.put("faultDescription", r.get("faultDescription"));
                 nodes.add(node);
             }
             return Result.success(nodes);
@@ -82,35 +88,38 @@ public class ExpirationController {
     @Operation(summary = "查询同设备下的已有知识（内部）")
     public Result<List<Map<String, Object>>> getCandidates(@RequestBody Map<String, Object> body) {
         String deviceName = (String) body.get("deviceName");
+        @SuppressWarnings("unchecked")
+        List<String> excludeNodeIds = (List<String>) body.getOrDefault("excludeNodeIds", List.of());
         if (deviceName == null || deviceName.isBlank()) {
             return Result.success(List.of());
         }
 
         try {
-            // 查同设备下所有 Fault 及其 Solution（排除已 deprecated 的）
+            // 过期对象是 Solution；排除本轮刚创建的 Fault/Solution，避免新知识与自己比较。
             var result = neo4jClient.query(
                     "MATCH (d:Device)-[:OWNS]->(:Component)-[:CAUSES]->(f:Fault) " +
                     "WHERE d.name = $deviceName " +
                     "  AND (f.status IS NULL OR f.status <> 'deprecated') " +
-                    "OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution) " +
+                    "  AND NOT f.id IN $excludeNodeIds " +
+                    "MATCH (f)-[:HAS_SOLUTION]->(s:Solution) " +
                     "WHERE (s.status IS NULL OR s.status <> 'deprecated') " +
-                    "RETURN f.id AS faultId, f.name AS faultName, f.description AS faultDescription, " +
-                    "       f.severity AS faultSeverity, f.status AS faultStatus, " +
-                    "       collect(DISTINCT {id: s.id, title: s.title, " +
-                    "         description: s.description, status: coalesce(s.status, 'active'), " +
-                    "         createdAt: toString(s.created_at)}) AS solutions"
+                    "  AND NOT s.id IN $excludeNodeIds " +
+                    "RETURN DISTINCT s.id AS solutionId, s.title AS solutionTitle, " +
+                    "       s.description AS solutionDescription, s.created_at AS createdAt, " +
+                    "       f.name AS faultName, f.description AS faultDescription"
             ).bind(deviceName).to("deviceName")
+             .bind(excludeNodeIds).to("excludeNodeIds")
              .fetch().all();
 
             List<Map<String, Object>> candidates = new ArrayList<>();
             for (var r : result) {
                 Map<String, Object> candidate = new LinkedHashMap<>();
-                candidate.put("id", r.get("faultId"));
+                candidate.put("id", r.get("solutionId"));
                 candidate.put("fault_name", r.get("faultName"));
                 candidate.put("fault_description", r.get("faultDescription"));
-                candidate.put("fault_severity", r.get("faultSeverity"));
-                candidate.put("fault_status", r.get("faultStatus"));
-                candidate.put("solutions", r.get("solutions"));
+                candidate.put("solution_title", r.get("solutionTitle"));
+                candidate.put("solution_summary", r.get("solutionDescription"));
+                candidate.put("created_at", r.get("createdAt"));
                 candidate.put("_source", "neo4j_path");
                 candidates.add(candidate);
             }
@@ -138,30 +147,28 @@ public class ExpirationController {
             var result = neo4jClient.query(
                     "MATCH (d:Device) " +
                     "WHERE d.name CONTAINS $deviceType OR d.model CONTAINS $deviceType " +
-                    "OPTIONAL MATCH (d)-[:OWNS]->(:Component)-[:CAUSES]->(f:Fault) " +
+                    "MATCH (d)-[:OWNS]->(:Component)-[:CAUSES]->(f:Fault) " +
                     "WHERE (f.status IS NULL OR f.status <> 'deprecated') " +
-                    "OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(s:Solution) " +
+                    "MATCH (f)-[:HAS_SOLUTION]->(s:Solution) " +
                     "WHERE (s.status IS NULL OR s.status <> 'deprecated') " +
-                    "RETURN d.name AS deviceName, " +
-                    "       f.id AS faultId, f.name AS faultName, f.description AS faultDescription, " +
-                    "       f.status AS faultStatus, " +
-                    "       collect(DISTINCT {id: s.id, title: s.title, " +
-                    "         description: s.description, status: coalesce(s.status, 'active')}) AS solutions"
+                    "RETURN DISTINCT d.name AS deviceName, s.id AS solutionId, " +
+                    "       s.title AS solutionTitle, s.description AS solutionDescription, " +
+                    "       f.name AS faultName, f.description AS faultDescription"
             ).bind(deviceType).to("deviceType")
              .fetch().all();
 
             List<Map<String, Object>> candidates = new ArrayList<>();
             for (var r : result) {
-                Object faultId = r.get("faultId");
-                if (faultId == null) continue;  // 设备无故障节点，跳过
+                Object solutionId = r.get("solutionId");
+                if (solutionId == null) continue;
 
                 Map<String, Object> candidate = new LinkedHashMap<>();
-                candidate.put("id", faultId);
+                candidate.put("id", solutionId);
                 candidate.put("device_name", r.get("deviceName"));
                 candidate.put("fault_name", r.get("faultName"));
                 candidate.put("fault_description", r.get("faultDescription"));
-                candidate.put("fault_status", r.get("faultStatus"));
-                candidate.put("solutions", r.get("solutions"));
+                candidate.put("solution_title", r.get("solutionTitle"));
+                candidate.put("solution_summary", r.get("solutionDescription"));
                 candidate.put("_source", "neo4j_path");
                 candidates.add(candidate);
             }
@@ -188,10 +195,11 @@ public class ExpirationController {
         int applied = 0;
         for (Map<String, Object> v : verdicts) {
             String nodeId = (String) v.get("nodeId");
+            String nodeType = (String) v.getOrDefault("nodeType", "Solution");
             String reason = (String) v.get("reason");
             String deprecatedBy = (String) v.getOrDefault("deprecated_by", "auto");
             if (nodeId != null && !nodeId.isBlank()) {
-                expirationService.markDeprecated(nodeId, "Solution", List.of(), reason, deprecatedBy);
+                expirationService.markDeprecated(nodeId, nodeType, List.of(), reason, deprecatedBy);
                 applied++;
             }
         }
@@ -213,13 +221,17 @@ public class ExpirationController {
         if (nodeId == null || nodeId.isBlank()) {
             return Result.success("ok: no nodeId");
         }
+        String nodeType = (String) body.getOrDefault("nodeType", "Solution");
+        if (!"Fault".equals(nodeType) && !"Solution".equals(nodeType)) {
+            return Result.error("400", "unsupported nodeType: " + nodeType);
+        }
         double confidence = body.get("confidence") instanceof Number n ? n.doubleValue() : 0.2;
         String reason = (String) body.getOrDefault("reason", "");
         String deprecatedBy = (String) body.getOrDefault("deprecatedBy", "manual_upgrade_sync");
 
         try {
-            neo4jClient.query(
-                "MATCH (n) WHERE n.id = $id " +
+            var matched = neo4jClient.query(
+                "MATCH (n:" + nodeType + ") WHERE n.id = $id " +
                 "SET n.status = 'deprecated', " +
                 "    n.deprecated_at = datetime(), " +
                 "    n.deprecated_by = $deprecatedBy, " +
@@ -230,10 +242,14 @@ public class ExpirationController {
              .bind(deprecatedBy).to("deprecatedBy")
              .bind(confidence).to("confidence")
              .bind(reason).to("reason")
-             .run();
+             .fetch().one();
+            if (matched.isEmpty()) {
+                return Result.error("404", "node not found: " + nodeId);
+            }
             log.info("[手册升级] 节点标记过期: id={} confidence={}", nodeId, confidence);
         } catch (Exception e) {
             log.warn("[手册升级] 标记节点过期失败: id={} err={}", nodeId, e.getMessage());
+            return Result.error("500", e.getMessage());
         }
         return Result.success("ok");
     }
@@ -256,7 +272,7 @@ public class ExpirationController {
         String reason = (String) body.getOrDefault("reason", "");
 
         try {
-            neo4jClient.query(
+            var matched = neo4jClient.query(
                 "MATCH (n) WHERE n.id = $id " +
                 "SET n.manual_content = $content, " +
                 "    n.source_chunk_uid = $chunkUid, " +
@@ -269,10 +285,14 @@ public class ExpirationController {
              .bind(sourceChunkUid).to("chunkUid")
              .bind(sourceContentHash).to("contentHash")
              .bind(reason).to("reason")
-             .run();
+             .fetch().one();
+            if (matched.isEmpty()) {
+                return Result.error("404", "node not found: " + nodeId);
+            }
             log.info("[手册升级] 更新节点手册字段: id={} chunkUid={}", nodeId, sourceChunkUid);
         } catch (Exception e) {
             log.warn("[手册升级] 更新节点手册字段失败: id={} err={}", nodeId, e.getMessage());
+            return Result.error("500", e.getMessage());
         }
         return Result.success("ok");
     }
@@ -294,17 +314,21 @@ public class ExpirationController {
 
         try {
             // 追加到 manual_supplements 列表属性（不覆盖已有补充）
-            neo4jClient.query(
+            var matched = neo4jClient.query(
                 "MATCH (n) WHERE n.id = $id " +
                 "SET n.manual_supplements = coalesce(n.manual_supplements, []) + [$supplement], " +
                 "    n.last_supplement_at = datetime() " +
                 "RETURN n.id AS id"
             ).bind(fromNodeId).to("id")
              .bind(sourceChunkUid + ": " + note.substring(0, Math.min(note.length(), 200))).to("supplement")
-             .run();
+             .fetch().one();
+            if (matched.isEmpty()) {
+                return Result.error("404", "node not found: " + fromNodeId);
+            }
             log.info("[手册升级] 追加补充内容: id={} chunkUid={}", fromNodeId, sourceChunkUid);
         } catch (Exception e) {
             log.warn("[手册升级] 追加补充内容失败: id={} err={}", fromNodeId, e.getMessage());
+            return Result.error("500", e.getMessage());
         }
         return Result.success("ok");
     }
@@ -317,16 +341,27 @@ public class ExpirationController {
     @Operation(summary = "按 source_chunk_uid 查询节点（内部）")
     public Result<List<Map<String, Object>>> getNodesByChunkUid(@RequestBody Map<String, Object> body) {
         String chunkUid = (String) body.get("chunkUid");
+        String documentId = (String) body.getOrDefault("documentId", "");
+        Object manualId = body.get("manualId");
+        String deviceType = (String) body.getOrDefault("deviceType", "");
         if (chunkUid == null || chunkUid.isBlank()) {
             return Result.success(List.of());
         }
         try {
             var result = neo4jClient.query(
-                "MATCH (n) WHERE n.source_chunk_uid = $chunkUid " +
-                "OPTIONAL MATCH (n)-[e]->() WHERE e.source IN ['task', 'experience'] " +
-                "RETURN n.id AS id, n.name AS name, n.title AS title, " +
-                "       n.status AS status, count(e) > 0 AS hasTaskEdges"
+                "MATCH (n:Solution) WHERE n.source_chunk_uid = $chunkUid " +
+                "  AND (n.status IS NULL OR n.status <> 'deprecated') " +
+                "  AND ($documentId = '' OR n.document_id = $documentId) " +
+                "  AND ($manualId = '' OR $manualId IN [x IN coalesce(n.manual_ids, []) | toString(x)]) " +
+                "  AND ($deviceType = '' OR n.device_type = $deviceType OR n.device_type IS NULL) " +
+                "RETURN n.id AS id, n.title AS title, n.description AS description, " +
+                "       n.status AS status, " +
+                "       (coalesce(n.verified, false) OR n.source_task_id IS NOT NULL " +
+                "        OR n.source IN ['task', 'experience']) AS hasTaskEdges"
             ).bind(chunkUid).to("chunkUid")
+             .bind(documentId).to("documentId")
+             .bind(manualId != null ? manualId.toString() : "").to("manualId")
+             .bind(deviceType).to("deviceType")
              .fetch().all();
 
             List<Map<String, Object>> nodes = new ArrayList<>();
@@ -335,6 +370,7 @@ public class ExpirationController {
                 node.put("id", r.get("id"));
                 node.put("name", r.get("name"));
                 node.put("title", r.get("title"));
+                node.put("description", r.get("description"));
                 node.put("status", r.get("status"));
                 node.put("has_task_edges", r.get("hasTaskEdges"));
                 nodes.add(node);
@@ -342,7 +378,7 @@ public class ExpirationController {
             return Result.success(nodes);
         } catch (Exception e) {
             log.warn("[手册升级] 按 chunkUid 查节点失败: uid={} err={}", chunkUid, e.getMessage());
-            return Result.success(List.of());
+            return Result.error("500", e.getMessage());
         }
     }
 
@@ -357,20 +393,23 @@ public class ExpirationController {
         String title = (String) body.getOrDefault("title", "");
         String description = (String) body.getOrDefault("description", "");
         String deviceType = (String) body.getOrDefault("deviceType", "");
+        String documentId = (String) body.getOrDefault("documentId", "");
         String sourceChunkUid = (String) body.getOrDefault("sourceChunkUid", "");
         String sourceContentHash = (String) body.getOrDefault("sourceContentHash", "");
         String chunkLabel = (String) body.getOrDefault("chunkLabel", "general");
         Object manualIdObj = body.get("manualId");
 
-        // 生成稳定 ID：manual:sha1(chunk_uid)[:16]
-        String nodeId = "manual:" + Integer.toHexString(sourceChunkUid.hashCode()).replace("-", "0");
+        // 即使旧调用仍到达该接口，也必须把文档身份纳入 ID，避免跨手册碰撞。
+        String nodeId = "manual:" + UUID.nameUUIDFromBytes(
+                (documentId + "|" + sourceChunkUid).getBytes(StandardCharsets.UTF_8));
 
         try {
-            neo4jClient.query(
+            var matched = neo4jClient.query(
                 "MERGE (s:Solution {id: $id}) " +
                 "ON CREATE SET s.title = $title, " +
                 "              s.description = $description, " +
                 "              s.device_type = $deviceType, " +
+                "              s.document_id = $documentId, " +
                 "              s.source_chunk_uid = $chunkUid, " +
                 "              s.source_content_hash = $contentHash, " +
                 "              s.chunk_label = $chunkLabel, " +
@@ -383,17 +422,21 @@ public class ExpirationController {
              .bind(title).to("title")
              .bind(description).to("description")
              .bind(deviceType).to("deviceType")
+             .bind(documentId).to("documentId")
              .bind(sourceChunkUid).to("chunkUid")
              .bind(sourceContentHash).to("contentHash")
              .bind(chunkLabel).to("chunkLabel")
              .bind(manualIdObj != null ? manualIdObj.toString() : "").to("manualId")
-             .run();
+             .fetch().one();
+            if (matched.isEmpty()) {
+                return Result.error("500", "solution create returned no row");
+            }
 
             log.info("[手册升级] 创建 Solution 节点: id={} title={}", nodeId, title);
             return Result.success(Map.of("nodeId", nodeId));
         } catch (Exception e) {
             log.warn("[手册升级] 创建 Solution 节点失败: chunkUid={} err={}", sourceChunkUid, e.getMessage());
-            return Result.success(Map.of("nodeId", "", "error", e.getMessage()));
+            return Result.error("500", e.getMessage());
         }
     }
 }

@@ -13,25 +13,25 @@
 
 // ======================== 一、向量索引（必须，共 4 个）========================
 //
-// 文本向量：text-embedding-v4 模型，1536 维，cosine 相似度
+// 文本向量：text-embedding-v4 模型，1024 维，cosine 相似度
 // 多模态向量：qwen2.5-vl-embedding 模型，1024 维，cosine 相似度
 //
 // 仅 Fault 和 Component 需要向量索引：
 //   - Device：通过关键字模糊匹配检索，不需要向量
 //   - Solution：通过关系 HAS_SOLUTION 从 Fault 遍历到达，不需要向量
 
-// 1. Fault 文本向量索引（1536 维）
+// 1. Fault 文本向量索引（1024 维）
 //    用途：用户输入故障描述文字 → 文本向量化 → 搜索最相似的故障节点
 //    属性：Fault.embedding
 //    新语法（Neo4j 5.x+）：
 CREATE VECTOR INDEX fault_embedding_index FOR (f:Fault) ON (f.embedding)
-OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
+OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}};
 
-// 2. Component 文本向量索引（1536 维）
+// 2. Component 文本向量索引（1024 维）
 //    用途：用户输入部件描述文字 → 文本向量化 → 搜索最相似的部件节点
 //    属性：Component.embedding
 CREATE VECTOR INDEX component_embedding_index FOR (c:Component) ON (c.embedding)
-OPTIONS {indexConfig: {`vector.dimensions`: 1536, `vector.similarity_function`: 'cosine'}};
+OPTIONS {indexConfig: {`vector.dimensions`: 1024, `vector.similarity_function`: 'cosine'}};
 
 // 3. Fault 多模态向量索引（1024 维）
 //    用途：用户上传故障图片 → 图片向量化 → 搜索最相似的故障节点

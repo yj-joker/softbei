@@ -18,7 +18,7 @@ import java.util.*;
  * 生成 120 个实体（10 Device + 30 Component + 40 Fault + 40 Solution），
  * 并建立完整的关系链：Device -[OWNS]→ Component -[CAUSES]→ Fault -[HAS_SOLUTION]→ Solution
  * <p>
- * 向量通过 EmbeddingUtils（文本1536维）和 MultimodalEmbeddingUtils（多模态1024维）生成，
+ * 向量通过 EmbeddingUtils 和 MultimodalEmbeddingUtils 统一生成 1024 维向量，
  * 22 张图片 URL 随机分配给不同实体，每个实体最多 1 张，不复用。
  */
 @Service
@@ -332,12 +332,12 @@ public class CreateEntityUtils {
         // Solution 无需生成向量（没有向量索引，不参与向量检索）
         log.info("Solution 跳过向量生成（无向量索引）");
 
-        // Fault 向量（文本1536维 + 多模态1024维）
+        // Fault 向量（文本和多模态均为1024维）
         for (int i = 0; i < faults.size(); i++) {
             Fault f = faults.get(i);
             try {
                 String text = buildStringUtils.buildFaultEmbeddingText(f);
-                // 文本向量（1536维，text-embedding-v4）
+                // 文本向量（1024维，text-embedding-v4）
                 List<Double> textVec = embeddingUtils.getEmbedding(text);
                 f.setEmbedding(textVec);
                 sleepBetweenApiCalls();
@@ -356,12 +356,12 @@ public class CreateEntityUtils {
         }
         log.info("Fault 向量生成完成 ({}/{})", faults.size(), faults.size());
 
-        // Component 向量（文本1536维 + 多模态1024维）
+        // Component 向量（文本和多模态均为1024维）
         for (int i = 0; i < components.size(); i++) {
             Component c = components.get(i);
             try {
                 String text = buildStringUtils.buildComponentEmbeddingText(c);
-                // 文本向量（1536维，text-embedding-v4）
+                // 文本向量（1024维，text-embedding-v4）
                 List<Double> textVec = embeddingUtils.getEmbedding(text);
                 c.setEmbedding(textVec);
                 sleepBetweenApiCalls();

@@ -29,6 +29,7 @@ import dashscope
 import redis.asyncio as aioredis
 
 from config.settings import get_settings
+from embeddings.constants import ensure_embedding_dimensions
 from embeddings.rate_limiter import get_embedding_rate_limiter
 
 logger = logging.getLogger(__name__)
@@ -56,9 +57,15 @@ class ImageEmbedding:
         return f"cache:emb:image:v2:{hashlib.md5(image_url.encode()).hexdigest()}"
 
     async def _get_from_cache(self, image_url: str) -> Optional[List[float]]:
-        data = await self.redis.get(self._get_cache_key(image_url))
+        cache_key = self._get_cache_key(image_url)
+        data = await self.redis.get(cache_key)
         if data:
-            return pickle.loads(data)
+            embedding = pickle.loads(data)
+            try:
+                return ensure_embedding_dimensions(embedding, "图片缓存")
+            except ValueError:
+                await self.redis.delete(cache_key)
+                logger.warning("已删除维度不匹配的图片向量缓存")
         return None
 
     async def _set_to_cache(self, image_url: str, embedding: List[float]) -> None:
@@ -82,7 +89,10 @@ class ImageEmbedding:
 
         if resp.output and "embeddings" in resp.output:
             embeddings = sorted(resp.output["embeddings"], key=lambda x: x.get("index", 0))
-            result = [e["embedding"] for e in embeddings]
+            result = [
+                ensure_embedding_dimensions(e["embedding"], "图片模型返回")
+                for e in embeddings
+            ]
             if result:
                 logger.debug(f"图片向量化完成 模型={self.model} 维度={len(result[0])}")
             return result
@@ -132,7 +142,12 @@ class ImageEmbedding:
         cache_key = f"txt_mm_emb:v1:{hashlib.md5(text.encode()).hexdigest()}"
         data = await self.redis.get(cache_key)
         if data:
-            return pickle.loads(data)
+            embedding = pickle.loads(data)
+            try:
+                return ensure_embedding_dimensions(embedding, "多模态文本缓存")
+            except ValueError:
+                await self.redis.delete(cache_key)
+                logger.warning("已删除维度不匹配的多模态文本向量缓存")
 
         embeddings = await self._call_api_with_retry([{"text": text}])
         result = embeddings[0]

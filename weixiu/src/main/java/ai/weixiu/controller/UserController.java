@@ -51,6 +51,7 @@ import java.util.List;
 @AllArgsConstructor
 @Tag(name = "用户管理")
 public class UserController {
+    private static final int MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
     private final UserService userService;
     private final AliyunUpLoadUtils aliyunUpLoadUtils;
     private final MioIOUpLoadService minIOUpLoadService;
@@ -192,6 +193,16 @@ public class UserController {
      */
     @PostMapping("/uploadByMinIO")
     public Result<String> uploadByMinIO(@RequestParam("file") MultipartFile file,BucketEnum bucket) {
+    if (file == null || file.isEmpty() || file.getSize() > 10 * 1024 * 1024
+            || file.getContentType() == null || !file.getContentType().startsWith("image/")) {
+        throw new IllegalArgumentException("仅支持不超过10MB的图片文件");
+    }
+    if (bucket == BucketEnum.PRIVATE) {
+        User current = userMapper.selectById(BaseContext.getCurrentId());
+        if (current == null || current.getType() != 1) {
+            throw new ForbiddenException("普通用户不能直接写入私有文件桶");
+        }
+    }
     return Result.success( minIOUpLoadService.upload(file, bucket));
     }
 
@@ -200,9 +211,13 @@ public class UserController {
      * GET /api/file/download?objectName=xxx.jpg
      */
     @GetMapping("/download")
+    @RequireAdmin
     public ResponseEntity<byte[]> download(@RequestParam String objectName, BucketEnum bucket) {
         try (InputStream is = minIOUpLoadService.download(objectName,bucket)) {
-            byte[] bytes = is.readAllBytes();
+            byte[] bytes = is.readNBytes(MAX_DOWNLOAD_BYTES + 1);
+            if (bytes.length > MAX_DOWNLOAD_BYTES) {
+                return ResponseEntity.status(413).build();
+            }
             return ResponseEntity.ok()
                     .header(HttpHeaders.CONTENT_DISPOSITION,
                             "attachment; filename=\"" + objectName + "\"")
@@ -217,6 +232,7 @@ public class UserController {
      * 删除文件
      */
     @DeleteMapping("/delete")
+    @RequireAdmin
     public Result deleteFile(@RequestParam String objectName, BucketEnum bucket) {
         minIOUpLoadService.delete(objectName, bucket);
         return Result.success();

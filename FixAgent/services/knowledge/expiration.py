@@ -98,7 +98,7 @@ def _parse_verdict(text: str) -> Optional[Dict[str, Any]]:
     """从 LLM 输出中解析判决 JSON"""
     try:
         data = json.loads(text)
-        if isinstance(data, dict) and "verdict" in data:
+        if isinstance(data, dict) and data.get("verdict") in {"REPLACE", "SUPPLEMENT", "UNRELATED"}:
             return data
     except json.JSONDecodeError:
         pass
@@ -108,7 +108,7 @@ def _parse_verdict(text: str) -> Optional[Dict[str, Any]]:
     if m:
         try:
             data = json.loads(m.group(1))
-            if isinstance(data, dict) and "verdict" in data:
+            if isinstance(data, dict) and data.get("verdict") in {"REPLACE", "SUPPLEMENT", "UNRELATED"}:
                 return data
         except json.JSONDecodeError:
             pass
@@ -118,7 +118,7 @@ def _parse_verdict(text: str) -> Optional[Dict[str, Any]]:
     if m:
         try:
             data = json.loads(m.group(0))
-            if isinstance(data, dict) and "verdict" in data:
+            if isinstance(data, dict) and data.get("verdict") in {"REPLACE", "SUPPLEMENT", "UNRELATED"}:
                 return data
         except json.JSONDecodeError:
             pass
@@ -163,6 +163,8 @@ class ExpirationService:
         try:
             # 1. 从 Neo4j 查新节点详情
             new_nodes = await self._fetch_node_details(new_fault_ids, new_sol_ids)
+            new_nodes["device_name"] = device_name
+            new_nodes["new_node_ids"] = list(dict.fromkeys([*new_fault_ids, *new_sol_ids]))
 
             # 2. 第一层：Neo4j 结构匹配
             graph_candidates = await self._neo4j_candidates(device_name, new_nodes)
@@ -230,64 +232,13 @@ class ExpirationService:
         logger.info("[过期判定] 手册更新触发: manualId=%d, documentId=%s, name=%s",
                     manual_id, new_document_id, manual_name)
 
-        try:
-            # 1. 从 Redis manifest 获取新文档摘要
-            manifest = self.vector_svc.get_document_manifest(new_document_id)
-            if not manifest:
-                logger.warning("[过期判定] 手册 manifest 不存在: %s", new_document_id)
-                return {"verdicts": [], "review_queue": []}
-
-            new_summary = {
-                "type": "manual",
-                "device_type": (manifest.get("device_type") or "").strip(),
-                "manual_type": (manifest.get("manual_type") or "").strip(),
-                "document_id": new_document_id,
-                "file_name": manifest.get("file_name", manual_name),
-                "description": f"手册 {manual_name} 新版本已发布。设备类型: {manifest.get('device_type', '未知')}。"
-                              f"新版本包含更新后的维修知识，可能使旧方案过时。",
-            }
-
-            # 如果 manifest 中有 device_type，用那个；否则从手册名推断
-            device_type = new_summary["device_type"] or manual_name
-
-            # 2. 第一层：Neo4j 查同类型设备下的已有知识
-            graph_candidates = await self._neo4j_candidates_by_device_type(device_type)
-
-            # 3. 第二层：向量搜索
-            vector_candidates = await self._vector_candidates_for_manual(new_summary)
-
-            # 4. 合并去重
-            all_candidates = self._merge_dedup(graph_candidates, vector_candidates)
-
-            logger.info("[过期判定-手册] 候选: graph=%d, vector=%d, merged=%d",
-                        len(graph_candidates), len(vector_candidates), len(all_candidates))
-
-            if not all_candidates:
-                logger.info("[过期判定-手册] 无候选旧知识（可能手册对应设备类型无已有图谱知识），跳过判定")
-                return {"verdicts": [], "review_queue": []}
-
-            # 5. 第三层：LLM 判定
-            verdicts = await self._llm_batch_judge(
-                new_summary,
-                all_candidates,
-                context="新知识来自维修手册版本更新。新手册发布后将替换旧手册，应对旧手册推导出的方案进行重新评估。",
-            )
-
-            # 6. 写回 + 审核队列
-            result = await self._apply_verdicts_and_queue(
-                verdicts,
-                trigger_type="manual_upgrade",
-                device_name=device_type,
-                new_nodes=new_summary,
-            )
-
-            logger.info("[过期判定-手册] 完成: %d 个判决", len(verdicts))
-
-            return result
-
-        except Exception as e:
-            logger.error("[过期判定-手册] 失败: %s", e, exc_info=True)
-            return {"verdicts": [], "review_queue": [], "error": str(e)}
+        # 文档摘要不包含新旧方案内容，不能安全地做过期判定。
+        # 手册升级统一由 manual_upgrade_sync 的 chunk diff 处理。
+        return {
+            "verdicts": [],
+            "review_queue": [],
+            "skipped": "manual upgrade requires chunk-level diff",
+        }
 
     # ==================== 第一层：Neo4j 结构匹配 ====================
 
@@ -350,7 +301,10 @@ class ExpirationService:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.post(
                     f"{self._base_url}/weixiu/expiration/internal/candidates",
-                    json={"deviceName": device_name},
+                    json={
+                        "deviceName": device_name,
+                        "excludeNodeIds": new_nodes.get("new_node_ids", []),
+                    },
                     headers=headers,
                 )
                 if resp.status_code == 200:
@@ -422,8 +376,11 @@ class ExpirationService:
 
             for r in results:
                 meta = r.get("metadata", {})
+                node_id = self._metadata_node_id(meta)
+                if not node_id or node_id in set(new_nodes.get("new_node_ids", [])):
+                    continue
                 candidates.append({
-                    "id": r["doc_id"],
+                    "id": node_id,
                     "text": r["text"],
                     "score": r.get("relevance_score", 0),
                     "fault_name": meta.get("fault_name") or meta.get("title") or r["doc_id"],
@@ -461,8 +418,11 @@ class ExpirationService:
             candidates = []
             for r in results:
                 meta = r.get("metadata", {})
+                node_id = self._metadata_node_id(meta)
+                if not node_id:
+                    continue
                 candidates.append({
-                    "id": r["doc_id"],
+                    "id": node_id,
                     "text": r["text"],
                     "score": r.get("relevance_score", 0),
                     "fault_name": meta.get("fault_name") or r["doc_id"],
@@ -476,6 +436,15 @@ class ExpirationService:
         except Exception as e:
             logger.warning("[过期判定-手册] 第二层向量检索失败: %s", e)
             return []
+
+    @staticmethod
+    def _metadata_node_id(metadata: Dict[str, Any]) -> str:
+        """只接受向量元数据中明确声明的 Neo4j 节点 ID。"""
+        for key in ("neo4j_node_id", "graph_node_id", "node_id"):
+            value = str(metadata.get(key) or "").strip()
+            if value:
+                return value
+        return ""
 
     # ==================== 合并去重 ====================
 
@@ -546,19 +515,24 @@ class ExpirationService:
                 verdict = _parse_verdict(content)
 
                 if verdict:
+                    try:
+                        confidence = float(verdict.get("confidence", 0.0))
+                    except (TypeError, ValueError):
+                        confidence = 0.0
+                    verdict["confidence"] = min(max(confidence, 0.0), 1.0)
                     verdict["candidate_id"] = candidate.get("id", "")
                     verdict["candidate_fault_name"] = candidate.get("fault_name", "")
                     verdict["candidate_solution_title"] = candidate.get("solution_title", "")
-                    if verdict.get("confidence", 0) < 0.7:
+                    if verdict["confidence"] < 0.7:
                         verdict["need_review"] = True
                     verdicts.append(verdict)
                 else:
-                    # 解析失败，默认转 REVIEW
+                    # 无法解析不是业务判定，不能进入“确认过期”审核队列。
                     verdicts.append({
-                        "verdict": "UNRELATED",
+                        "verdict": "ERROR",
                         "confidence": 0.0,
-                        "reason": "LLM 输出无法解析，默认跳过",
-                        "need_review": True,
+                        "reason": "LLM 输出无法解析，已跳过写回",
+                        "need_review": False,
                         "candidate_id": candidate.get("id", ""),
                     })
 
@@ -566,10 +540,10 @@ class ExpirationService:
                 logger.warning("[过期判定] LLM 判定失败 candidate=%s: %s",
                                candidate.get("id", ""), e)
                 verdicts.append({
-                    "verdict": "UNRELATED",
+                    "verdict": "ERROR",
                     "confidence": 0.0,
                     "reason": f"LLM 调用失败: {e}",
-                    "need_review": True,
+                    "need_review": False,
                     "candidate_id": candidate.get("id", ""),
                 })
 
@@ -579,7 +553,17 @@ class ExpirationService:
         """把新节点列表整理成一段文本供 LLM 对比"""
         result = {}
 
-        # 如果是字典更新场景，直接用
+        # chunk 同步会直接传入扁平知识摘要。
+        if any(key in new_nodes for key in ("fault_name", "solution_title", "solution_summary")):
+            return {
+                key: new_nodes.get(key, "")
+                for key in (
+                    "device_name", "fault_name", "fault_description",
+                    "solution_title", "solution_summary",
+                )
+            }
+
+        # 如果是手册更新场景，直接用
         if new_nodes.get("type") == "manual":
             result["device_name"] = new_nodes.get("device_type", "")
             result["fault_name"] = ""
@@ -592,15 +576,24 @@ class ExpirationService:
         faults = new_nodes.get("faults", [])
         solutions = new_nodes.get("solutions", [])
 
-        if faults:
-            f = faults[0]
-            result["fault_name"] = f.get("name", "")
-            result["fault_description"] = f.get("description", "")
-
-        if solutions:
-            s = solutions[0]
-            result["solution_title"] = s.get("title", "")
-            result["solution_summary"] = s.get("description", "")
+        result["device_name"] = new_nodes.get("device_name", "")
+        result["fault_name"] = "；".join(
+            str(f.get("name") or "").strip() for f in faults if f.get("name")
+        )
+        result["fault_description"] = "\n".join(
+            str(f.get("description") or "").strip() for f in faults if f.get("description")
+        )
+        result["solution_title"] = "；".join(
+            str(s.get("title") or "").strip() for s in solutions if s.get("title")
+        )
+        result["solution_summary"] = "\n".join(
+            "故障：{}\n{}".format(
+                s.get("faultName") or "",
+                s.get("description") or "",
+            ).strip()
+            for s in solutions
+            if s.get("description") or s.get("faultName")
+        )
 
         return result
 
@@ -621,15 +614,19 @@ class ExpirationService:
             payload = {"verdicts": []}
 
             for v in verdicts:
+                candidate_id = str(v.get("candidate_id") or "").strip()
+                if not candidate_id:
+                    continue
                 if v.get("verdict") == "REPLACE" and v.get("confidence", 0) >= 0.7:
                     # 高置信度 REPLACE → 直接标记 deprecated
                     payload["verdicts"].append({
                         "nodeId": v.get("candidate_id"),
+                        "nodeType": "Solution",
                         "verdict": "REPLACE",
                         "reason": v.get("reason", ""),
                         "deprecated_by": "auto",
                     })
-                elif v.get("need_review"):
+                elif v.get("verdict") == "REPLACE" and v.get("need_review"):
                     # 低置信度或无法判定 → 入审核队列，补充新知识摘要
                     enriched = dict(v)
                     enriched["trigger_type"] = trigger_type
@@ -661,6 +658,10 @@ class ExpirationService:
                     )
                     if resp.status_code != 200:
                         logger.warning("[过期判定] 写回 Neo4j 失败: HTTP %s", resp.status_code)
+                    else:
+                        body = resp.json()
+                        if str(body.get("code")) != "200":
+                            logger.warning("[过期判定] 写回 Neo4j 业务失败: %s", body.get("message"))
 
         except Exception as e:
             logger.warning("[过期判定] 写回 Neo4j 异常: %s", e)

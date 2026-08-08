@@ -19,6 +19,8 @@ public class BatchRegisterResultVO {
     private int failed;
     /** 失败明细 */
     private List<FailRow> failures = new ArrayList<>();
+    /** 仅本次导入返回一次的初始凭据，管理员应通过安全渠道交付用户。 */
+    private List<InitialCredential> initialCredentials = new ArrayList<>();
 
     @Data
     public static class FailRow {
@@ -37,5 +39,15 @@ public class BatchRegisterResultVO {
     public void addFailure(int row, String username, String reason) {
         this.failures.add(new FailRow(row, username, reason));
         this.failed++;
+    }
+
+    public void addInitialCredential(String username, String initialPassword) {
+        this.initialCredentials.add(new InitialCredential(username, initialPassword));
+    }
+
+    @Data
+    public static class InitialCredential {
+        private final String username;
+        private final String initialPassword;
     }
 }

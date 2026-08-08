@@ -24,7 +24,7 @@ class RouteExecutor:
     ) -> RouteExecution | None:
         if plan.action == RouteAction.KNOWLEDGE_INVENTORY:
             return await self._execute_inventory(plan, inventory_tool)
-        if plan.action == RouteAction.CLARIFY:
+        if plan.action in {RouteAction.CLARIFY, RouteAction.CLARIFY_DOCUMENT}:
             return self._execute_clarification(plan)
         return None
 
@@ -63,7 +63,7 @@ class RouteExecutor:
         lines = [
             "找到多个可能适用的知识文档，请先确认要查询哪一个："
             if is_document_selection
-            else "请确认更符合哪一个候选范围："
+            else plan.clarification_question or "请确认更符合哪一个候选范围："
         ]
         normalized_options: list[dict[str, Any]] = []
         for index, option in enumerate(plan.clarification_options, start=1):
@@ -104,6 +104,7 @@ class RouteExecutor:
                 "pending_clarification": {
                     "kind": plan.clarification_kind or "slot_disambiguation",
                     "status": "awaiting_answer",
+                    "question": plan.clarification_question or lines[0],
                     "round_count": 1,
                     "max_rounds": 2,
                     "version": 1,

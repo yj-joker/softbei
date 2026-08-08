@@ -1,6 +1,10 @@
 export function normalizeClarification(raw) {
   if (!raw || typeof raw !== 'object') return null
-  const alternatives = Array.isArray(raw.alternatives) ? raw.alternatives : []
+  const alternatives = Array.isArray(raw.alternatives) && raw.alternatives.length
+    ? raw.alternatives
+    : Array.isArray(raw.candidates)
+      ? raw.candidates
+      : []
   const options = Array.isArray(raw.options) && raw.options.length
     ? raw.options
     : alternatives.map((item) => ({
@@ -11,6 +15,8 @@ export function normalizeClarification(raw) {
   return {
     ...raw,
     clarificationId: raw.clarificationId || raw.clarification_id || '',
+    status: ['awaiting', 'reasked'].includes(raw.status) ? 'awaiting_answer' : raw.status,
+    question: raw.question || raw.route_snapshot?.clarification_question || '',
     options,
   }
 }

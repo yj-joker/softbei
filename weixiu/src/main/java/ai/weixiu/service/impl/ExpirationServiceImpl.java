@@ -12,10 +12,12 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.ParameterizedTypeReference;
 import org.springframework.data.neo4j.core.Neo4jClient;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.reactive.function.client.WebClient;
-import reactor.core.publisher.Mono;
 
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
@@ -121,31 +123,23 @@ public class ExpirationServiceImpl implements ExpirationService {
     }
 
     @Override
-    public void checkManualUpgradeAsync(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType) {
+    public void checkManualUpgradeAsync(
+            Long manualId,
+            String newDocumentId,
+            String oldDocumentId,
+            String manualName,
+            String deviceType,
+            Runnable afterSyncSuccess
+    ) {
         try {
-            // 1. 触发旧版过期判定（粗粒度，文档级别）
-            Map<String, Object> upgradeBody = Map.of(
-                    "manual_id", manualId != null ? manualId : 0,
-                    "new_document_id", newDocumentId != null ? newDocumentId : "",
-                    "manual_name", manualName != null ? manualName : ""
-            );
+            if (oldDocumentId == null || oldDocumentId.isBlank()) {
+                afterSyncSuccess.run();
+                triggerKGExtractAsync(newDocumentId, manualId, deviceType, manualName);
+                return;
+            }
 
-            webClient.post()
-                    .uri("/ai/expiration/check-manual-upgrade")
-                    .header("X-Api-Token", apiToken)
-                    .bodyValue(upgradeBody)
-                    .retrieve()
-                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                    .subscribe(
-                            resp -> {
-                                log.info("[过期判定] 手册更新判定已触发: manualId={}", manualId);
-                                persistReviewQueue(resp);
-                            },
-                            e -> log.warn("[过期判定] 手册更新判定调度失败: {}", e.getMessage())
-                    );
-
-            // 2. 如果有旧版 documentId，触发 chunk 级别 KG 同步（细粒度）
-            if (oldDocumentId != null && !oldDocumentId.isBlank()) {
+            // 只保留 chunk 级同步；文档级粗粒度判定没有实际新旧内容，容易误判。
+            {
                 Map<String, Object> syncBody = Map.of(
                         "old_document_id", oldDocumentId,
                         "new_document_id", newDocumentId != null ? newDocumentId : "",
@@ -158,18 +152,30 @@ public class ExpirationServiceImpl implements ExpirationService {
                         .header("X-Api-Token", apiToken)
                         .bodyValue(syncBody)
                         .retrieve()
-                        .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
-                        .subscribe(
+                    .bodyToMono(new ParameterizedTypeReference<Map<String, Object>>() {})
+                    .subscribe(
                                 resp -> {
                                     Map<?, ?> data = resp != null ? (Map<?, ?>) resp.get("data") : null;
-                                    if (data != null) {
-                                        log.info("[KG同步] 手册升级chunk同步完成: manualId={} old={} new={} deprecated={} created={} review={}",
-                                                manualId, oldDocumentId, newDocumentId,
-                                                data.get("deprecated_count"),
-                                                data.get("added_created"),
-                                                data.get("review_queue_size"));
-                                        // review_queue 也持久化
-                                        persistReviewQueue(resp);
+                                    Object success = resp != null ? resp.get("success") : null;
+                                    Object errors = data != null ? data.get("errors") : null;
+                                    boolean hasErrors = errors instanceof List<?> list && !list.isEmpty();
+                                    if (data == null
+                                            || !"200".equals(String.valueOf(resp.get("code")))
+                                            || Boolean.FALSE.equals(success)
+                                            || hasErrors) {
+                                        log.warn("[KG同步] 业务失败，保留旧版本资源: manualId={} response={}", manualId, resp);
+                                        return;
+                                    }
+                                    log.info("[KG同步] 手册升级chunk同步完成: manualId={} old={} new={} deprecated={} created={} review={}",
+                                            manualId, oldDocumentId, newDocumentId,
+                                            data.get("deprecated_count"), data.get("added_created"),
+                                            data.get("review_queue_size"));
+                                    persistReviewQueue(resp);
+                                    try {
+                                        afterSyncSuccess.run();
+                                        triggerKGExtractAsync(newDocumentId, manualId, deviceType, manualName);
+                                    } catch (Exception callbackError) {
+                                        log.error("[KG同步] 成功回调失败，旧版本可能需要补偿清理: manualId={}", manualId, callbackError);
                                     }
                                 },
                                 e -> log.warn("[KG同步] chunk同步调度失败: manualId={} err={}", manualId, e.getMessage())
@@ -212,6 +218,8 @@ public class ExpirationServiceImpl implements ExpirationService {
 
                 // 候选旧知识
                 er.setCandidateNodeId(strOrNull(item.get("candidate_id")));
+                er.setCandidateNodeType(strOrNull(item.get("candidate_node_type")) != null
+                        ? strOrNull(item.get("candidate_node_type")) : "Solution");
                 er.setCandidateFaultName(strOrNull(item.get("candidate_fault_name")));
                 er.setCandidateSolutionTitle(strOrNull(item.get("candidate_solution_title")));
 
@@ -222,6 +230,8 @@ public class ExpirationServiceImpl implements ExpirationService {
                     er.setConfidence(BigDecimal.valueOf(((Number) conf).doubleValue()));
                 }
                 er.setLlmReason(strOrNull(item.get("reason")));
+                String reviewKey = strOrNull(item.get("review_key"));
+                er.setDedupKey(reviewKey != null ? reviewKey : buildReviewKey(item));
 
                 // 审核状态
                 er.setReviewStatus("PENDING");
@@ -233,7 +243,17 @@ public class ExpirationServiceImpl implements ExpirationService {
 
             if (!entities.isEmpty()) {
                 for (ExpirationReview er : entities) {
-                    reviewMapper.insert(er);
+                    try {
+                        Long existing = reviewMapper.selectCount(new LambdaQueryWrapper<ExpirationReview>()
+                                .eq(ExpirationReview::getDedupKey, er.getDedupKey()));
+                        if (existing != null && existing > 0) {
+                            continue;
+                        }
+                        reviewMapper.insert(er);
+                    } catch (Exception duplicateOrInsertError) {
+                        log.info("[过期判定] 跳过重复或无效审核记录: key={} err={}",
+                                er.getDedupKey(), duplicateOrInsertError.getMessage());
+                    }
                 }
                 log.info("[过期判定] review_queue 已持久化 {} 条待审记录", entities.size());
             }
@@ -248,11 +268,33 @@ public class ExpirationServiceImpl implements ExpirationService {
         return s.isEmpty() ? null : s;
     }
 
+    private static String buildReviewKey(Map<String, Object> item) {
+        String raw = String.join("|",
+                strOrNull(item.get("trigger_type")),
+                strOrNull(item.get("candidate_id")),
+                strOrNull(item.get("chunk_uid")),
+                strOrNull(item.get("new_solution_summary")),
+                strOrNull(item.get("new_content_preview")));
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(raw.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder(64);
+            for (byte value : digest) result.append(String.format("%02x", value));
+            return result.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(raw.hashCode());
+        }
+    }
+
     @Override
     public void markDeprecated(String nodeId, String nodeType, List<String> replacedByIds, String reason, String deprecatedBy) {
+        if (nodeId == null || nodeId.isBlank()) {
+            throw new IllegalArgumentException("nodeId is required");
+        }
+        String label = "Fault".equals(nodeType) ? "Fault" : "Solution";
         try {
-            neo4jClient.query(
-                    "MATCH (n) WHERE n.id = $id " +
+            var matched = neo4jClient.query(
+                    "MATCH (n:" + label + ") WHERE n.id = $id " +
                     "SET n.status = 'deprecated', " +
                     "    n.deprecated_at = datetime(), " +
                     "    n.deprecated_by = $deprecatedBy, " +
@@ -261,17 +303,24 @@ public class ExpirationServiceImpl implements ExpirationService {
             ).bind(nodeId).to("id")
              .bind(deprecatedBy != null ? deprecatedBy : "auto").to("deprecatedBy")
              .bind(replacedByIds != null ? replacedByIds : List.of()).to("replacedBy")
-             .run();
+             .fetch().one();
+            if (matched.isEmpty()) {
+                throw new IllegalStateException("Neo4j node not found: " + nodeId);
+            }
 
             log.info("[过期判定] 节点标记过期: type={} id={} reason={}", nodeType, nodeId,
                     reason != null ? reason.substring(0, Math.min(reason.length(), 80)) : "");
         } catch (Exception e) {
             log.error("[过期判定] 标记过期失败: type={} id={}", nodeType, nodeId, e);
+            throw e instanceof RuntimeException runtimeException
+                    ? runtimeException : new IllegalStateException(e);
         }
     }
 
     @Override
     public PageResult<ExpirationReview> listReviews(int page, int size, String status) {
+        page = Math.max(1, page);
+        size = Math.min(100, Math.max(1, size));
         LambdaQueryWrapper<ExpirationReview> wrapper = new LambdaQueryWrapper<>();
         if (status != null && !status.isBlank()) {
             wrapper.eq(ExpirationReview::getReviewStatus, status);
@@ -290,8 +339,9 @@ public class ExpirationServiceImpl implements ExpirationService {
     }
 
     @Override
+    @Transactional
     public void approveReview(Long reviewId, String adminName) {
-        ExpirationReview review = reviewMapper.selectById(reviewId);
+        ExpirationReview review = reviewMapper.selectByIdForUpdate(reviewId);
         if (review == null) {
             log.warn("[过期判定] 待审记录不存在: id={}", reviewId);
             return;
@@ -304,7 +354,7 @@ public class ExpirationServiceImpl implements ExpirationService {
         // 标记旧节点为 deprecated
         markDeprecated(
                 review.getCandidateNodeId(),
-                "Solution",
+                review.getCandidateNodeType() != null ? review.getCandidateNodeType() : "Solution",
                 List.of(),
                 "管理员确认过期: " + (review.getLlmReason() != null ? review.getLlmReason() : ""),
                 "admin"
@@ -321,8 +371,9 @@ public class ExpirationServiceImpl implements ExpirationService {
     }
 
     @Override
+    @Transactional
     public void rejectReview(Long reviewId, String adminName) {
-        ExpirationReview review = reviewMapper.selectById(reviewId);
+        ExpirationReview review = reviewMapper.selectByIdForUpdate(reviewId);
         if (review == null) {
             log.warn("[过期判定] 待审记录不存在: id={}", reviewId);
             return;

@@ -66,6 +66,12 @@ mybatis-plus:
       logic-not-delete-value: 0
 server:
   port: 8080
+  servlet:
+    session:
+      cookie:
+        http-only: true
+        same-site: lax
+        secure: ${SESSION_COOKIE_SECURE:false}
 logging:
   level:
     org.neo4j.ogm: DEBUG              # 打印 OGM 生成的 Cypher
@@ -85,6 +91,10 @@ ai:
   # Java→FixAgent 使用 X-Api-Token，与 FixAgent .env 中的 API_TOKEN 保持一致。
   api-token: ${AI_API_TOKEN}
 weixiu:
+  cors:
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+  media:
+    allowed-hosts: ${MEDIA_ALLOWED_HOSTS:}
   task-validate:
     enabled: true        # 入口校验总开关
     llm-enabled: true    # Layer2 快模型层（可单独关，仅留规则层）

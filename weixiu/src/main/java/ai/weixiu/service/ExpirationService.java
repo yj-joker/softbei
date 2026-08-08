@@ -36,7 +36,24 @@ public interface ExpirationService {
      * @param manualName       手册名称
      * @param deviceType       设备类型（用于 KG 候选过滤）
      */
-    void checkManualUpgradeAsync(Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType);
+    default void checkManualUpgradeAsync(
+            Long manualId, String newDocumentId, String oldDocumentId, String manualName, String deviceType
+    ) {
+        checkManualUpgradeAsync(manualId, newDocumentId, oldDocumentId, manualName, deviceType, () -> { });
+    }
+
+    /**
+     * 完成 chunk 同步后执行回调。旧版本资源只能在该回调中清理，
+     * 否则会导致同步过程失去 diff 所需的旧向量。
+     */
+    void checkManualUpgradeAsync(
+            Long manualId,
+            String newDocumentId,
+            String oldDocumentId,
+            String manualName,
+            String deviceType,
+            Runnable afterSyncSuccess
+    );
 
     /**
      * 标记 Neo4j 节点为 deprecated。

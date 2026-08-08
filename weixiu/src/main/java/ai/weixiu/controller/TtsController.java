@@ -35,6 +35,9 @@ public class TtsController {
         if (request == null || request.getText() == null || request.getText().trim().isEmpty()) {
             return ResponseEntity.badRequest().build();
         }
+        if (request.getText().length() > 2000) {
+            return ResponseEntity.badRequest().build();
+        }
         byte[] audio = ttsService.synthesize(request.getText(), request.getVoice());
         return ResponseEntity.ok()
                 .contentType(MediaType.valueOf("audio/mpeg"))

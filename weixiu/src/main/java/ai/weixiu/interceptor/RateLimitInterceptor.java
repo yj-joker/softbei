@@ -7,7 +7,8 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import lombok.extern.slf4j.Slf4j;
 import org.jspecify.annotations.NonNull;
-import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
 import org.springframework.stereotype.Component;
 import org.springframework.web.servlet.HandlerInterceptor;
 
@@ -27,8 +28,9 @@ import java.util.concurrent.TimeUnit;
 @Component
 public class RateLimitInterceptor implements HandlerInterceptor {
 
-    private final RedisTemplate<String, Object> redisTemplate;
+    private final StringRedisTemplate redisTemplate;
     private final ObjectMapper objectMapper;
+    private final DefaultRedisScript<Long> rateScript;
 
     /** 用户级限流：每分钟最多请求次数（聊天等 LLM 推理接口） */
     private static final int USER_MAX_REQUESTS = 10;
@@ -48,10 +50,21 @@ public class RateLimitInterceptor implements HandlerInterceptor {
 
     /** Redis key 前缀（TTS 独立桶） */
     private static final String KEY_PREFIX_TTS = "rate_limit:ai:tts:";
+    private static final String KEY_PREFIX_UPLOAD = "rate_limit:upload:";
+    private static final String KEY_PREFIX_EMAIL = "rate_limit:email:";
+    private static final String KEY_PREFIX_TASK = "rate_limit:task:";
 
-    public RateLimitInterceptor(RedisTemplate<String, Object> redisTemplate, ObjectMapper objectMapper) {
+    public RateLimitInterceptor(StringRedisTemplate redisTemplate, ObjectMapper objectMapper) {
         this.redisTemplate = redisTemplate;
         this.objectMapper = objectMapper;
+        this.rateScript = new DefaultRedisScript<>(
+                "local cutoff = tonumber(ARGV[1]) - tonumber(ARGV[3]) " +
+                "redis.call('ZREMRANGEBYSCORE', KEYS[1], 0, cutoff) " +
+                "local count = redis.call('ZCARD', KEYS[1]) " +
+                "if count >= tonumber(ARGV[2]) then return 0 end " +
+                "redis.call('ZADD', KEYS[1], ARGV[1], ARGV[4]) " +
+                "redis.call('EXPIRE', KEYS[1], math.floor(tonumber(ARGV[3]) / 1000) + 1) " +
+                "return count + 1", Long.class);
     }
 
     @Override
@@ -69,30 +82,25 @@ public class RateLimitInterceptor implements HandlerInterceptor {
             return true;
         }
 
-        // TTS 走独立桶 + 更高上限，避免「按句多请求」吃掉聊天额度 / 互相挤占
-        boolean isTts = request.getRequestURI().endsWith("/ai/tts");
-        int maxRequests = isTts ? TTS_MAX_REQUESTS : USER_MAX_REQUESTS;
-        String key = (isTts ? KEY_PREFIX_TTS : KEY_PREFIX) + userId;
+        String uri = request.getRequestURI();
+        boolean isTts = uri.endsWith("/ai/tts");
+        boolean isUpload = uri.endsWith("/uploadByAliyun") || uri.endsWith("/uploadByMinIO");
+        boolean isEmail = uri.endsWith("/sendEmail");
+        boolean isTask = uri.startsWith("/weixiu/task/");
+        int maxRequests = isTts ? TTS_MAX_REQUESTS : isUpload ? 10 : isEmail ? 5 : isTask ? 30 : USER_MAX_REQUESTS;
+        String prefix = isTts ? KEY_PREFIX_TTS : isUpload ? KEY_PREFIX_UPLOAD : isEmail ? KEY_PREFIX_EMAIL : isTask ? KEY_PREFIX_TASK : KEY_PREFIX;
+        String key = prefix + userId;
         long now = System.currentTimeMillis();
-
-        // 1. 移除窗口外的过期记录
-        redisTemplate.opsForZSet().removeRangeByScore(key, 0, now - WINDOW_MS);
-
-        // 2. 统计窗口内请求数
-        Long count = redisTemplate.opsForZSet().zCard(key);
-
-        if (count != null && count >= maxRequests) {
+        Long count = redisTemplate.execute(rateScript,
+                java.util.Collections.singletonList(key),
+                String.valueOf(now), String.valueOf(maxRequests), String.valueOf(WINDOW_MS),
+                now + ":" + java.util.UUID.randomUUID());
+        if (count != null && count == 0L) {
             log.warn("用户 {} 触发限流({})，1分钟内已请求 {} 次，上限 {}",
-                    userId, isTts ? "TTS" : "AI", count, maxRequests);
+                    userId, prefix, maxRequests, maxRequests);
             writeRateLimitResponse(response, maxRequests);
             return false;
         }
-
-        // 3. 记录本次请求（score 和 value 都用时间戳，保证唯一性）
-        redisTemplate.opsForZSet().add(key, String.valueOf(now), now);
-
-        // 4. 设置 key 过期时间（窗口大小 + 1秒冗余），防止冷用户 key 永不过期
-        redisTemplate.expire(key, WINDOW_MS / 1000 + 1, TimeUnit.SECONDS);
 
         return true;
     }

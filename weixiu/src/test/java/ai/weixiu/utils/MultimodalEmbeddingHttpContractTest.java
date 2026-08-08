@@ -14,6 +14,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.mockito.Mockito.mock;
@@ -33,7 +35,7 @@ class MultimodalEmbeddingHttpContractTest {
                 exchange.getRequestBody().readAllBytes();
                 apiToken.set(exchange.getRequestHeaders().getFirst("X-Api-Token"));
                 internalToken.set(exchange.getRequestHeaders().getFirst("X-Internal-Token"));
-                respond(exchange, "{\"vector\":[0.1,0.2]}");
+                respond(exchange, vectorResponse(1024));
             }
         });
         server.start();
@@ -41,10 +43,30 @@ class MultimodalEmbeddingHttpContractTest {
         try (AnnotationConfigApplicationContext context = embeddingContext(server)) {
             MultimodalEmbeddingUtils utils = context.getBean(MultimodalEmbeddingUtils.class);
 
-            assertThat(utils.getMultimodalEmbedding("测试文本", null)).containsExactly(0.1, 0.2);
+            assertThat(utils.getMultimodalEmbedding("测试文本", null)).hasSize(1024);
             assertThat(apiToken).hasValue(API_TOKEN);
             assertThat(internalToken).hasValue(null);
             assertThat(API_TOKEN).isNotEqualTo(INTERNAL_TOKEN);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void rejectsMultimodalEmbeddingWithWrongDimensions() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress("localhost", 0), 0);
+        server.createContext("/ai/embedding/multimodal", exchange -> {
+            try (exchange) {
+                exchange.getRequestBody().readAllBytes();
+                respond(exchange, vectorResponse(EmbeddingUtils.TEXT_EMBEDDING_DIMENSIONS + 1));
+            }
+        });
+        server.start();
+
+        try (AnnotationConfigApplicationContext context = embeddingContext(server)) {
+            MultimodalEmbeddingUtils utils = context.getBean(MultimodalEmbeddingUtils.class);
+
+            assertThat(utils.getMultimodalEmbedding("测试文本", null)).isNull();
         } finally {
             server.stop(0);
         }
@@ -73,5 +95,12 @@ class MultimodalEmbeddingHttpContractTest {
         exchange.getResponseHeaders().set("Content-Type", "application/json");
         exchange.sendResponseHeaders(200, bytes.length);
         exchange.getResponseBody().write(bytes);
+    }
+
+    private static String vectorResponse(int dimensions) {
+        String values = IntStream.range(0, dimensions)
+                .mapToObj(i -> "0.1")
+                .collect(Collectors.joining(","));
+        return "{\"vector\":[" + values + "]}";
     }
 }

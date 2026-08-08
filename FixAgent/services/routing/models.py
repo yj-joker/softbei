@@ -14,7 +14,7 @@ class RouteAction(str, Enum):
     KNOWLEDGE_INVENTORY = "knowledge_inventory"
     GROUNDED_RETRIEVAL = "grounded_retrieval"
     # 一级反问动作；旧名称保留为同值别名以兼容历史序列化数据。
-    CLARIFY = "clarify_document"
+    CLARIFY = "clarify"
     CLARIFY_DOCUMENT = "clarify_document"
     AI_FALLBACK = "ai_fallback"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
@@ -51,6 +51,7 @@ class RoutePlan:
     reason: str
     clarification_options: tuple[dict[str, Any], ...] = ()
     clarification_kind: str = ""
+    clarification_question: str = ""
     selected_section_id: str = ""
     graph_scope: dict[str, Any] = field(default_factory=dict)
     selected_graph_candidate_id: str = ""
@@ -78,6 +79,7 @@ class RoutePlan:
                 if isinstance(item, dict)
             ),
             clarification_kind=str(payload.get("clarification_kind") or ""),
+            clarification_question=str(payload.get("clarification_question") or ""),
             selected_section_id=str(payload.get("selected_section_id") or ""),
             graph_scope=dict(payload.get("graph_scope") or {})
             if isinstance(payload.get("graph_scope"), dict)

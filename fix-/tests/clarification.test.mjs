@@ -59,3 +59,23 @@ test('legacy diagnostic follow-up keeps its existing context contract', () => {
   assert.equal(context.selected_option_id, 'A')
   assert.equal(context.diagnostic_follow_up.scenarioId, 'blue-smoke')
 })
+
+
+test('normalizes authoritative state candidates into clickable LLM clarification options', () => {
+  const pending = {
+    clarification_id: 'clarification-llm',
+    kind: 'llm_slot_clarification',
+    status: 'awaiting',
+    route_snapshot: { clarification_question: '当前最明显的异常表现是哪一种？' },
+    candidates: [
+      { id: 'A', label: '无法启动', value: '无法启动' },
+      { id: 'B', label: '运行中异响', value: '运行中异响' },
+    ],
+  }
+
+  const normalized = normalizeClarification(pending)
+
+  assert.equal(normalized.status, 'awaiting_answer')
+  assert.equal(normalized.question, '当前最明显的异常表现是哪一种？')
+  assert.deepEqual(normalized.options.map((item) => item.label), ['无法启动', '运行中异响'])
+})

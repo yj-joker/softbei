@@ -161,6 +161,7 @@ class ClarificationState:
     topic_signature: str
     original_query: str
     candidates: tuple[dict[str, Any], ...]
+    question: str = ""
     route_snapshot: Mapping[str, Any] = field(default_factory=dict)
     round_count: int = 1
     max_rounds: int = 2
@@ -218,6 +219,13 @@ class ClarificationStateStore:
             topic_signature=identity["topic_signature"],
             original_query=identity["query"],
             candidates=candidates,
+            question=str(
+                payload.get("question")
+                or (route_snapshot or payload.get("route_snapshot") or {}).get(
+                    "clarification_question"
+                )
+                or ""
+            ),
             route_snapshot=dict(route_snapshot or payload.get("route_snapshot") or {}),
             max_rounds=max(1, int(max_rounds)),
             created_at=now,

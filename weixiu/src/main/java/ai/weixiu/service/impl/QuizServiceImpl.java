@@ -18,6 +18,8 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.amqp.rabbit.core.RabbitTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.time.LocalDateTime;
 import java.util.*;
@@ -74,10 +76,31 @@ public class QuizServiceImpl implements QuizService {
         msg.setTaskHistory(taskHistory);
         msg.setExistingTopics(loadExistingTopics(userId));
 
-        rabbitTemplate.convertAndSend(
-                RabbitMQConfig.TASK_EXCHANGE, RabbitMQConfig.QUIZ_GENERATE_KEY, msg);
-        log.info("[出题] 发送生成消息 userId={} sessionId={} portrait={} mastery={} taskHistory={}",
-                userId, session.getId(), reflections.size(), mastery.size(), taskHistory.size());
+        Runnable publish = () -> {
+            try {
+                rabbitTemplate.convertAndSend(
+                        RabbitMQConfig.TASK_EXCHANGE, RabbitMQConfig.QUIZ_GENERATE_KEY, msg);
+                log.info("[出题] 发送生成消息 userId={} sessionId={}", userId, session.getId());
+            } catch (RuntimeException ex) {
+                log.error("[出题] MQ发布失败 sessionId={}", session.getId(), ex);
+                QuizSession current = sessionMapper.selectById(session.getId());
+                if (current != null && "GENERATING".equals(current.getStatus())) {
+                    current.setStatus("FAILED").setErrorMsg("生成任务发送失败，请重试");
+                    sessionMapper.updateById(current);
+                }
+            }
+        };
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    publish.run();
+                }
+            });
+        } else {
+            rabbitTemplate.convertAndSend(
+                    RabbitMQConfig.TASK_EXCHANGE, RabbitMQConfig.QUIZ_GENERATE_KEY, msg);
+        }
         return session.getId();
     }
 
@@ -159,7 +182,7 @@ public class QuizServiceImpl implements QuizService {
     @Override
     @Transactional
     public void onGenerateResult(Long sessionId, boolean success, List<Map<String, Object>> questions, String error) {
-        QuizSession session = sessionMapper.selectById(sessionId);
+        QuizSession session = sessionMapper.selectByIdForUpdate(sessionId);
         if (session == null) { log.warn("[出题] 回填：session不存在 {}", sessionId); return; }
         if (!"GENERATING".equals(session.getStatus())) {
             log.warn("[出题] 回填：session状态非GENERATING {} status={}", sessionId, session.getStatus()); return;
@@ -195,7 +218,7 @@ public class QuizServiceImpl implements QuizService {
     @Override
     @Transactional
     public QuizSubmitResultVO submit(Long sessionId, Long userId, Map<Long, String> answers) {
-        QuizSession session = sessionMapper.selectById(sessionId);
+        QuizSession session = sessionMapper.selectByIdForUpdate(sessionId);
         if (session == null || !userId.equals(session.getUserId())) throw new NotFoundException("会话不存在");
         if ("SUBMITTED".equals(session.getStatus())) throw new TaskStateException("该会话已提交");
         if (!"READY".equals(session.getStatus())) throw new TaskStateException("会话未就绪: " + session.getStatus());
