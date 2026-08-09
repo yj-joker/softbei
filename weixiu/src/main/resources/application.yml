@@ -1,6 +1,8 @@
 spring:
   profiles:
-    active: ${SPRING_PROFILES_ACTIVE:dev}
+    # 默认不激活 dev，Java 本地启动由 scripts/start-local.ps1 加载 FixAgent/.env。
+    # 如需显式使用其他 Spring profile，仍可通过 SPRING_PROFILES_ACTIVE 覆盖。
+    active: ${SPRING_PROFILES_ACTIVE:}
   mail:
     host: ${SMTP_HOST:smtp.qq.com}
     port: ${SMTP_PORT:587}
@@ -20,20 +22,20 @@ spring:
       max-file-size: 100MB
       max-request-size: 100MB
   neo4j:
-    uri: ${SPRING_NEO4J_URI:${BOLT_URI:bolt://127.0.0.1:7687}}
+    uri: ${SPRING_NEO4J_URI:${NEO4J_URI:bolt://localhost:7687}}
     authentication:
-      username: neo4j
-      password: ${SPRING_NEO4J_AUTHENTICATION_PASSWORD:${NEO4J_PASSWORD}}
+      username: ${SPRING_NEO4J_AUTHENTICATION_USERNAME:${NEO4J_USERNAME:neo4j}}
+      password: ${SPRING_NEO4J_AUTHENTICATION_PASSWORD:${NEO4J_PASSWORD:}}
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://127.0.0.1:3306/fix?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
-    username: ${SPRING_DATASOURCE_USERNAME:${MYSQL_USER}}
-    password: ${SPRING_DATASOURCE_PASSWORD:${MYSQL_PASSWORD}}
+    url: ${SPRING_DATASOURCE_URL:jdbc:mysql://${MYSQL_HOST:localhost}:${MYSQL_PORT:3306}/${MYSQL_DATABASE:fix}?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true}
+    username: ${SPRING_DATASOURCE_USERNAME:${MYSQL_USER:root}}
+    password: ${SPRING_DATASOURCE_PASSWORD:${MYSQL_PASSWORD:}}
   rabbitmq:
-    host: ${SPRING_RABBITMQ_HOST:${RABBITMQ_HOST:127.0.0.1}}
+    host: ${SPRING_RABBITMQ_HOST:${RABBITMQ_HOST:localhost}}
     port: ${SPRING_RABBITMQ_PORT:${RABBITMQ_PORT:5672}}
-    username: ${SPRING_RABBITMQ_USERNAME:${RABBITMQ_USER}}
-    password: ${SPRING_RABBITMQ_PASSWORD:${RABBITMQ_PASSWORD}}
+    username: ${SPRING_RABBITMQ_USERNAME:${RABBITMQ_USER:guest}}
+    password: ${SPRING_RABBITMQ_PASSWORD:${RABBITMQ_PASSWORD:guest}}
     virtual-host: /
     publisher-confirm-type: correlated
     publisher-returns: true
@@ -43,7 +45,7 @@ spring:
         prefetch: 10
   data:
     redis:
-      host: ${SPRING_DATA_REDIS_HOST:${REDIS_HOST}}
+      host: ${SPRING_DATA_REDIS_HOST:${REDIS_HOST:localhost}}
       port: ${SPRING_DATA_REDIS_PORT:${REDIS_PORT:6379}}
       password: ${SPRING_DATA_REDIS_PASSWORD:${REDIS_PASSWORD:}}
       database: 1
@@ -54,6 +56,8 @@ spring:
           max-idle: 8
           min-idle: 0
           max-wait: -1ms
+    neo4j:
+      database: ${NEO4J_DATABASE:neo4j}
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
@@ -82,17 +86,17 @@ aliyun:
     bucket: ${OSS_BUCKET:}
     access-key-id: ${OSS_ACCESS_KEY_ID:}
     access-key-secret: ${OSS_ACCESS_KEY_SECRET:}
-apikey: ${DASHSCOPE_API_KEY}
+apikey: ${DASHSCOPE_API_KEY:}
 ai:
   # Python 服务地址，Docker 部署时通过 PYTHON_SERVICE_URL 环境变量覆盖
   python-service-url: ${PYTHON_SERVICE_URL:http://localhost:8000}
   # FixAgent→Java 使用 X-Internal-Token；Java→FixAgent 使用 X-Api-Token，二者必须不同。
   internal-token: ${INTERNAL_TOKEN}
   # Java→FixAgent 使用 X-Api-Token，与 FixAgent .env 中的 API_TOKEN 保持一致。
-  api-token: ${AI_API_TOKEN}
+  api-token: ${API_TOKEN:}
 weixiu:
   cors:
-    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:5173,http://127.0.0.1:5173}
+    allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}
   media:
     allowed-hosts: ${MEDIA_ALLOWED_HOSTS:}
   task-validate:
@@ -100,8 +104,15 @@ weixiu:
     llm-enabled: true    # Layer2 快模型层（可单独关，仅留规则层）
 # ===== MinIO 配置 =====
 minio:
-  endpoint: ${MINIO_ENDPOINT:http://127.0.0.1:9000}
-  public-base-url: ${MINIO_PUBLIC_BASE_URL:${minio.endpoint}}
-  access-key: ${MINIO_ACCESS_KEY}
-  secret-key: ${MINIO_SECRET_KEY}
-  bucket: ${MINIO_BUCKET}
+  # .env 中的 MINIO_ENDPOINT 可能是 localhost:9000，启动脚本和 Java 配置层都会补全协议。
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  public-base-url: ${MINIO_PUBLIC_BASE_URL:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:}
+  secret-key: ${MINIO_SECRET_KEY:}
+  bucket: ${MINIO_DOCUMENT_BUCKET:${MINIO_BUCKET:weixiu-private-wendang}}
+  secure: ${MINIO_SECURE:false}
+
+app:
+  middleware-verification:
+    # 仅在启动脚本传入 -VerifyMiddleware 时执行 Java 侧连通性检查。
+    enabled: ${MIDDLEWARE_VERIFICATION_ENABLED:false}

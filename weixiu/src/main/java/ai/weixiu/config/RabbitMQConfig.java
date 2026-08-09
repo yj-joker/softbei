@@ -117,8 +117,8 @@ public class RabbitMQConfig {
 
     @Bean
     public Queue resultQueue() {
-        return QueueBuilder.durable(RESULT_QUEUE)
-                .withArgument("x-dead-letter-exchange", DLX_EXCHANGE).build();
+        // Python 生产者也会声明结果队列；双方参数必须完全一致，否则 RabbitMQ 返回 406。
+        return QueueBuilder.durable(RESULT_QUEUE).build();
     }
 
     @Bean
@@ -143,8 +143,7 @@ public class RabbitMQConfig {
 
     @Bean
     public Queue reflectionResultQueue() {
-        return QueueBuilder.durable(REFLECTION_RESULT_QUEUE)
-                .withArgument("x-dead-letter-exchange", DLX_EXCHANGE).build();
+        return QueueBuilder.durable(REFLECTION_RESULT_QUEUE).build();
     }
 
     @Bean
@@ -176,8 +175,7 @@ public class RabbitMQConfig {
     /** 知识导入结果队列（Python → Java） */
     @Bean
     public Queue knowledgeResultQueue() {
-        return QueueBuilder.durable(KNOWLEDGE_RESULT_QUEUE)
-                .withArgument("x-dead-letter-exchange", DLX_EXCHANGE).build();
+        return QueueBuilder.durable(KNOWLEDGE_RESULT_QUEUE).build();
     }
 
     @Bean
@@ -209,8 +207,7 @@ public class RabbitMQConfig {
     /** 检修步骤生成结果队列（Python → Java） */
     @Bean
     public Queue taskGenerateResultQueue() {
-        return QueueBuilder.durable(TASK_GENERATE_RESULT_QUEUE)
-                .withArgument("x-dead-letter-exchange", DLX_EXCHANGE).build();
+        return QueueBuilder.durable(TASK_GENERATE_RESULT_QUEUE).build();
     }
 
     @Bean
@@ -233,8 +230,7 @@ public class RabbitMQConfig {
 
     @Bean
     public Queue taskEvidenceExtractResultQueue() {
-        return QueueBuilder.durable(TASK_EVIDENCE_EXTRACT_RESULT_QUEUE)
-                .withArgument("x-dead-letter-exchange", DLX_EXCHANGE).build();
+        return QueueBuilder.durable(TASK_EVIDENCE_EXTRACT_RESULT_QUEUE).build();
     }
 
     @Bean
@@ -261,8 +257,7 @@ public class RabbitMQConfig {
     /** 步骤AI验证结果队列（Python → Java） */
     @Bean
     public Queue stepVerifyResultQueue() {
-        return QueueBuilder.durable(TASK_STEP_VERIFY_RESULT_QUEUE)
-                .withArgument("x-dead-letter-exchange", DLX_EXCHANGE).build();
+        return QueueBuilder.durable(TASK_STEP_VERIFY_RESULT_QUEUE).build();
     }
 
     @Bean
@@ -289,8 +284,7 @@ public class RabbitMQConfig {
     /** 出题生成结果队列（Python → Java） */
     @Bean
     public Queue quizGenerateResultQueue() {
-        return QueueBuilder.durable(QUIZ_GENERATE_RESULT_QUEUE)
-                .withArgument("x-dead-letter-exchange", DLX_EXCHANGE).build();
+        return QueueBuilder.durable(QUIZ_GENERATE_RESULT_QUEUE).build();
     }
 
     @Bean

@@ -22,4 +22,7 @@ public class MinioProperties {
 
     /** 默认存储桶名称 */
     private String bucket;
+
+    /** 未显式携带协议时是否使用 HTTPS */
+    private boolean secure;
 }
