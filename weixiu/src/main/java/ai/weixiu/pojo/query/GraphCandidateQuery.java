@@ -12,6 +12,11 @@ public class GraphCandidateQuery {
     private List<String> allowedDocumentIds = new ArrayList<>();
     private List<String> allowedSectionIds = new ArrayList<>();
     private List<String> allowedSourceChunkUids = new ArrayList<>();
+    private List<String> allowedDeviceIds = new ArrayList<>();
+    private List<String> allowedComponentIds = new ArrayList<>();
+    private List<String> allowedFaultIds = new ArrayList<>();
+    private List<String> allowedPathIds = new ArrayList<>();
+    private List<String> allowedGraphNodeIds = new ArrayList<>();
     private int limit = 10;
     private double minScore = 0.70;
 }

@@ -152,6 +152,7 @@ def test_maintenance_ai_fallback_removes_unverified_exact_values_and_citations(m
     llm = _FakeLLM(
         "知识库没有该设备对应文档，以下内容来自 AI，仅供参考。\n"
         "可以先记录异响出现的工况和位置。\n"
+        "蓄电池电压一般应高于12V且无明显亏电。\n"
         "叶片叶尖间隙通常小于 0.1 mm。\n"
         "任何异响均需按 CCAR-121.705 / FAR 121.705 报修。\n"
         "具体拆装见手册第 18 页。"
@@ -175,7 +176,7 @@ def test_maintenance_ai_fallback_removes_unverified_exact_values_and_citations(m
     assert output is not None
     assert "记录异响出现的工况和位置" in output.message
     assert all(marker in output.message for marker in ("知识库", "AI", "仅供参考"))
-    assert all(term not in output.message for term in ("0.1 mm", "CCAR-121.705", "FAR 121.705", "第 18 页"))
+    assert all(term not in output.message for term in ("12V", "0.1 mm", "CCAR-121.705", "FAR 121.705", "第 18 页"))
     assert output.metadata["fallback_safety_filters"] == [
         "unverified_measurement",
         "unverified_reference",

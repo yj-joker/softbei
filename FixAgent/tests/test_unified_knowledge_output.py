@@ -1343,6 +1343,74 @@ def test_post_retrieval_unsupported_fault_diagnosis_uses_safe_ai_fallback(monkey
     assert output.metadata["evidence_images"] == []
 
 
+def test_confirmed_observation_uses_safe_ai_fallback_when_retrieval_is_empty(monkeypatch) -> None:
+    query = "发动机损坏怎么办；用户已确认：现场现象：完全无法启动"
+    request = ChatRequest(session_id="observation-cold-start", message=query)
+    input_data = AgentInput(
+        user_message=query,
+        session_id=request.session_id,
+        context={
+            "intent_decision": {
+                "intent": "maintenance_guidance",
+                "task_action": "repair_guidance",
+            },
+            "scope_decision": {"status": "in_scope"},
+            "response_policy": {
+                "mode": "PENDING_RETRIEVAL",
+                "allow_ai_fallback": False,
+            },
+            "clarification_constraints": {
+                "clarification_source": "llm_fallback",
+                "clarification_dimension": "symptom",
+                "symptoms": ["完全无法启动"],
+            },
+            "resolved_clarification": {"kind": "llm_slot_clarification"},
+        },
+    )
+    audited = AgentOutput(
+        agent_name="fix_agent",
+        message="当前知识库没有找到足以回答该问题的可靠依据。",
+        tools_used=["knowledge_retrieval"],
+        metadata={
+            "coverage_status": "unsupported",
+            "response_policy": {
+                "mode": "PENDING_RETRIEVAL",
+                "allow_ai_fallback": False,
+            },
+            "scope_decision": {"status": "in_scope"},
+            "react_trace": [{
+                "tool_calls": [{"name": "knowledge_retrieval", "result_data": []}],
+            }],
+        },
+    )
+
+    class _LLM:
+        async def chat(self, messages, **kwargs):
+            return {
+                "content": (
+                    "先确认蓄电池电压、启动机是否运转以及燃油供应是否正常，"
+                    "不要连续长时间启动。"
+                )
+            }
+
+    monkeypatch.setattr(main, "get_llm_service", lambda: _LLM())
+
+    output = asyncio.run(main._try_post_retrieval_ai_fallback(
+        request,
+        input_data,
+        audited,
+    ))
+
+    assert output is not None
+    assert "知识库" in output.message
+    assert "AI" in output.message
+    assert "仅供参考" in output.message
+    assert "蓄电池" in output.message
+    assert output.metadata["execution_mode"] == "maintenance_ai_fallback_after_retrieval"
+    assert output.metadata["source_type"] == "ai"
+    assert output.metadata["evidence_images"] == []
+
+
 def test_shared_finalizer_runs_post_retrieval_fallback_after_evidence_audit(monkeypatch) -> None:
     request = ChatRequest(session_id="shared-finalizer", message="摩托车发动机异响是什么原因")
     input_data = AgentInput(user_message=request.message, session_id=request.session_id)

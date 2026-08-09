@@ -86,11 +86,70 @@ def test_llm_fallback_builds_only_local_safe_constraints() -> None:
     assert "document_id" not in json.dumps(result.options, ensure_ascii=False)
 
 
+def test_observation_options_do_not_become_document_ids_in_pending_state() -> None:
+    plan = replace(
+        _plan(),
+        action=RouteAction.CLARIFY,
+        clarification_kind="llm_slot_clarification",
+        clarification_question="当前最明显的异常表现是哪一种？",
+        clarification_options=(
+            {
+                "id": "A",
+                "label": "完全无法启动",
+                "value": "完全无法启动",
+                "constraints": {
+                    "clarification_source": "llm_fallback",
+                    "clarification_dimension": "symptom",
+                    "symptoms": ["完全无法启动"],
+                },
+            },
+            {
+                "id": "B",
+                "label": "启动后立即熄火",
+                "value": "启动后立即熄火",
+                "constraints": {
+                    "clarification_source": "llm_fallback",
+                    "clarification_dimension": "symptom",
+                    "symptoms": ["启动后立即熄火"],
+                },
+            },
+        ),
+    )
+
+    execution = asyncio.run(RouteExecutor().execute(plan))
+
+    assert execution is not None
+    assert "直接描述现场现象" in execution.message
+    assert "候选范围" not in execution.message
+    options = execution.metadata["pending_clarification"]["candidates"]
+    assert [item["document_id"] for item in options] == ["", ""]
+    assert [item["constraints"].get("symptoms") for item in options] == [
+        ["完全无法启动"],
+        ["启动后立即熄火"],
+    ]
+
+
 def test_llm_fallback_rejects_diagnosis_or_repair_options() -> None:
     payload = _draft_payload()
     payload["options"] = [
         {"label": "一定是曲轴故障", "value": "一定是曲轴故障"},
         {"label": "立即更换轴承", "value": "立即更换轴承"},
+    ]
+
+    result = asyncio.run(LLMClarificationService(_FakeLLM(payload)).build(
+        query="发动机损坏了",
+        query_contract={},
+    ))
+
+    assert result is None
+
+
+def test_llm_fallback_rejects_component_or_operation_choices() -> None:
+    payload = _draft_payload()
+    payload["options"] = [
+        {"label": "传动装置", "value": "传动装置"},
+        {"label": "检查火花塞", "value": "检查火花塞"},
+        {"label": "曲轴与平衡轴", "value": "曲轴与平衡轴"},
     ]
 
     result = asyncio.run(LLMClarificationService(_FakeLLM(payload)).build(
@@ -167,7 +226,7 @@ def test_existing_document_does_not_skip_llm_clarification_after_graph_miss(monk
     assert len(llm.calls) == 1
 
 
-def test_usable_graph_clarification_keeps_priority_over_llm(monkeypatch) -> None:
+def test_usable_graph_observation_keeps_priority_over_llm(monkeypatch) -> None:
     monkeypatch.setattr(
         main,
         "get_llm_service",
@@ -177,8 +236,8 @@ def test_usable_graph_clarification_keeps_priority_over_llm(monkeypatch) -> None
     graph_plan = replace(
         _plan(),
         action=RouteAction.CLARIFY,
-        clarification_kind="graph_scope",
-        clarification_options=({"id": "A", "label": "驱动单元"},),
+        clarification_kind="graph_observation",
+        clarification_options=({"id": "A", "label": "启动时无反应"},),
     )
 
     routed = asyncio.run(main._maybe_apply_llm_clarification(
@@ -189,6 +248,80 @@ def test_usable_graph_clarification_keeps_priority_over_llm(monkeypatch) -> None
     ))
 
     assert routed == graph_plan
+
+
+def test_ambiguous_graph_candidates_are_context_for_observation_question() -> None:
+    llm = _FakeLLM(_draft_payload())
+    candidates = __import__(
+        "services.clarification.graph_candidates",
+        fromlist=["build_graph_candidates"],
+    ).build_graph_candidates([{
+        "pathId": "path-bearing",
+        "componentName": "曲轴",
+        "faultName": "轴承磨损",
+        "distinguishingFeatures": ["运行中异响"],
+    }])
+
+    result = asyncio.run(LLMClarificationService(llm).build(
+        query="发动机损坏了",
+        query_contract=_plan().query_contract.to_dict(),
+        graph_candidates=candidates,
+    ))
+
+    assert result is not None
+    request_payload = json.loads(llm.calls[0]["messages"][1]["content"])
+    assert request_payload["knowledge_graph_status"] == "ambiguous_candidates"
+    assert request_payload["knowledge_graph_candidates"] == [{
+        "component": "曲轴",
+        "possible_fault": "轴承磨损",
+        "known_observations": ["运行中异响"],
+    }]
+
+
+def test_vague_query_without_existing_symptom_can_still_ask_observation(monkeypatch) -> None:
+    llm = _FakeLLM(_draft_payload())
+    monkeypatch.setattr(main, "get_llm_service", lambda: llm)
+    vague_contract = QueryContract.from_mapping(
+        {"intent": "fault_diagnosis", "task_action": "find_cause"},
+        raw_query="发动机有问题",
+    )
+    vague_plan = replace(_plan(), query_contract=vague_contract)
+
+    routed = asyncio.run(main._maybe_apply_llm_clarification(
+        vague_plan,
+        intent_decision=IntentDecision(intent="fault_diagnosis", task_action="find_cause"),
+        graph_candidates=(),
+        context={},
+    ))
+
+    assert routed.action == RouteAction.CLARIFY
+    assert routed.clarification_kind == "llm_slot_clarification"
+
+
+def test_misclassified_maintenance_request_uses_observation_fallback(monkeypatch) -> None:
+    llm = _FakeLLM(_draft_payload())
+    monkeypatch.setattr(main, "get_llm_service", lambda: llm)
+    plan = replace(
+        _plan(),
+        intent="maintenance_guidance",
+        task_action="repair_guidance",
+        reason="diagnostic_ambiguity_without_observable_discriminator",
+    )
+    decision = IntentDecision(
+        intent="maintenance_guidance",
+        task_action="repair_guidance",
+        symptoms=("发动机损坏",),
+    )
+
+    routed = asyncio.run(main._maybe_apply_llm_clarification(
+        plan,
+        intent_decision=decision,
+        graph_candidates=(),
+        context={},
+    ))
+
+    assert routed.action == RouteAction.CLARIFY
+    assert routed.clarification_kind == "llm_slot_clarification"
 
 
 def test_confirmed_option_is_merged_into_next_graph_query_contract() -> None:
@@ -203,6 +336,18 @@ def test_confirmed_option_is_merged_into_next_graph_query_contract() -> None:
 
     assert merged.symptoms == ("损坏", "无法启动")
     assert "用户已确认：现场现象：无法启动" in main._clarified_query_text(merged)
+
+
+def test_confirmed_graph_observation_is_merged_into_answer_query() -> None:
+    contract = _plan().query_contract
+    merged = main._apply_llm_clarification_constraints(contract, {
+        "observable_symptom": "加速阶段皮带连续啸叫",
+        "document_id": "manual-engine",
+        "allowed_path_ids": ["path-belt-noise"],
+    })
+
+    assert merged.symptoms == ("损坏", "加速阶段皮带连续啸叫")
+    assert "用户已确认：现场现象：加速阶段皮带连续啸叫" in main._clarified_query_text(merged)
 
 
 def test_two_completed_llm_rounds_do_not_start_a_third(monkeypatch) -> None:

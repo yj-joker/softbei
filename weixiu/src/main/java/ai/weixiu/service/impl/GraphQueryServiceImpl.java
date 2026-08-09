@@ -276,6 +276,13 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             log.info("图谱候选向量召回不可用: {}", e.getMessage());
             throw new IllegalStateException("graph_candidate_recall_unavailable", e);
         }
+        // 反问选项中的图谱 ID 是服务端生成的确定性约束，比原始模糊问题的
+        // 向量召回更权威。即使原问题没有召回到已选节点，也必须让该节点进入
+        // 后续 MATCH；真正的边界仍由下方 allow-list 条件做交集过滤。
+        normalizedTextList(request.getAllowedComponentIds()).forEach(
+                id -> componentScores.merge(id, 1.0, Math::max));
+        normalizedTextList(request.getAllowedFaultIds()).forEach(
+                id -> faultScores.merge(id, 1.0, Math::max));
         if (componentScores.isEmpty() && faultScores.isEmpty()) {
             String mode = combineRecallModes(componentRecallMode, faultRecallMode);
             return candidateBatch(degraded ? "degraded" : "empty",
@@ -311,6 +318,21 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         addListFilter(params, scopeConditions, "allowedSourceChunkUids", "chunkFilter",
                 request.getAllowedSourceChunkUids(),
                 "(c.source_chunk_uid IN $allowedSourceChunkUids OR f.source_chunk_uid IN $allowedSourceChunkUids OR any(uid IN coalesce(c.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids) OR any(uid IN coalesce(f.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids))");
+        addListFilter(params, scopeConditions, "allowedDeviceIds", "allowedDeviceFilter",
+                request.getAllowedDeviceIds(),
+                "d.id IN $allowedDeviceIds");
+        addListFilter(params, scopeConditions, "allowedComponentIds", "allowedComponentFilter",
+                request.getAllowedComponentIds(),
+                "c.id IN $allowedComponentIds");
+        addListFilter(params, scopeConditions, "allowedFaultIds", "allowedFaultFilter",
+                request.getAllowedFaultIds(),
+                "f.id IN $allowedFaultIds");
+        addListFilter(params, scopeConditions, "allowedPathIds", "allowedPathFilter",
+                request.getAllowedPathIds(),
+                "('kgpath:' + d.id + ':' + c.id + ':' + coalesce(f.id, '')) IN $allowedPathIds");
+        addListFilter(params, scopeConditions, "allowedGraphNodeIds", "allowedGraphNodeFilter",
+                request.getAllowedGraphNodeIds(),
+                "d.id IN $allowedGraphNodeIds AND c.id IN $allowedGraphNodeIds AND (f IS NULL OR f.id IN $allowedGraphNodeIds)");
 
         String cypher = """
                 MATCH (d:Device)-[:OWNS]->(c:Component)
@@ -322,6 +344,11 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                   AND ($documentFilter = false OR coalesce(c.document_id, d.document_id, f.document_id) IN $allowedDocumentIds)
                   AND ($sectionFilter = false OR coalesce(c.section_id, f.section_id) IN $allowedSectionIds)
                   AND ($chunkFilter = false OR c.source_chunk_uid IN $allowedSourceChunkUids OR f.source_chunk_uid IN $allowedSourceChunkUids OR any(uid IN coalesce(c.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids) OR any(uid IN coalesce(f.source_chunk_uids, []) WHERE uid IN $allowedSourceChunkUids))
+                  AND ($allowedDeviceFilter = false OR d.id IN $allowedDeviceIds)
+                  AND ($allowedComponentFilter = false OR c.id IN $allowedComponentIds)
+                  AND ($allowedFaultFilter = false OR f.id IN $allowedFaultIds)
+                  AND ($allowedPathFilter = false OR ('kgpath:' + d.id + ':' + c.id + ':' + coalesce(f.id, '')) IN $allowedPathIds)
+                  AND ($allowedGraphNodeFilter = false OR (d.id IN $allowedGraphNodeIds AND c.id IN $allowedGraphNodeIds AND (f IS NULL OR f.id IN $allowedGraphNodeIds)))
                 WITH DISTINCT d, c, f,
                      CASE WHEN coalesce($componentScores[c.id], 0.0) > coalesce($faultScores[f.id], 0.0)
                           THEN coalesce($componentScores[c.id], 0.0)
@@ -341,6 +368,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                        coalesce(f.source_chunk_uids, CASE WHEN f.source_chunk_uid IS NULL THEN [] ELSE [f.source_chunk_uid] END) AS faultChunks,
                        coalesce(f.page_start, c.page_start, d.page_start) AS pageStart,
                        coalesce(f.page_end, c.page_end, d.page_end) AS pageEnd,
+                       coalesce(f.distinguishing_features, f.observable_symptoms, f.symptoms, []) AS distinguishingFeatures,
+                       coalesce(f.verification_actions, f.check_actions, []) AS verificationActions,
                        CASE WHEN f IS NULL THEN 'procedure' ELSE 'fault' END AS pathType,
                        graphScore,
                        CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL THEN 'missing'
@@ -645,6 +674,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         candidate.setPathType(asText(row.get("pathType")));
         candidate.setGraphScore(number(row.get("graphScore")));
         candidate.setProvenanceStatus(asText(row.get("provenanceStatus")));
+        candidate.setDistinguishingFeatures(concatTextLists(row.get("distinguishingFeatures")));
+        candidate.setVerificationActions(concatTextLists(row.get("verificationActions")));
         String pathId = "kgpath:" + String.join(":", candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId());
         candidate.setPathId(pathId);
         candidate.setSourceChunkUids(selectPathSourceChunkUids(
@@ -679,6 +710,15 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         params.put(parameter, normalized);
         params.put(switchName, !normalized.isEmpty());
         conditions.add(condition);
+    }
+
+    private static List<String> normalizedTextList(List<String> values) {
+        return values == null ? List.of() : values.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(value -> !value.isBlank())
+                .distinct()
+                .toList();
     }
 
     private static String joinText(Object... values) {
@@ -986,6 +1026,13 @@ public class GraphQueryServiceImpl implements GraphQueryService {
     private static List<String> concatTextLists(Object... values) {
         List<String> result = new ArrayList<>();
         for (Object value : values) {
+            if (value instanceof CharSequence) {
+                String text = asText(value);
+                if (!text.isBlank() && !result.contains(text)) {
+                    result.add(text);
+                }
+                continue;
+            }
             if (!(value instanceof Collection<?> collection)) {
                 continue;
             }

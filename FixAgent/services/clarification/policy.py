@@ -52,6 +52,7 @@ _HIGH_RISK_DIMENSIONS = {
     "component_id",
     "fault_id",
     "path_id",
+    "observable_symptom",
 }
 _MEDIUM_RISK_DIMENSIONS = {
     "document_id",
@@ -63,6 +64,7 @@ _MEDIUM_RISK_DIMENSIONS = {
     "device_id",
     "component_id",
     "fault_id",
+    "observable_symptom",
 }
 _DIMENSION_TIE_ORDER = {
     "document_id": 0,
@@ -80,6 +82,7 @@ _DIMENSION_TIE_ORDER = {
     "component_id": 6,
     "fault_id": 7,
     "path_id": 11,
+    "observable_symptom": 0,
 }
 
 
@@ -305,6 +308,7 @@ class ClarificationDecisionEngine:
             for index, (value, grouped_candidates) in enumerate(sorted(groups.items()))
         )
         prompts = {
+            "observable_symptom": "请确认现场最明显的现象更接近哪一种？",
             "device_id": "请确认当前需要检修的是哪台设备？",
             "document_id": "请确认应以哪份设备资料为准？",
             "component_id": "异常更接近下列哪个部件？",

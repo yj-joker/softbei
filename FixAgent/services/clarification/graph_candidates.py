@@ -18,6 +18,15 @@ from services.clarification.models import KnowledgeCandidate
 
 _PAGE_RE = re.compile(r"(?:^|[:#/_ -])(?:page|p)[:#/_ -]?(\d{1,4})(?:$|[^\d])", re.IGNORECASE)
 
+_OBSERVABLE_HINTS = (
+    "无法启动", "不能启动", "启动困难", "不工作", "熄火", "异响", "啸叫",
+    "撞击声", "噪声", "抖动", "振动", "冒烟", "漏油", "渗漏", "过热",
+    "温度高", "温度异常", "动力不足", "加速无力", "转速不稳", "怠速不稳",
+    "压力低", "压力高", "压力不足", "压力波动", "故障灯", "报警", "报码",
+    "打滑", "卡滞", "失灵", "冷机", "热机", "启动瞬间", "加速时", "怠速时",
+)
+_NON_OBSERVABLE_ACTIONS = ("安装", "拆卸", "检查", "检修", "更换", "调整", "维修")
+
 
 def _value(record: Mapping[str, Any], *names: str) -> Any:
     for name in names:
@@ -93,6 +102,18 @@ def _solution_values(record: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(values)
 
 
+def _observable_label(features: tuple[str, ...], fault_name: str) -> str:
+    for value in (*features, fault_name):
+        text = _text(value)
+        if (
+            text
+            and not any(action in text for action in _NON_OBSERVABLE_ACTIONS)
+            and any(hint in text for hint in _OBSERVABLE_HINTS)
+        ):
+            return text
+    return ""
+
+
 def build_graph_candidates(
     records: Iterable[Mapping[str, Any]],
     *,
@@ -154,6 +175,7 @@ def build_graph_candidates(
         pages = _pages(record, evidence_refs)
         features = _texts(_value(record, "distinguishingFeatures", "distinguishing_features"))
         actions = _texts(_value(record, "verificationActions", "verification_actions"))
+        observable_label = _observable_label(features, fault_name)
 
         graph_score = _float(_value(record, "graphScore", "graph_score"), 0.0)
         match_score = _float(_value(record, "retrievalScore", "retrieval_score"), 0.0)
@@ -181,6 +203,7 @@ def build_graph_candidates(
             "component": component_name,
             "fault": fault_name,
             "solution_id": solutions[0] if solutions else "",
+            "observable_symptom": observable_label,
         }
         if device_name:
             dimensions["device_name"] = device_name
@@ -195,6 +218,7 @@ def build_graph_candidates(
             "component": component_name,
             "fault": fault_name,
             "solution_id": solutions[0] if solutions else "",
+            "observable_symptom": observable_label,
         }
         labels = {key: value for key, value in labels.items() if value}
         node_ids = tuple(dict.fromkeys(
@@ -236,7 +260,12 @@ def build_graph_candidates(
 
 
 def unresolved_graph_dimensions(candidates: Iterable[KnowledgeCandidate]) -> tuple[str, ...]:
-    """Return dimensions that separate graph candidates, most authoritative first."""
+    """Return only worker-observable dimensions that separate graph paths.
+
+    Device, component and path IDs remain server-side scope constraints. They
+    are deliberately not clarification dimensions because asking a worker to
+    choose them would require the diagnosis that the Agent is meant to make.
+    """
     values = tuple(candidates)
     if not values:
         return ()
@@ -248,18 +277,7 @@ def unresolved_graph_dimensions(candidates: Iterable[KnowledgeCandidate]) -> tup
             if _text(candidate.dimensions.get(dimension))
         }
 
-    dimensions: list[str] = []
-    if len(distinct("device_id")) > 1:
-        dimensions.append("device_id")
-    if len(distinct("document_id")) > 1:
-        dimensions.append("document_id")
-    if len(distinct("component_id")) > 1:
-        dimensions.append("component_id")
-    if len(distinct("fault_id")) > 1:
-        dimensions.append("fault_id")
-    if len(distinct("path_id")) > 1:
-        dimensions.append("path_id")
-    return tuple(dimensions)
+    return ("observable_symptom",) if len(distinct("observable_symptom")) > 1 else ()
 
 
 __all__ = ["build_graph_candidates", "unresolved_graph_dimensions"]

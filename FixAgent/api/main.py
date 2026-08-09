@@ -124,7 +124,10 @@ from services.routing.executor import RouteExecutor
 from services.routing.evidence_gate import EvidenceDocumentGate
 from services.routing.models import RouteAction, RoutePlan
 from services.routing.orchestrator import SemanticRoutingOrchestrator
-from services.routing.graph_candidate_provider import get_graph_candidate_provider
+from services.routing.graph_candidate_provider import (
+    filter_candidates_by_resolved_scope,
+    get_graph_candidate_provider,
+)
 from services.routing.graph_policy import decide_graph_use
 from services.routing.document_selection import (
     clear_pending_document_selection,
@@ -1602,8 +1605,8 @@ async def _try_response_policy_direct(request: ChatRequest, input_data: AgentInp
         ).temperature
     else:
         system = (
-            "你是检修 AI 助手。当前知识库没有找到与用户指定设备对应的文档。"
-            "请说明知识库没有该设备对应文档、以下内容来自 AI、仅供参考，然后给出低风险通用分析。"
+            "你是检修 AI 助手。当前知识库没有找到足以支持本次回答的可靠资料。"
+            "请说明知识库证据不足、以下内容来自 AI、仅供参考，然后给出低风险通用分析。"
             "不要伪装成手册结论，不要编造精确参数或高风险步骤，不要引用法规编号、手册页码或未经当前知识库核验的标准编号。"
             + USER_VISIBLE_PLAIN_TEXT_RULES
         )
@@ -1656,18 +1659,51 @@ async def _try_post_retrieval_ai_fallback(
         if isinstance(audited_output.metadata.get("response_policy"), dict)
         else {}
     )
+    input_context = input_data.context or {}
+    clarification_constraints = input_context.get("clarification_constraints")
+    clarification_constraints = (
+        clarification_constraints if isinstance(clarification_constraints, Mapping) else {}
+    )
+    resolved_clarification = input_context.get("resolved_clarification")
+    resolved_clarification = (
+        resolved_clarification if isinstance(resolved_clarification, Mapping) else {}
+    )
+    resolved_observation = bool(
+        (
+            clarification_constraints.get("clarification_source") == "llm_fallback"
+            and clarification_constraints.get("clarification_dimension")
+            in {"symptom", "operating_condition"}
+        )
+        or resolved_clarification.get("kind")
+        in {"graph_observation", "llm_slot_clarification"}
+    )
+    policy_allows_fallback = bool(
+        policy.get("mode") == "MAINTENANCE_AI_FALLBACK"
+        and policy.get("allow_ai_fallback") is True
+    )
     if (
         audited_output.metadata.get("coverage_status") != "unsupported"
-        or policy.get("mode") != "MAINTENANCE_AI_FALLBACK"
-        or policy.get("allow_ai_fallback") is not True
+        or not (policy_allows_fallback or resolved_observation)
         or audited_output.metadata.get("blocked_for_document_isolation")
         or not _is_knowledge_output(audited_output)
     ):
         return None
 
     fallback_context = dict(input_data.context or {})
+    fallback_policy = dict(policy)
+    if resolved_observation:
+        fallback_policy.update({
+            "mode": "MAINTENANCE_AI_FALLBACK",
+            "source_type": "ai",
+            "allow_knowledge_retrieval": False,
+            "allow_ai_fallback": True,
+            "manual_citation_allowed": False,
+            "images_allowed": False,
+            "disclaimer_required": True,
+            "style_profile": "maintenance_ai",
+        })
     fallback_context["post_retrieval_fallback"] = True
-    fallback_context["response_policy"] = dict(policy)
+    fallback_context["response_policy"] = fallback_policy
     fallback_context["scope_decision"] = (
         audited_output.metadata.get("scope_decision")
         or fallback_context.get("scope_decision")
@@ -2312,17 +2348,27 @@ def _apply_llm_clarification_constraints(
     contract: QueryContract,
     constraints: Mapping[str, Any] | None,
 ) -> QueryContract:
-    """Merge a user-confirmed LLM option as a search hint, never as evidence scope."""
+    """Merge a confirmed observable answer into retrieval and generation text.
+
+    LLM options remain hints only. Graph observation options additionally carry
+    server-owned graph allow-lists, but their visible symptom still needs to be
+    copied into the query contract so the selected phenomenon affects ranking
+    and any cold-start AI fallback answer.
+    """
     source = constraints if isinstance(constraints, Mapping) else {}
-    if source.get("clarification_source") != "llm_fallback":
+    llm_clarification = source.get("clarification_source") == "llm_fallback"
+    graph_observation = str(source.get("observable_symptom") or "").strip()
+    if not llm_clarification and not graph_observation:
         return contract
     payload = contract.to_dict()
-    component = str(source.get("component") or "").strip()
+    component = str(source.get("component") or "").strip() if llm_clarification else ""
     if component:
         payload["component"] = component
     for field in ("symptoms", "operating_conditions"):
         current = payload.get(field) if isinstance(payload.get(field), list) else []
         added = source.get(field) if isinstance(source.get(field), (list, tuple)) else []
+        if field == "symptoms" and graph_observation:
+            added = (*added, graph_observation)
         payload[field] = list(dict.fromkeys(
             str(value).strip() for value in (*current, *added) if str(value).strip()
         ))
@@ -2364,7 +2410,14 @@ async def _maybe_apply_llm_clarification(
     graph_candidates: tuple,
     context: Mapping[str, Any],
 ) -> RoutePlan:
-    """Ask the LLM for one safe observable discriminator after graph miss."""
+    """Ask the LLM for one safe observable discriminator after evidence ambiguity."""
+    diagnostic_evidence_gap = bool(
+        (
+            intent_decision.intent == "fault_diagnosis"
+            and intent_decision.task_action == "find_cause"
+        )
+        or plan.reason == "diagnostic_ambiguity_without_observable_discriminator"
+    )
     graph_route_is_usable = bool(
         plan.selected_graph_candidate_id
         or plan.graph_scope
@@ -2372,12 +2425,7 @@ async def _maybe_apply_llm_clarification(
     )
     if (
         _clarification_mode() == "off"
-        or intent_decision.intent != "fault_diagnosis"
-        or intent_decision.task_action != "find_cause"
-        or not (
-            plan.query_contract.symptoms
-            or plan.query_contract.operating_conditions
-        )
+        or not diagnostic_evidence_gap
         or plan.action not in {RouteAction.AI_FALLBACK, RouteAction.GROUNDED_RETRIEVAL}
         or graph_route_is_usable
     ):
@@ -2391,6 +2439,7 @@ async def _maybe_apply_llm_clarification(
         confirmed_constraints=context.get("clarification_constraints")
         if isinstance(context.get("clarification_constraints"), Mapping)
         else None,
+        graph_candidates=graph_candidates,
         round_count=previous_round + 1,
     )
     if draft is None:
@@ -2401,7 +2450,7 @@ async def _maybe_apply_llm_clarification(
         allowed_tools=(),
         answer_source="llm_clarification",
         allow_ai_fallback=False,
-        reason="llm_clarification_after_graph_miss",
+        reason="llm_observation_clarification_after_evidence_gap",
         clarification_options=draft.options,
         clarification_kind="llm_slot_clarification",
         clarification_question=draft.question,
@@ -2757,6 +2806,15 @@ async def _prepare_chat_agent_input(request: ChatRequest) -> AgentInput:
                 allowed_section_ids=graph_scope.allowed_section_ids if graph_scope else (),
                 allowed_source_chunk_uids=graph_scope.allowed_source_chunk_uids if graph_scope else (),
                 allowed_evidence_refs=graph_scope.allowed_evidence_refs if graph_scope else (),
+                allowed_device_ids=graph_scope.allowed_device_ids if graph_scope else (),
+                allowed_component_ids=graph_scope.allowed_component_ids if graph_scope else (),
+                allowed_fault_ids=graph_scope.allowed_fault_ids if graph_scope else (),
+                allowed_path_ids=graph_scope.allowed_path_ids if graph_scope else (),
+                allowed_graph_node_ids=graph_scope.allowed_graph_node_ids if graph_scope else (),
+            )
+            graph_candidates = filter_candidates_by_resolved_scope(
+                graph_candidates,
+                graph_scope,
             )
             candidate_retrieval = dict(graph_provider.retrieval_status)
             context["graph_candidate_retrieval"] = candidate_retrieval
@@ -8717,7 +8775,9 @@ def _clean_fallback_text(text: str) -> str:
 
 
 _FALLBACK_UNVERIFIED_MEASUREMENT_RE = re.compile(
-    r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*(?:mm|cm|N\s*[·*]?\s*m|kPa|MPa|rpm|r/min|℃|°C|V|A|%)\b",
+    # Do not use ``\b`` here: Chinese characters are word characters in
+    # Unicode regex semantics, so ``12V且`` would otherwise evade the guard.
+    r"(?<![A-Za-z0-9])\d+(?:\.\d+)?\s*(?:mm|cm|N\s*[·*]?\s*m|kPa|MPa|rpm|r/min|℃|°C|V|A|%)(?![A-Za-z0-9])",
     flags=re.IGNORECASE,
 )
 

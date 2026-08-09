@@ -60,6 +60,10 @@ class RouteExecutor:
 
     def _execute_clarification(self, plan: RoutePlan) -> RouteExecution:
         is_document_selection = plan.clarification_kind == "document_selection"
+        is_observation_clarification = plan.clarification_kind in {
+            "graph_observation",
+            "llm_slot_clarification",
+        }
         lines = [
             "找到多个可能适用的知识文档，请先确认要查询哪一个："
             if is_document_selection
@@ -69,12 +73,20 @@ class RouteExecutor:
         for index, option in enumerate(plan.clarification_options, start=1):
             name = str(option.get("label") or option.get("display_name") or option.get("document_id") or "未命名文档")
             constraints = option.get("constraints") if isinstance(option.get("constraints"), dict) else {}
-            document_id = str(
-                option.get("document_id")
-                or constraints.get("document_id")
-                or option.get("value")
-                or ""
-            )
+            # Only document-selection options may promote their value to a
+            # document id.  Symptom/condition options carry worker-observable
+            # values; treating those values as document ids corrupts scope
+            # authority and can make a later turn look out of scope.
+            document_id = ""
+            if is_document_selection:
+                document_id = str(
+                    option.get("document_id")
+                    or constraints.get("document_id")
+                    or option.get("value")
+                    or ""
+                )
+            elif option.get("document_id"):
+                document_id = str(option.get("document_id") or "")
             if document_id and "document_id" not in constraints:
                 constraints = {**constraints, "document_id": document_id}
             normalized_options.append({
@@ -93,6 +105,8 @@ class RouteExecutor:
         lines.append(
             "请回复序号、文档名称或文档 ID，我会只在所选文档中继续查询。"
             if is_document_selection
+            else "请回复序号或直接描述现场现象，我会据此缩小可能原因。"
+            if is_observation_clarification
             else "请回复序号或候选名称，我会按所选范围继续查询。"
         )
         return RouteExecution(

@@ -17,7 +17,10 @@ from services.routing.orchestrator import (
     SemanticRoutingOrchestrator,
     _narrow_explicit_graph_candidates,
 )
-from services.routing.graph_candidate_provider import JavaGraphCandidateProvider
+from services.routing.graph_candidate_provider import (
+    JavaGraphCandidateProvider,
+    filter_candidates_by_resolved_scope,
+)
 
 
 def _records() -> list[dict]:
@@ -75,7 +78,7 @@ def test_graph_records_keep_stable_path_and_provenance() -> None:
     assert first.verification_actions == ("检查离合器间隙",)
 
 
-def test_graph_candidates_ask_for_device_and_bind_exact_graph_scope() -> None:
+def test_graph_candidates_ask_for_observable_symptom_and_bind_exact_graph_scope() -> None:
     candidates = build_graph_candidates(_records())
     decision = ClarificationDecisionEngine().decide(
         candidates,
@@ -85,8 +88,8 @@ def test_graph_candidates_ask_for_device_and_bind_exact_graph_scope() -> None:
 
     assert decision.should_clarify is True
     assert decision.question is not None
-    assert decision.question.dimension == "device_id"
-    option = next(item for item in decision.question.options if item.value == "engine-a")
+    assert decision.question.dimension == "observable_symptom"
+    option = next(item for item in decision.question.options if item.value == "冷机明显")
     assert option.constraints["allowed_device_ids"] == ["engine-a"]
     assert option.constraints["allowed_component_ids"] == ["clutch-a"]
     assert option.constraints["allowed_fault_ids"] == ["fault-a"]
@@ -143,9 +146,118 @@ def test_orchestrator_uses_graph_candidates_when_sections_are_unavailable() -> N
     )
 
     assert plan.action == RouteAction.CLARIFY
-    assert plan.clarification_kind == "graph_scope"
-    assert plan.clarification_question == "请确认当前需要检修的是哪台设备？"
+    assert plan.clarification_kind == "graph_observation"
+    assert plan.clarification_question == "请确认现场最明显的现象更接近哪一种？"
     assert len(plan.clarification_options) == 2
+
+
+def test_diagnosis_never_asks_worker_to_choose_component_or_operation() -> None:
+    decision = IntentDecision(
+        intent="fault_diagnosis",
+        task_action="find_cause",
+        requires_graph_search=True,
+        risk_level="high",
+    )
+    records = [
+        {
+            "pathId": "path-install",
+            "deviceId": "engine",
+            "deviceName": "发动机",
+            "componentId": "transmission",
+            "componentName": "传动装置",
+            "faultId": "install",
+            "faultName": "安装",
+            "documentId": "manual-engine",
+            "graphScore": 0.91,
+        },
+        {
+            "pathId": "path-disassemble",
+            "deviceId": "engine",
+            "deviceName": "发动机",
+            "componentId": "crankshaft",
+            "componentName": "曲轴与平衡轴",
+            "faultId": "disassemble",
+            "faultName": "拆卸",
+            "documentId": "manual-engine",
+            "graphScore": 0.90,
+        },
+    ]
+    contract = QueryContract.from_mapping(
+        {"intent": "fault_diagnosis", "task_action": "find_cause"},
+        raw_query="发动机损坏了该怎么办",
+    )
+
+    plan = asyncio.run(SemanticRoutingOrchestrator().build_plan(
+        query=contract.raw_query,
+        decision=decision,
+        catalog=DeviceCatalog((DocumentIdentity(
+            document_id="manual-engine",
+            device_name="发动机",
+            confidence=1.0,
+        ),)),
+        section_refs=(),
+        request_document_id="manual-engine",
+        query_contract=contract,
+        graph_candidates=build_graph_candidates(records),
+    ))
+
+    assert plan.action != RouteAction.CLARIFY
+    assert plan.clarification_options == ()
+
+
+def test_maintenance_guidance_with_damage_symptom_also_avoids_location_choices() -> None:
+    decision = IntentDecision(
+        intent="maintenance_guidance",
+        task_action="repair_guidance",
+        operation_intent=True,
+        symptoms=("发动机损坏",),
+        risk_level="high",
+    )
+    contract = QueryContract.from_mapping(
+        decision.model_dump(),
+        raw_query="发动机损坏怎么办",
+    )
+    graph_candidates = build_graph_candidates([
+        {
+            "pathId": "path-install",
+            "deviceId": "engine",
+            "componentId": "transmission",
+            "componentName": "传动装置",
+            "faultId": "install",
+            "faultName": "安装",
+            "documentId": "manual-engine",
+        },
+        {
+            "pathId": "path-check",
+            "deviceId": "engine",
+            "componentId": "spark-plug",
+            "componentName": "火花塞",
+            "faultId": "check",
+            "faultName": "检查",
+            "documentId": "manual-engine",
+        },
+    ])
+
+    plan = asyncio.run(SemanticRoutingOrchestrator().build_plan(
+        query=contract.raw_query,
+        decision=decision,
+        catalog=DeviceCatalog((DocumentIdentity(
+            document_id="manual-engine",
+            device_name="发动机",
+            confidence=1.0,
+        ),)),
+        section_refs=(
+            SectionRef("install", "manual-engine", "安装", "发动机安装"),
+            SectionRef("check", "manual-engine", "检查", "发动机检查"),
+        ),
+        request_document_id="manual-engine",
+        query_contract=contract,
+        graph_candidates=graph_candidates,
+    ))
+
+    assert plan.action == RouteAction.GROUNDED_RETRIEVAL
+    assert plan.reason == "diagnostic_ambiguity_without_observable_discriminator"
+    assert plan.clarification_options == ()
 
 
 def test_orchestrator_prefers_explicit_component_and_symptom_graph_path() -> None:
@@ -641,6 +753,88 @@ def test_graph_provider_uses_structured_contract_and_returns_normalized_candidat
     assert calls[0][1].endswith("/weixiu/path/candidates")
     assert calls[0][2]["json"]["queryContract"]["component"] == "离合器"
     assert calls[0][2]["json"]["allowedDocumentIds"] == []
+
+
+def test_graph_provider_forwards_resolved_graph_allow_lists() -> None:
+    calls: list[tuple[str, str, dict]] = []
+
+    async def request_json(method: str, url: str, **kwargs):
+        calls.append((method, url, kwargs))
+        return {"data": [_records()[1]]}
+
+    provider = JavaGraphCandidateProvider(
+        base_url="http://java.test",
+        request_json=request_json,
+    )
+    contract = QueryContract.from_mapping(
+        {"intent": "fault_diagnosis", "task_action": "find_cause"},
+        raw_query="发动机损坏了该怎么办",
+    )
+
+    asyncio.run(provider.fetch_candidates(
+        contract,
+        allowed_document_ids=("manual-b",),
+        allowed_device_ids=("engine-b",),
+        allowed_component_ids=("clutch-b",),
+        allowed_fault_ids=("fault-b",),
+        allowed_path_ids=("path-engine-b-clutch",),
+        allowed_graph_node_ids=("engine-b", "clutch-b", "fault-b"),
+    ))
+
+    body = calls[0][2]["json"]
+    assert body["allowedDeviceIds"] == ["engine-b"]
+    assert body["allowedComponentIds"] == ["clutch-b"]
+    assert body["allowedFaultIds"] == ["fault-b"]
+    assert body["allowedPathIds"] == ["path-engine-b-clutch"]
+    assert body["allowedGraphNodeIds"] == ["engine-b", "clutch-b", "fault-b"]
+
+
+def test_resolved_graph_scope_removes_unselected_candidate_before_routing() -> None:
+    candidates = build_graph_candidates(_records())
+    scope = ResolvedScope.from_constraints({
+        "document_id": "manual-b",
+        "allowed_device_ids": ["engine-b"],
+        "allowed_component_ids": ["clutch-b"],
+        "allowed_fault_ids": ["fault-b"],
+        "allowed_path_ids": ["path-engine-b-clutch"],
+        "allowed_graph_node_ids": ["engine-b", "clutch-b", "fault-b", "solution-b"],
+        "allowed_source_chunk_uids": ["chunk-b"],
+    })
+
+    filtered = filter_candidates_by_resolved_scope(candidates, scope)
+
+    assert [candidate.candidate_id for candidate in filtered] == [
+        "graph:path-engine-b-clutch"
+    ]
+
+    decision = IntentDecision(
+        intent="fault_diagnosis",
+        task_action="find_cause",
+        requires_graph_search=True,
+        risk_level="high",
+    )
+    contract = QueryContract.from_mapping(
+        {"intent": "fault_diagnosis", "task_action": "find_cause"},
+        raw_query="发动机损坏了该怎么办",
+    )
+    plan = asyncio.run(SemanticRoutingOrchestrator().build_plan(
+        query=contract.raw_query,
+        decision=decision,
+        catalog=DeviceCatalog((DocumentIdentity(
+            document_id="manual-b",
+            device_name="设备乙",
+            confidence=1.0,
+        ),)),
+        section_refs=(),
+        request_document_id="manual-b",
+        query_contract=contract,
+        graph_candidates=filtered,
+        preserve_query_contract=True,
+    ))
+
+    assert plan.action == RouteAction.GROUNDED_RETRIEVAL
+    assert plan.selected_graph_candidate_id == "graph:path-engine-b-clutch"
+    assert plan.clarification_options == ()
 
 
 def test_graph_candidate_preserves_section_and_provenance_status() -> None:

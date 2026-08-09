@@ -20,6 +20,58 @@ logger = logging.getLogger(__name__)
 RequestJson = Callable[..., Any]
 
 
+def filter_candidates_by_resolved_scope(
+    candidates: Any,
+    resolved_scope: Any | None,
+) -> tuple[Any, ...]:
+    """Reapply a selected clarification scope on the Python boundary."""
+    values = tuple(candidates or ())
+    if resolved_scope is None:
+        return values
+
+    scalar_limits = (
+        ("device_id", resolved_scope.allowed_device_ids),
+        ("component_id", resolved_scope.allowed_component_ids),
+        ("fault_id", resolved_scope.allowed_fault_ids),
+        ("path_id", resolved_scope.allowed_path_ids),
+    )
+    allowed_nodes = set(resolved_scope.allowed_graph_node_ids)
+    allowed_sections = set(resolved_scope.allowed_section_ids)
+    allowed_chunks = set(resolved_scope.allowed_source_chunk_uids)
+    allowed_refs = set(resolved_scope.allowed_evidence_refs)
+    matched: list[Any] = []
+    for candidate in values:
+        dimensions = getattr(candidate, "dimensions", {}) or {}
+        if (
+            resolved_scope.document_id
+            and str(getattr(candidate, "document_id", "") or "").strip()
+            != resolved_scope.document_id
+        ):
+            continue
+        if allowed_sections and str(getattr(candidate, "section_id", "") or "").strip() not in allowed_sections:
+            continue
+        if any(
+            limits and str(dimensions.get(name) or "").strip() not in set(limits)
+            for name, limits in scalar_limits
+        ):
+            continue
+        candidate_nodes = {
+            str(node_id).strip()
+            for node_id in getattr(candidate, "node_ids", ()) or ()
+            if str(node_id).strip()
+        }
+        if allowed_nodes and not candidate_nodes.issubset(allowed_nodes):
+            continue
+        candidate_chunks = set(getattr(candidate, "source_chunk_uids", ()) or ())
+        if allowed_chunks and not candidate_chunks.intersection(allowed_chunks):
+            continue
+        candidate_refs = set(getattr(candidate, "evidence_refs", ()) or ())
+        if allowed_refs and not candidate_refs.intersection(allowed_refs):
+            continue
+        matched.append(candidate)
+    return tuple(matched)
+
+
 class JavaGraphCandidateProvider:
     """Call Java graph endpoints and return typed clarification candidates.
 
@@ -64,6 +116,11 @@ class JavaGraphCandidateProvider:
         allowed_section_ids: tuple[str, ...] = (),
         allowed_source_chunk_uids: tuple[str, ...] = (),
         allowed_evidence_refs: tuple[str, ...] = (),
+        allowed_device_ids: tuple[str, ...] = (),
+        allowed_component_ids: tuple[str, ...] = (),
+        allowed_fault_ids: tuple[str, ...] = (),
+        allowed_path_ids: tuple[str, ...] = (),
+        allowed_graph_node_ids: tuple[str, ...] = (),
         limit: int = 10,
         min_score: float = 0.70,
     ) -> tuple:
@@ -103,6 +160,11 @@ class JavaGraphCandidateProvider:
             "allowedDocumentIds": self._text_list(allowed_document_ids),
             "allowedSectionIds": self._text_list(allowed_section_ids),
             "allowedSourceChunkUids": list(source_chunks),
+            "allowedDeviceIds": self._text_list(allowed_device_ids),
+            "allowedComponentIds": self._text_list(allowed_component_ids),
+            "allowedFaultIds": self._text_list(allowed_fault_ids),
+            "allowedPathIds": self._text_list(allowed_path_ids),
+            "allowedGraphNodeIds": self._text_list(allowed_graph_node_ids),
             "limit": max(1, int(limit)),
             "minScore": float(min_score),
         }

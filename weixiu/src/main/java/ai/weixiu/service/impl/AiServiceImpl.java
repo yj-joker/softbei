@@ -58,7 +58,7 @@ public class AiServiceImpl implements AiService {
     private final MemoryRecallService memoryRecallService;
     private final MultimodalEmbeddingUtils multimodalEmbeddingUtils;
     private final ObjectMapper objectMapper = new ObjectMapper();
-    private final Integer maxMemory = 10;
+    private final Integer maxMemory = 4;
 
 
     @Override
@@ -227,7 +227,20 @@ public class AiServiceImpl implements AiService {
         aiChatRequest.setConversationHistory(conversationHistory);
 
         // ========== 构建结构化上下文（注入system prompt） ==========
+        // 保留客户端携带的服务端反问状态回传字段，例如 diagnostic_follow_up、
+        // selected_option_id 和 pending_clarification。召回得到的可信服务端上下文
+        // 在下方按同名 key 覆盖，避免客户端伪造记忆字段，同时不能把反问答案丢掉。
         Map<String, Object> contextMap = new HashMap<>();
+        if (aiChatRequest.getContext() != null) {
+            contextMap.putAll(aiChatRequest.getContext());
+        }
+        // 记忆、画像和 user_id 只能由 Java 服务端生成。先清除客户端同名值，
+        // 这样既保留反问回传字段，也不会把普通 context 合并变成信任边界漏洞。
+        List.of(
+                "previous_summary", "relevant_facts", "user_preferences",
+                "session_preferences", "unresolved_items", "user_profile",
+                "memory_index", "user_id"
+        ).forEach(contextMap::remove);
         if (recallCtx.getPreviousSummary() != null && !recallCtx.getPreviousSummary().isEmpty()) {
             contextMap.put("previous_summary", recallCtx.getPreviousSummary());
         }

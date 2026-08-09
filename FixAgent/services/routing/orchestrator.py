@@ -130,10 +130,21 @@ class SemanticRoutingOrchestrator:
             graph_values,
             resolved_contract,
         )
-        unresolved_dimensions = tuple(dict.fromkeys(
-            (*unresolved_section_dimensions(section_candidates),
-             *unresolved_graph_dimensions(graph_values))
-        ))
+        diagnostic_clarification = bool(
+            decision.intent == "fault_diagnosis"
+            or decision.task_action == "find_cause"
+            or (
+                decision.intent == "maintenance_guidance"
+                and resolved_contract.symptoms
+            )
+        )
+        section_dimensions = unresolved_section_dimensions(section_candidates)
+        graph_dimensions = unresolved_graph_dimensions(graph_values)
+        unresolved_dimensions = (
+            graph_dimensions
+            if diagnostic_clarification
+            else tuple(dict.fromkeys((*section_dimensions, *graph_dimensions)))
+        )
         document_scope_clarification = candidates.action == RouteAction.CLARIFY_DOCUMENT
         should_decide = not multi_target_graph_scope and (
             bool(graph_values) or candidates.action == RouteAction.CLARIFY_DOCUMENT or (
@@ -205,6 +216,35 @@ class SemanticRoutingOrchestrator:
             )
             if len(same_document_sections) == 1:
                 selected_section_id = same_document_sections[0].section_id
+        observable_graph_question = bool(
+            combined_clarification
+            and combined_clarification.should_clarify
+            and combined_clarification.question
+            and combined_clarification.question.dimension == "observable_symptom"
+        )
+        if (
+            diagnostic_clarification
+            and candidates.action in {RouteAction.CLARIFY, RouteAction.CLARIFY_DOCUMENT}
+            and not observable_graph_question
+        ):
+            candidates = DocumentCandidateResolution(
+                action=RouteAction.AI_FALLBACK,
+                candidate_document_ids=candidates.candidate_document_ids,
+                selected_document_id="",
+                reason="diagnostic_ambiguity_without_observable_discriminator",
+            )
+        elif (
+            diagnostic_clarification
+            and len(graph_values) > 1
+            and candidates.action == RouteAction.GROUNDED_RETRIEVAL
+            and not observable_graph_question
+        ):
+            candidates = DocumentCandidateResolution(
+                action=RouteAction.GROUNDED_RETRIEVAL,
+                candidate_document_ids=candidates.candidate_document_ids,
+                selected_document_id=candidates.selected_document_id,
+                reason="diagnostic_ambiguity_without_observable_discriminator",
+            )
         allowed_tools: tuple[str, ...]
         answer_source: str
         allow_ai_fallback = candidates.action == RouteAction.AI_FALLBACK
@@ -222,7 +262,12 @@ class SemanticRoutingOrchestrator:
             allowed_tools = ()
             answer_source = "maintenance_ai"
 
-        if combined_clarification and combined_clarification.should_clarify and combined_clarification.question:
+        if (
+            candidates.action in {RouteAction.CLARIFY, RouteAction.CLARIFY_DOCUMENT}
+            and combined_clarification
+            and combined_clarification.should_clarify
+            and combined_clarification.question
+        ):
             options = tuple({
                 "id": option.option_id,
                 "label": option.label,
@@ -258,8 +303,8 @@ class SemanticRoutingOrchestrator:
             reason=candidates.reason,
             clarification_options=options,
             clarification_kind=(
-                "graph_scope"
-                if graph_values and combined_clarification and combined_clarification.should_clarify
+                "graph_observation"
+                if graph_values and observable_graph_question
                 else "document_selection"
                 if document_scope_clarification and not graph_values
                 else "slot_disambiguation"
@@ -270,7 +315,8 @@ class SemanticRoutingOrchestrator:
             ),
             clarification_question=(
                 combined_clarification.question.prompt
-                if combined_clarification
+                if candidates.action == RouteAction.CLARIFY
+                and combined_clarification
                 and combined_clarification.should_clarify
                 and combined_clarification.question
                 and graph_values
