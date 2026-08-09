@@ -8,7 +8,7 @@ $ErrorActionPreference = "Stop"
 
 $projectDirectory = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 if ([string]::IsNullOrWhiteSpace($EnvFile)) {
-    $EnvFile = Join-Path $projectDirectory "..\FixAgent\.env"
+    $EnvFile = Join-Path $projectDirectory "..\.env"
 }
 
 if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
