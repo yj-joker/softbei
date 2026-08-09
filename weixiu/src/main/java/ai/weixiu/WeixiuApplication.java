@@ -1,6 +1,7 @@
 package ai.weixiu;
 
 import ai.weixiu.config.MinioProperties;
+import ai.weixiu.config.DotEnvLoader;
 import org.mybatis.spring.annotation.MapperScan;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
@@ -14,7 +15,16 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 public class WeixiuApplication {
 
     public static void main(String[] args) {
-        SpringApplication.run(WeixiuApplication.class, args);
+        SpringApplication application = new SpringApplication(WeixiuApplication.class);
+        DotEnvLoader.loadDefault().ifPresent(dotEnv -> {
+            application.setDefaultProperties(dotEnv.properties());
+            System.out.printf(
+                    "Loaded %d properties from %s%n",
+                    dotEnv.properties().size(),
+                    dotEnv.path()
+            );
+        });
+        application.run(args);
     }
 
 }

@@ -12,7 +12,7 @@ if ([string]::IsNullOrWhiteSpace($EnvFile)) {
 }
 
 if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) {
-    throw "找不到环境变量文件：$EnvFile"
+    throw "Environment file not found: $EnvFile"
 }
 $EnvFile = (Resolve-Path -LiteralPath $EnvFile).Path
 
@@ -31,19 +31,19 @@ foreach ($rawLine in Get-Content -LiteralPath $EnvFile -Encoding UTF8) {
 
     $separatorIndex = $line.IndexOf("=")
     if ($separatorIndex -lt 1) {
-        throw "无法解析 .env 第 $lineNumber 行：必须是 KEY=VALUE 格式"
+        throw "Invalid .env line ${lineNumber}: expected KEY=VALUE"
     }
 
     $key = $line.Substring(0, $separatorIndex).Trim()
     if ($key -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
-        throw "无法解析 .env 第 $lineNumber 行：变量名 '$key' 不合法"
+        throw "Invalid .env line ${lineNumber}: invalid key '$key'"
     }
 
     $value = $line.Substring($separatorIndex + 1).Trim()
     if ($value.Length -ge 1 -and ($value[0] -eq '"' -or $value[0] -eq "'")) {
         $quote = $value[0]
         if ($value.Length -lt 2 -or $value[$value.Length - 1] -ne $quote) {
-            throw "无法解析 .env 第 $lineNumber 行：引号未闭合"
+            throw "Invalid .env line ${lineNumber}: unterminated quoted value"
         }
         $value = $value.Substring(1, $value.Length - 2)
     } else {
@@ -66,13 +66,13 @@ $missingVariables = @($requiredVariables | Where-Object {
     [string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($_, "Process"))
 })
 if ($missingVariables.Count -gt 0) {
-    throw "以下 Java 启动必需变量没有在 .env 中配置：$($missingVariables -join ', ')"
+    throw "Required Java variables are missing from .env: $($missingVariables -join ', ')"
 }
 
 $apiToken = [Environment]::GetEnvironmentVariable("API_TOKEN", "Process")
 $internalToken = [Environment]::GetEnvironmentVariable("INTERNAL_TOKEN", "Process")
 if ($apiToken -eq $internalToken) {
-    throw "API_TOKEN 与 INTERNAL_TOKEN 必须使用不同的值"
+    throw "API_TOKEN and INTERNAL_TOKEN must be different"
 }
 
 $minioEndpoint = [Environment]::GetEnvironmentVariable("MINIO_ENDPOINT", "Process")
@@ -83,7 +83,7 @@ if ($minioEndpoint -notmatch '^[A-Za-z][A-Za-z0-9+.-]*://') {
 }
 [Environment]::SetEnvironmentVariable("MINIO_ENDPOINT", $minioEndpoint, "Process")
 
-# 统一启动入口不再继承调用终端中可能残留的 dev profile。
+# Do not inherit a stale dev profile unless .env explicitly configures one.
 if (-not $loadedKeys.Contains("SPRING_PROFILES_ACTIVE")) {
     [Environment]::SetEnvironmentVariable("SPRING_PROFILES_ACTIVE", $null, "Process")
 }
@@ -93,17 +93,17 @@ if (-not $loadedKeys.Contains("SPRING_PROFILES_ACTIVE")) {
     "Process"
 )
 
-Write-Host "已从 $EnvFile 加载 $($loadedKeys.Count) 个环境变量（未输出变量值）"
-Write-Host "Spring Profile：默认配置（不加载 application-dev.yml）"
+Write-Host "Loaded $($loadedKeys.Count) environment variables from $EnvFile (values hidden)"
+Write-Host "Spring profile: default (application-dev.yml is not loaded)"
 if ($VerifyMiddleware) {
-    Write-Host "已启用 Java 中间件连通性验证"
+    Write-Host "Java middleware connectivity verification is enabled"
 }
 
 Push-Location $projectDirectory
 try {
     & mvn "-Dmaven.test.skip=true" "spring-boot:run"
     if ($LASTEXITCODE -ne 0) {
-        throw "Spring Boot 启动失败，Maven 退出码：$LASTEXITCODE"
+        throw "Spring Boot failed to start; Maven exit code: $LASTEXITCODE"
     }
 } finally {
     Pop-Location
