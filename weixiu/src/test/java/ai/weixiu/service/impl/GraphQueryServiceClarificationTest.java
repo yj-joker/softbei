@@ -46,7 +46,7 @@ class GraphQueryServiceClarificationTest {
         query.setQueryContract(contract);
         query.setLimit(10);
 
-        assertTrue(service.findClarificationCandidates(query).isEmpty());
+        assertTrue(service.findClarificationCandidates(query).getRecords().isEmpty());
         verify(deviceRepository).getDevices("机器人", 0, 10);
         verifyNoInteractions(faultService, componentService, neo4jClient);
     }

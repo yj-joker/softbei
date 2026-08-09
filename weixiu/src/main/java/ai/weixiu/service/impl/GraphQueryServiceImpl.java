@@ -60,7 +60,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         int safeSize = normalizeSearchSize(query.getSize());
         int skip = safePage * safeSize;
         double minScore = query.getMinScore();
-        long searchLimit = 10L;
+        long searchLimit = searchRecallLimit(safeSize);
 
         boolean hasKeyword = hasText(query.getKeyword());
         boolean hasFaultDesc = hasText(query.getFaultDescription());
@@ -279,11 +279,17 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         // 反问选项中的图谱 ID 是服务端生成的确定性约束，比原始模糊问题的
         // 向量召回更权威。即使原问题没有召回到已选节点，也必须让该节点进入
         // 后续 MATCH；真正的边界仍由下方 allow-list 条件做交集过滤。
-        normalizedTextList(request.getAllowedComponentIds()).forEach(
-                id -> componentScores.merge(id, 1.0, Math::max));
-        normalizedTextList(request.getAllowedFaultIds()).forEach(
-                id -> faultScores.merge(id, 1.0, Math::max));
-        if (componentScores.isEmpty() && faultScores.isEmpty()) {
+        List<String> componentIds = java.util.stream.Stream.concat(
+                        componentScores.keySet().stream(),
+                        normalizedTextList(request.getAllowedComponentIds()).stream())
+                .distinct()
+                .toList();
+        List<String> faultIds = java.util.stream.Stream.concat(
+                        faultScores.keySet().stream(),
+                        normalizedTextList(request.getAllowedFaultIds()).stream())
+                .distinct()
+                .toList();
+        if (componentIds.isEmpty() && faultIds.isEmpty()) {
             String mode = combineRecallModes(componentRecallMode, faultRecallMode);
             return candidateBatch(degraded ? "degraded" : "empty",
                     degraded ? "embedding_unavailable_lexical_empty" : "no_candidates",
@@ -292,8 +298,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         }
 
         Map<String, Object> params = new HashMap<>();
-        params.put("componentIds", new ArrayList<>(componentScores.keySet()));
-        params.put("faultIds", new ArrayList<>(faultScores.keySet()));
+        params.put("componentIds", componentIds);
+        params.put("faultIds", faultIds);
         params.put("componentScores", componentScores);
         params.put("faultScores", faultScores);
         params.put("deviceFilter", deviceFilterActive);
@@ -371,7 +377,19 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                        coalesce(f.distinguishing_features, f.observable_symptoms, f.symptoms, []) AS distinguishingFeatures,
                        coalesce(f.verification_actions, f.check_actions, []) AS verificationActions,
                        CASE WHEN f IS NULL THEN 'procedure' ELSE 'fault' END AS pathType,
+                       coalesce($componentScores[c.id], 0.0) AS componentScore,
+                       coalesce($faultScores[f.id], 0.0) AS faultScore,
                        graphScore,
+                       coalesce(
+                           f.graph_revision,
+                           c.graph_revision,
+                           d.graph_revision,
+                           CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL
+                                  OR coalesce(c.document_version, d.document_version, f.document_version) IS NULL
+                                THEN NULL
+                                ELSE 'manual:' + coalesce(c.document_id, d.document_id, f.document_id)
+                                     + ':' + coalesce(c.document_version, d.document_version, f.document_version)
+                           END) AS graphRevision,
                        CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL THEN 'missing'
                             WHEN coalesce(c.document_version, d.document_version, f.document_version) IS NULL THEN 'partial'
                             WHEN coalesce(c.section_id, f.section_id) IS NULL THEN 'partial'
@@ -405,6 +423,10 @@ public class GraphQueryServiceImpl implements GraphQueryService {
 
     static int normalizeSearchSize(int requestedSize) {
         return Math.min(Math.max(requestedSize, 1), 100);
+    }
+
+    static long searchRecallLimit(int normalizedSize) {
+        return Math.min(100L, Math.max(10L, (long) normalizedSize * 5L));
     }
 
     static int overfetchLimit(int requestedLimit) {
@@ -673,11 +695,26 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         candidate.setSectionId(asText(row.get("sectionId")));
         candidate.setPathType(asText(row.get("pathType")));
         candidate.setGraphScore(number(row.get("graphScore")));
+        candidate.setComponentScore(number(row.get("componentScore")));
+        candidate.setFaultScore(number(row.get("faultScore")));
+        candidate.setGraphRevision(asText(row.get("graphRevision")));
         candidate.setProvenanceStatus(asText(row.get("provenanceStatus")));
         candidate.setDistinguishingFeatures(concatTextLists(row.get("distinguishingFeatures")));
         candidate.setVerificationActions(concatTextLists(row.get("verificationActions")));
         String pathId = "kgpath:" + String.join(":", candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId());
         candidate.setPathId(pathId);
+        candidate.setNodeIds(java.util.stream.Stream.of(
+                        candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId())
+                .filter(this::hasText)
+                .toList());
+        List<String> relationshipTypes = new ArrayList<>();
+        if (hasText(candidate.getDeviceId()) && hasText(candidate.getComponentId())) {
+            relationshipTypes.add("OWNS");
+        }
+        if (hasText(candidate.getComponentId()) && hasText(candidate.getFaultId())) {
+            relationshipTypes.add("CAUSES");
+        }
+        candidate.setRelationshipTypes(relationshipTypes);
         candidate.setSourceChunkUids(selectPathSourceChunkUids(
                 !candidate.getFaultId().isBlank(),
                 row.get("componentChunks"),
@@ -829,15 +866,22 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                           THEN coalesce($compScores[c.id], 0.0)
                           ELSE coalesce($faultScores[f.id], 0.0) END AS vecScore
                 ORDER BY matchScore DESC, vecScore DESC, hasHistory DESC
-                WITH collect({d: d, c: c, f: f, hasHistory: hasHistory, matchScore: matchScore}) AS allPaths
+                WITH collect({
+                    d: d, c: c, f: f, hasHistory: hasHistory, matchScore: matchScore,
+                    componentScore: coalesce($compScores[c.id], 0.0),
+                    faultScore: coalesce($faultScores[f.id], 0.0),
+                    semanticScore: vecScore
+                }) AS allPaths
                 WITH allPaths, size(allPaths) AS total
                 UNWIND allPaths[$skip..$endIdx] AS path
                 WITH path.d AS d, path.c AS c, path.f AS f,
-                     path.hasHistory AS hasHistory, path.matchScore AS matchScore, total
+                     path.hasHistory AS hasHistory, path.matchScore AS matchScore,
+                     path.componentScore AS componentScore, path.faultScore AS faultScore,
+                     path.semanticScore AS semanticScore, total
                 // 诊断方案只来自真实故障链：Fault-HAS_SOLUTION->Solution
                 OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(fs:Solution)
                 WHERE (fs.status IS NULL OR fs.status <> 'deprecated')
-                WITH d, c, f, hasHistory, matchScore, total,
+                WITH d, c, f, hasHistory, matchScore, componentScore, faultScore, semanticScore, total,
                      collect(DISTINCT {
                          id: fs.id, title: fs.title,
                          estimatedTime: fs.estimated_time,
@@ -876,6 +920,9 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                             ELSE 'complete' END AS provenanceStatus,
                        hasHistory,
                        matchScore,
+                       componentScore,
+                       faultScore,
+                       semanticScore,
                        solutions,
                        total
                 """.formatted(whereClause, deviceFilterClause);
@@ -908,6 +955,8 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         vo.setFaultName(record.get("faultName").asString(null));
         vo.setFaultSeverity(record.get("faultSeverity").asString(null));
         vo.setMatchScore(record.get("matchScore").asInt(0));
+        vo.setComponentScore(record.get("componentScore").asDouble(0.0));
+        vo.setFaultScore(record.get("faultScore").asDouble(0.0));
         vo.setDocumentId(record.get("documentId").asString(null));
         vo.setDocumentVersion(record.get("documentVersion").asString(null));
         vo.setSectionId(record.get("sectionId").asString(null));

@@ -14,19 +14,15 @@ from collections import OrderedDict
 from typing import Any, Iterable, Mapping
 
 from services.clarification.models import KnowledgeCandidate
+from services.retrieval.graph_quality import (
+    DEFAULT_HIGH_THRESHOLD,
+    DEFAULT_MEDIUM_THRESHOLD,
+    GraphQualityTier,
+    evaluate_graph_path_quality,
+)
 
 
 _PAGE_RE = re.compile(r"(?:^|[:#/_ -])(?:page|p)[:#/_ -]?(\d{1,4})(?:$|[^\d])", re.IGNORECASE)
-
-_OBSERVABLE_HINTS = (
-    "无法启动", "不能启动", "启动困难", "不工作", "熄火", "异响", "啸叫",
-    "撞击声", "噪声", "抖动", "振动", "冒烟", "漏油", "渗漏", "过热",
-    "温度高", "温度异常", "动力不足", "加速无力", "转速不稳", "怠速不稳",
-    "压力低", "压力高", "压力不足", "压力波动", "故障灯", "报警", "报码",
-    "打滑", "卡滞", "失灵", "冷机", "热机", "启动瞬间", "加速时", "怠速时",
-)
-_NON_OBSERVABLE_ACTIONS = ("安装", "拆卸", "检查", "检修", "更换", "调整", "维修")
-
 
 def _value(record: Mapping[str, Any], *names: str) -> Any:
     for name in names:
@@ -102,22 +98,19 @@ def _solution_values(record: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(values)
 
 
-def _observable_label(features: tuple[str, ...], fault_name: str) -> str:
-    for value in (*features, fault_name):
-        text = _text(value)
-        if (
-            text
-            and not any(action in text for action in _NON_OBSERVABLE_ACTIONS)
-            and any(hint in text for hint in _OBSERVABLE_HINTS)
-        ):
-            return text
-    return ""
+def _observable_label(features: tuple[str, ...], _fault_name: str) -> str:
+    # ``distinguishingFeatures`` is a typed graph field populated from
+    # observable symptoms.  Do not infer observability from labels or a
+    # language-specific keyword list.
+    return next((_text(value) for value in features if _text(value)), "")
 
 
 def build_graph_candidates(
     records: Iterable[Mapping[str, Any]],
     *,
     query: str = "",
+    high_threshold: float = DEFAULT_HIGH_THRESHOLD,
+    medium_threshold: float = DEFAULT_MEDIUM_THRESHOLD,
 ) -> tuple[KnowledgeCandidate, ...]:
     """Create one candidate per stable graph path and preserve provenance.
 
@@ -134,6 +127,14 @@ def build_graph_candidates(
 
     candidates: list[KnowledgeCandidate] = []
     for path_id, record in unique.items():
+        quality = evaluate_graph_path_quality(
+            record,
+            high_threshold=high_threshold,
+            medium_threshold=medium_threshold,
+            trusted_query_structure=True,
+        )
+        if quality.tier is GraphQualityTier.LOW:
+            continue
         device_id = _text(_value(record, "deviceId", "device_id"))
         component_id = _text(_value(record, "componentId", "component_id"))
         fault_id = _text(_value(record, "faultId", "fault_id"))
@@ -177,18 +178,8 @@ def build_graph_candidates(
         actions = _texts(_value(record, "verificationActions", "verification_actions"))
         observable_label = _observable_label(features, fault_name)
 
-        graph_score = _float(_value(record, "graphScore", "graph_score"), 0.0)
-        match_score = _float(_value(record, "retrievalScore", "retrieval_score"), 0.0)
-        if not match_score:
-            # matchScore is an integer dimension count in the current Java API;
-            # normalize it without treating it as a semantic confidence.
-            try:
-                raw_match_score = _value(record, "matchScore", "match_score")
-                match_score = max(0.0, min(1.0, float(raw_match_score or 0.0) / 4.0))
-            except (TypeError, ValueError):
-                match_score = 0.0
-        if not match_score:
-            match_score = graph_score
+        graph_score = quality.semantic_score
+        match_score = quality.semantic_score
         component_score = _float(_value(record, "componentScore", "component_score"), 0.0)
         fault_score = _float(_value(record, "faultScore", "fault_score"), 0.0)
         target_score = max(component_score, fault_score, match_score, graph_score)
@@ -251,6 +242,8 @@ def build_graph_candidates(
                 graph_path_ids=(path_id,),
                 graph_node_ids=node_ids,
                 graph_score=graph_score or match_score,
+                quality_tier=quality.tier.value,
+                quality_reasons=quality.reasons,
                 provenance_status=provenance_status,
                 distinguishing_features=features,
                 verification_actions=actions,

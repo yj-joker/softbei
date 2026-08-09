@@ -257,8 +257,12 @@ def test_ambiguous_graph_candidates_are_context_for_observation_question() -> No
         fromlist=["build_graph_candidates"],
     ).build_graph_candidates([{
         "pathId": "path-bearing",
+        "deviceId": "device-1",
+        "componentId": "component-1",
         "componentName": "曲轴",
+        "faultId": "fault-1",
         "faultName": "轴承磨损",
+        "graphScore": 0.78,
         "distinguishingFeatures": ["运行中异响"],
     }])
 

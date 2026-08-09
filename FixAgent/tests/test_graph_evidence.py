@@ -37,6 +37,7 @@ def _production_record() -> dict:
         "graphRevision": "graph-2026-08-06",
         "provenanceStatus": "complete",
         "matchScore": 3,
+        "faultScore": 0.92,
     }
 
 
@@ -88,9 +89,10 @@ def test_cross_scope_record_is_rejected() -> None:
         scope={"allowed_device_ids": ["device-2"]},
     )
 
-    assert len(batch.evidence) == 1
-    assert batch.evidence[0].qualification == "rejected"
-    assert "outside_allowed_device_ids" in batch.evidence[0].rejection_reasons
+    assert batch.evidence == ()
+    assert batch.status == "filtered_out"
+    assert batch.diagnostics["low_quality_count"] == 1
+    assert "outside_allowed_device_ids" in batch.diagnostics["discard_reasons"]
 
 
 def test_unavailable_status_is_not_collapsed_to_empty() -> None:
@@ -113,8 +115,8 @@ def test_path_id_must_match_core_node_identity() -> None:
 
     batch = normalize_graph_response({"status": "found", "records": [record]})
 
-    assert batch.evidence[0].qualification == "rejected"
-    assert "path_identity_mismatch" in batch.evidence[0].rejection_reasons
+    assert batch.evidence == ()
+    assert "path_identity_mismatch" in batch.diagnostics["discard_reasons"]
 
 
 def test_verified_solution_requires_has_solution_relationship() -> None:
@@ -133,5 +135,5 @@ def test_explicit_empty_scope_rejects_all_records() -> None:
         scope={"allowed_path_ids": []},
     )
 
-    assert batch.evidence[0].qualification == "rejected"
-    assert "empty_allowed_scope" in batch.evidence[0].rejection_reasons
+    assert batch.evidence == ()
+    assert "empty_allowed_scope" in batch.diagnostics["discard_reasons"]

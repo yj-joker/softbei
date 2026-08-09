@@ -38,6 +38,8 @@ class KnowledgeCandidate:
     graph_path_ids: tuple[str, ...] = ()
     graph_node_ids: tuple[str, ...] = ()
     graph_score: float = 0.0
+    quality_tier: str = "medium"
+    quality_reasons: tuple[str, ...] = ()
     # ``unknown`` preserves compatibility for callers that construct a
     # candidate without provenance metadata. Retrieval adapters set this to
     # ``complete``, ``partial`` or ``missing`` explicitly.

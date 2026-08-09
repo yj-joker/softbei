@@ -360,6 +360,7 @@ def _candidate_scope(candidate) -> dict[str, object]:
         scope["pages"] = list(candidate.pages)
     if candidate.node_ids:
         scope["allowed_graph_node_ids"] = list(candidate.node_ids)
+    scope["graph_quality_tier"] = str(getattr(candidate, "quality_tier", "medium"))
     return scope
 
 
@@ -511,6 +512,9 @@ def _multi_target_graph_scope(
         return {}
 
     scope: dict[str, object] = {"document_id": next(iter(document_ids))}
+    scope["graph_quality_tier"] = (
+        "medium" if any(candidate.quality_tier == "medium" for candidate in selected) else "high"
+    )
     for dimension, key in (
         ("path_id", "allowed_path_ids"),
         ("device_id", "allowed_device_ids"),

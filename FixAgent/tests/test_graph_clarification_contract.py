@@ -256,7 +256,8 @@ def test_maintenance_guidance_with_damage_symptom_also_avoids_location_choices()
     ))
 
     assert plan.action == RouteAction.GROUNDED_RETRIEVAL
-    assert plan.reason == "diagnostic_ambiguity_without_observable_discriminator"
+    assert graph_candidates == ()
+    assert plan.reason == "request_document"
     assert plan.clarification_options == ()
 
 
@@ -840,9 +841,12 @@ def test_resolved_graph_scope_removes_unselected_candidate_before_routing() -> N
 def test_graph_candidate_preserves_section_and_provenance_status() -> None:
     candidates = build_graph_candidates([
         {
-            "pathId": "path-1",
-            "deviceId": "device-1",
-            "componentId": "component-1",
+                "pathId": "path-1",
+                "deviceId": "device-1",
+                "componentId": "component-1",
+                "faultId": "fault-1",
+                "nodeIds": ["device-1", "component-1", "fault-1"],
+                "relationshipTypes": ["OWNS", "CAUSES"],
             "documentId": "manual-1",
             "documentVersion": "batch-7",
             "sectionId": "manual-1:6.2",
@@ -1035,7 +1039,8 @@ def test_provider_retrieves_normalized_path_evidence_with_allow_lists() -> None:
                         "pages": [12],
                         "graphRevision": "graph-v1",
                     "provenanceStatus": "complete",
-                    "matchScore": 3,
+                        "matchScore": 3,
+                        "faultScore": 0.91,
                 }]
             }
         }

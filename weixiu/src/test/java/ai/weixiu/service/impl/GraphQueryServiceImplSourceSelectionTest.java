@@ -77,4 +77,12 @@ class GraphQueryServiceImplSourceSelectionTest {
         assertEquals(1, GraphQueryServiceImpl.normalizeSearchSize(0));
         assertEquals(100, GraphQueryServiceImpl.normalizeSearchSize(1000));
     }
+
+    @Test
+    void evidenceSearchUsesBoundedOverfetchInsteadOfFixedTopTen() {
+        assertEquals(10L, GraphQueryServiceImpl.searchRecallLimit(1));
+        assertEquals(25L, GraphQueryServiceImpl.searchRecallLimit(5));
+        assertEquals(50L, GraphQueryServiceImpl.searchRecallLimit(10));
+        assertEquals(100L, GraphQueryServiceImpl.searchRecallLimit(50));
+    }
 }

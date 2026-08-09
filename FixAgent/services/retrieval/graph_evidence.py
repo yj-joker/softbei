@@ -6,6 +6,13 @@ from dataclasses import asdict, dataclass
 import hashlib
 from typing import Any, Mapping
 
+from services.retrieval.graph_quality import (
+    DEFAULT_HIGH_THRESHOLD,
+    DEFAULT_MEDIUM_THRESHOLD,
+    GraphQualityTier,
+    evaluate_graph_path_quality,
+)
+
 
 GRAPH_RETRIEVAL_STATUSES = {
     "found",
@@ -47,6 +54,8 @@ class GraphEvidence:
     fault: dict[str, str]
     solution: dict[str, Any]
     confidence: float
+    quality_tier: str
+    quality_reasons: tuple[str, ...]
     graph_revision: str
     provenance_status: str
     source: GraphEvidenceSource
@@ -62,6 +71,7 @@ class GraphEvidence:
         result["relationship_types"] = list(self.relationship_types)
         result["source"] = self.source.to_dict()
         result["rejection_reasons"] = list(self.rejection_reasons)
+        result["quality_reasons"] = list(self.quality_reasons)
         result["claim_types"] = list(self.claim_types)
         result["supports_aspect_ids"] = list(self.supports_aspect_ids)
         return result
@@ -80,6 +90,8 @@ class GraphEvidence:
             "fault": dict(self.fault),
             "solution": dict(self.solution),
             "confidence": self.confidence,
+            "quality_tier": self.quality_tier,
+            "quality_reasons": list(self.quality_reasons),
             "graph_revision": self.graph_revision,
             "provenance_status": self.provenance_status,
             "source": self.source.to_dict(),
@@ -109,7 +121,8 @@ def normalize_graph_response(
     payload: Mapping[str, Any] | None,
     *,
     scope: Mapping[str, Any] | None = None,
-    min_match_score: float = 1.0,
+    high_threshold: float = DEFAULT_HIGH_THRESHOLD,
+    medium_threshold: float = DEFAULT_MEDIUM_THRESHOLD,
 ) -> GraphEvidenceBatch:
     """Normalize a Java envelope or graph-tool result without broadening scope."""
     raw_payload = payload if isinstance(payload, Mapping) else {}
@@ -124,14 +137,22 @@ def normalize_graph_response(
     records = records if isinstance(records, list) else []
     status = _status(data, records)
     reason = _text(data.get("reason") or raw_payload.get("reason"))
-    normalized: list[GraphEvidence] = []
+    evaluated: list[GraphEvidence] = []
     for record in records:
         if isinstance(record, Mapping):
-            normalized.extend(_normalize_record(record, scope or {}, min_match_score))
+            evaluated.extend(_normalize_record(
+                record,
+                scope or {},
+                high_threshold,
+                medium_threshold,
+            ))
 
-    if status in {"found", "degraded"} and normalized and all(
-        item.qualification == "rejected" for item in normalized
-    ):
+    normalized = [
+        item for item in evaluated
+        if item.quality_tier != GraphQualityTier.LOW.value
+    ]
+
+    if status in {"found", "degraded"} and evaluated and not normalized:
         status = "filtered_out"
         reason = reason or "all_records_rejected"
     if status in {"found", "degraded"} and not normalized:
@@ -143,7 +164,17 @@ def normalize_graph_response(
         "record_count": len(records),
         "qualified_count": sum(item.qualification == "qualified" for item in normalized),
         "routing_only_count": sum(item.qualification == "routing_only" for item in normalized),
-        "rejected_count": sum(item.qualification == "rejected" for item in normalized),
+        "rejected_count": sum(item.quality_tier == "low" for item in evaluated),
+        "high_quality_count": sum(item.quality_tier == "high" for item in evaluated),
+        "medium_quality_count": sum(item.quality_tier == "medium" for item in evaluated),
+        "low_quality_count": sum(item.quality_tier == "low" for item in evaluated),
+        "discarded_count": len(evaluated) - len(normalized),
+        "discard_reasons": sorted({
+            reason
+            for item in evaluated
+            if item.quality_tier == "low"
+            for reason in item.quality_reasons
+        }),
     })
     return GraphEvidenceBatch(status, reason, tuple(normalized), diagnostics)
 
@@ -174,13 +205,16 @@ def _record_from_normalized(item: Mapping[str, Any]) -> dict[str, Any]:
         "graphRevision": item.get("graph_revision"),
         "provenanceStatus": item.get("provenance_status"),
         "matchScore": item.get("confidence"),
+        "semanticScore": item.get("confidence"),
+        "qualityTier": item.get("quality_tier"),
     }
 
 
 def _normalize_record(
     record: Mapping[str, Any],
     scope: Mapping[str, Any],
-    min_match_score: float,
+    high_threshold: float,
+    medium_threshold: float,
 ) -> list[GraphEvidence]:
     path_id = _text(record.get("pathId") or record.get("path_id"))
     node_ids = _text_tuple(record.get("nodeIds") or record.get("node_ids"))
@@ -203,11 +237,16 @@ def _normalize_record(
     )
     graph_revision = _text(record.get("graphRevision"))
     provenance_status = _text(record.get("provenanceStatus")) or "missing"
-    confidence = _number(record.get("matchScore"), record.get("score"))
+    quality = evaluate_graph_path_quality(
+        record,
+        high_threshold=high_threshold,
+        medium_threshold=medium_threshold,
+    )
+    confidence = quality.semantic_score
 
     rejected = _scope_rejections(path_id, device, component, fault, scope)
     core_ids = (device["id"], component["id"], fault["id"])
-    routing_reasons: list[str] = []
+    routing_reasons: list[str] = list(quality.reasons)
     if not path_id:
         rejected.append("missing_path_id")
     elif all(core_ids) and path_id != f"kgpath:{device['id']}:{component['id']}:{fault['id']}":
@@ -218,27 +257,17 @@ def _normalize_record(
         rejected.append("incomplete_node_identity")
     if not {"OWNS", "CAUSES"}.issubset(set(relationship_types)):
         rejected.append("missing_required_relationship")
-    if (
-        provenance_status != "complete"
-        or not source.document_id
-        or not source.document_version
-        or not source.section_id
-        or not source.source_chunk_uids
-        or not source.pages
-        or not graph_revision
-    ):
-        routing_reasons.append("incomplete_provenance")
-    if confidence < min_match_score:
-        routing_reasons.append("below_answer_threshold")
-
-    if rejected:
+    if rejected or quality.tier is GraphQualityTier.LOW:
         qualification = "rejected"
+        quality_tier = GraphQualityTier.LOW.value
         reasons = tuple(dict.fromkeys(rejected + routing_reasons))
-    elif routing_reasons:
+    elif quality.tier is GraphQualityTier.MEDIUM:
         qualification = "routing_only"
+        quality_tier = GraphQualityTier.MEDIUM.value
         reasons = tuple(dict.fromkeys(routing_reasons))
     else:
         qualification = "qualified"
+        quality_tier = GraphQualityTier.HIGH.value
         reasons = ()
 
     rejected_identity = hashlib.sha256(
@@ -259,6 +288,8 @@ def _normalize_record(
         fault=fault,
         solution={},
         confidence=confidence,
+        quality_tier=quality_tier,
+        quality_reasons=reasons,
         graph_revision=graph_revision,
         provenance_status=provenance_status,
         source=source,
@@ -294,6 +325,8 @@ def _normalize_record(
             fault=fault,
             solution=solution,
             confidence=confidence,
+            quality_tier=GraphQualityTier.HIGH.value,
+            quality_reasons=(),
             graph_revision=graph_revision,
             provenance_status=provenance_status,
             source=source,
@@ -377,13 +410,3 @@ def _int_tuple(value: Any) -> tuple[int, ...]:
         if number not in result:
             result.append(number)
     return tuple(result)
-
-
-def _number(*values: Any) -> float:
-    for value in values:
-        try:
-            if value is not None:
-                return float(value)
-        except (TypeError, ValueError):
-            continue
-    return 0.0

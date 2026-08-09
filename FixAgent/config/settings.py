@@ -53,6 +53,8 @@ class Settings:
     java_service_url = os.getenv("JAVA_SERVICE_URL", "http://localhost:8080")
     graph_java_request_budget_seconds = float(os.getenv("GRAPH_JAVA_REQUEST_BUDGET_SECONDS", "10"))
     graph_client_timeout_seconds = float(os.getenv("GRAPH_CLIENT_TIMEOUT_SECONDS", "20"))
+    graph_quality_high_threshold = float(os.getenv("GRAPH_QUALITY_HIGH_THRESHOLD", "0.85"))
+    graph_quality_medium_threshold = float(os.getenv("GRAPH_QUALITY_MEDIUM_THRESHOLD", "0.70"))
 
     # RabbitMQ 配置
     rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
@@ -95,6 +97,8 @@ class Settings:
         self.rag_variant = normalize_rag_variant(os.getenv("RAG_VARIANT"))
         if self.graph_client_timeout_seconds <= self.graph_java_request_budget_seconds:
             raise ValueError("GRAPH_CLIENT_TIMEOUT_SECONDS 必须大于 GRAPH_JAVA_REQUEST_BUDGET_SECONDS")
+        if not 0.0 <= self.graph_quality_medium_threshold <= self.graph_quality_high_threshold <= 1.0:
+            raise ValueError("图谱质量阈值必须满足 0 <= MEDIUM <= HIGH <= 1")
 
 
 _settings = None

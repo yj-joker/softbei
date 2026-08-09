@@ -115,6 +115,7 @@ class EvidenceLedger:
     @classmethod
     def from_react_trace(cls, metadata: Mapping[str, Any] | None) -> "EvidenceLedger":
         ledger = cls()
+        graph_payloads: list[Mapping[str, Any]] = []
         trace = metadata.get("react_trace") if isinstance(metadata, Mapping) else None
         if not isinstance(trace, list):
             return ledger
@@ -133,6 +134,9 @@ class EvidenceLedger:
                     _append_rule_entry(ledger, payload)
                 elif name == "java_graph_diagnosis_path":
                     _append_graph_entries(ledger, payload)
+                    if isinstance(payload, Mapping):
+                        graph_payloads.append(payload)
+        _apply_medium_graph_cross_validation(ledger, graph_payloads)
         return ledger
 
 
@@ -240,6 +244,7 @@ def _append_graph_entries(ledger: EvidenceLedger, payload: Any) -> None:
                 isinstance(entry, Mapping)
                 and entry.get("source_type") == "graph"
                 and entry.get("qualification") == "qualified"
+                and entry.get("quality_tier") in {None, "", "high"}
             ):
                 ledger.append(entry)
     scope = payload.get("graph_scope") or payload.get("scope")
@@ -248,6 +253,86 @@ def _append_graph_entries(ledger: EvidenceLedger, payload: Any) -> None:
     for evidence in batch.evidence:
         if evidence.qualification == "qualified":
             ledger.append(evidence.to_ledger_entry())
+
+
+def _apply_medium_graph_cross_validation(
+    ledger: EvidenceLedger,
+    graph_payloads: Iterable[Mapping[str, Any]],
+) -> None:
+    """Annotate qualified manual chunks corroborating medium graph paths.
+
+    Medium graph paths never become ledger entries.  Exact source identity can
+    only add an audit annotation to an independently qualified manual chunk.
+    """
+    medium_paths = []
+    for payload in graph_payloads:
+        scope = payload.get("graph_scope") or payload.get("scope")
+        batch = normalize_graph_response(
+            payload,
+            scope=scope if isinstance(scope, Mapping) else None,
+        )
+        medium_paths.extend(
+            evidence
+            for evidence in batch.evidence
+            if evidence.quality_tier == "medium"
+        )
+    if not medium_paths:
+        return
+
+    for entry in ledger.entries:
+        if entry.get("source_type") != "manual" or entry.get("qualification") != "qualified":
+            continue
+        matched = [
+            path.path_id
+            for path in medium_paths
+            if _manual_source_matches_graph(entry.get("source"), path.source.to_dict())
+        ]
+        if matched:
+            entry["graph_cross_validation"] = {
+                "status": "corroborated",
+                "quality_tier": "medium",
+                "path_ids": list(dict.fromkeys(matched)),
+            }
+
+
+def _manual_source_matches_graph(manual_value: Any, graph_value: Any) -> bool:
+    manual = manual_value if isinstance(manual_value, Mapping) else {}
+    graph = graph_value if isinstance(graph_value, Mapping) else {}
+    if not manual or not graph:
+        return False
+    manual_document = str(manual.get("document_id") or "").strip()
+    graph_document = str(graph.get("document_id") or "").strip()
+    if not manual_document or manual_document != graph_document:
+        return False
+    for key in ("document_version",):
+        expected = str(graph.get(key) or "").strip()
+        actual = str(manual.get(key) or "").strip()
+        if expected and actual and expected != actual:
+            return False
+
+    manual_chunks = _source_values(
+        manual,
+        "source_chunk_uids", "chunk_uid", "chunk_id", "source_chunk_id", "parent_chunk_id",
+    )
+    graph_chunks = _source_values(graph, "source_chunk_uids")
+    if manual_chunks and graph_chunks and manual_chunks.intersection(graph_chunks):
+        return True
+    manual_sections = _source_values(manual, "section_id", "parent_section_id")
+    graph_sections = _source_values(graph, "section_id")
+    if manual_sections and graph_sections and manual_sections.intersection(graph_sections):
+        return True
+    manual_pages = _source_values(manual, "page", "pages")
+    graph_pages = _source_values(graph, "pages")
+    return bool(manual_pages and graph_pages and manual_pages.intersection(graph_pages))
+
+
+def _source_values(source: Mapping[str, Any], *keys: str) -> set[str]:
+    values: set[str] = set()
+    for key in keys:
+        raw = source.get(key)
+        items = raw if isinstance(raw, (list, tuple, set)) else (raw,)
+        values.update(str(item).strip() for item in items if str(item or "").strip())
+    return values
 
 
 def _entry_text(item: Mapping[str, Any]) -> str:

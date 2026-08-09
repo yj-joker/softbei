@@ -163,6 +163,8 @@ def _merge(left: KnowledgeCandidate, right: KnowledgeCandidate) -> KnowledgeCand
         graph_path_ids=_union(left.graph_path_ids, right.graph_path_ids),
         graph_node_ids=_union(left.graph_node_ids, right.graph_node_ids),
         graph_score=max(left.graph_score, right.graph_score),
+        quality_tier=graph_candidate.quality_tier,
+        quality_reasons=graph_candidate.quality_reasons,
         distinguishing_features=_union(left.distinguishing_features, right.distinguishing_features),
         verification_actions=_union(left.verification_actions, right.verification_actions),
         hard_conflicts=_union(left.hard_conflicts, right.hard_conflicts),

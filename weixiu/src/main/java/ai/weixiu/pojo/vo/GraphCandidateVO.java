@@ -9,6 +9,8 @@ import java.util.List;
 @Data
 public class GraphCandidateVO {
     private String pathId;
+    private List<String> nodeIds = new ArrayList<>();
+    private List<String> relationshipTypes = new ArrayList<>();
     private String deviceId;
     private String deviceName;
     private String componentId;
@@ -22,6 +24,9 @@ public class GraphCandidateVO {
     private List<Integer> pages = new ArrayList<>();
     private String pathType;
     private double graphScore;
+    private Double componentScore;
+    private Double faultScore;
+    private String graphRevision;
     private String provenanceStatus;
     private String recallMode;
     private List<String> distinguishingFeatures = new ArrayList<>();

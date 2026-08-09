@@ -508,6 +508,7 @@ def _server_graph_scope_from_candidate(candidate: Any) -> dict[str, Any]:
         value = str(dimensions.get(source) or "").strip()
         if value:
             scope[target] = [value]
+    scope["graph_quality_tier"] = str(getattr(candidate, "quality_tier", "medium"))
     return scope
 
 

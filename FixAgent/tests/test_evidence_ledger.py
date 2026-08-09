@@ -80,7 +80,8 @@ def test_ledger_collects_manual_rule_and_graph_from_react_trace() -> None:
                                     "pages": [12],
                                     "graphRevision": "graph-v1",
                                     "provenanceStatus": "complete",
-                                    "matchScore": 3,
+                                        "matchScore": 3,
+                                        "faultScore": 0.91,
                                 }
                             ]
                         },

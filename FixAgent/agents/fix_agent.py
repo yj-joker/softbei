@@ -223,6 +223,18 @@ _GRAPH_RAG_TOOL_NAMES = frozenset({
 })
 
 
+def _graph_item_available_for_processing(item: Any) -> bool:
+    if not isinstance(item, dict):
+        return False
+    tier = str(item.get("quality_tier") or "")
+    if tier:
+        return tier in {"high", "medium"}
+    # Cached normalized batches from earlier releases only have
+    # ``qualification``. Raw Java rows do not, so they still pass through the
+    # current semantic-score quality gate before becoming usable.
+    return str(item.get("qualification") or "") in {"qualified", "routing_only"}
+
+
 class FixAgent(BaseAgent):
     """
     统一诊断 Agent
@@ -498,7 +510,7 @@ class FixAgent(BaseAgent):
         status = str(batch.get("status") or "")
         evidence = [
             item for item in batch.get("evidence") or []
-            if isinstance(item, dict) and item.get("qualification") == "qualified"
+            if _graph_item_available_for_processing(item)
         ]
         if status != "found" or not evidence:
             return
@@ -603,7 +615,7 @@ class FixAgent(BaseAgent):
         graph_batch = dict(run_context.graph_pre_retrieval or {})
         graph_evidence = [
             item for item in graph_batch.get("evidence") or []
-            if isinstance(item, dict) and item.get("qualification") == "qualified"
+            if _graph_item_available_for_processing(item)
         ]
         if str(graph_batch.get("status") or "") == "found" and graph_evidence:
             trace.insert(0, {
@@ -746,7 +758,7 @@ class FixAgent(BaseAgent):
         graph_batch = dict(run_context.graph_pre_retrieval or {})
         graph_evidence = [
             item for item in graph_batch.get("evidence") or []
-            if isinstance(item, dict) and item.get("qualification") == "qualified"
+            if _graph_item_available_for_processing(item)
         ]
         used_tools = ["knowledge_retrieval"]
         if str(graph_batch.get("status") or "") == "found" and graph_evidence:

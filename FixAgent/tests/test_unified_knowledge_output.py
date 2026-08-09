@@ -2209,6 +2209,7 @@ def _qualified_graph_trace(*, include_solution: bool = False) -> list[dict]:
         "graphRevision": "graph-v1",
         "provenanceStatus": "complete",
         "matchScore": 3,
+        "faultScore": 0.91,
     }
     if include_solution:
         record["solutions"] = [{

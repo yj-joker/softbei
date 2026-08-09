@@ -396,6 +396,15 @@ class ClarificationDecisionEngine:
         ))
         if graph_refs:
             constraints["allowed_graph_node_ids"] = graph_refs
+        graph_tiers = {
+            candidate.quality_tier
+            for candidate in candidates
+            if candidate.source_kind in {"graph", "fused"}
+        }
+        if graph_tiers:
+            constraints["graph_quality_tier"] = (
+                "medium" if "medium" in graph_tiers else "high"
+            )
         return constraints
 
     @staticmethod

@@ -13,6 +13,7 @@ from config.settings import get_settings
 from services.clarification.graph_candidates import build_graph_candidates
 from services.retrieval.device_identity import QueryContract
 from services.retrieval.graph_evidence import GraphEvidenceBatch, normalize_graph_response
+from services.retrieval.graph_quality import GraphQualityTier, evaluate_graph_path_quality
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +99,8 @@ class JavaGraphCandidateProvider:
             else timeout_seconds
         )
         self.timeout_seconds = max(float(configured_timeout), 0.2)
+        self.high_quality_threshold = float(settings.graph_quality_high_threshold)
+        self.medium_quality_threshold = float(settings.graph_quality_medium_threshold)
         self._request_json = request_json
         self.last_error: str = ""
         self.last_error_code: str = ""
@@ -196,7 +199,21 @@ class JavaGraphCandidateProvider:
         if isinstance(data, Mapping):
             data = data.get("records") or data.get("candidates") or data.get("paths") or ()
         records = [dict(item) for item in (data or ()) if isinstance(item, Mapping)]
-        candidates = build_graph_candidates(records, query=contract.raw_query)
+        quality_decisions = [
+            evaluate_graph_path_quality(
+                record,
+                high_threshold=self.high_quality_threshold,
+                medium_threshold=self.medium_quality_threshold,
+                trusted_query_structure=True,
+            )
+            for record in records
+        ]
+        candidates = build_graph_candidates(
+            records,
+            query=contract.raw_query,
+            high_threshold=self.high_quality_threshold,
+            medium_threshold=self.medium_quality_threshold,
+        )
         status = response_status or ("found" if candidates else "empty")
         if records and not candidates:
             status = "filtered_out"
@@ -208,6 +225,15 @@ class JavaGraphCandidateProvider:
                 "record_count": len(records),
                 "candidate_count": len(candidates),
                 "filtered_count": max(0, len(records) - len(candidates)),
+                "high_quality_count": sum(
+                    item.tier is GraphQualityTier.HIGH for item in quality_decisions
+                ),
+                "medium_quality_count": sum(
+                    item.tier is GraphQualityTier.MEDIUM for item in quality_decisions
+                ),
+                "low_quality_count": sum(
+                    item.tier is GraphQualityTier.LOW for item in quality_decisions
+                ),
             },
         }
         return candidates
@@ -381,6 +407,8 @@ class JavaGraphCandidateProvider:
                 "raw_records": records,
             },
             scope=scope,
+            high_threshold=self.high_quality_threshold,
+            medium_threshold=self.medium_quality_threshold,
         )
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Mapping[str, Any]:
