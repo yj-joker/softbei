@@ -35,6 +35,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -271,12 +272,13 @@ class KnowledgeDocumentImportIdentityTest {
         MaintenanceManualMapper manualMapper = mock(MaintenanceManualMapper.class);
         MioIOUpLoadService storage = mock(MioIOUpLoadService.class);
         KnowledgeImportProducer producer = mock(KnowledgeImportProducer.class);
+        ExpirationService expirationService = mock(ExpirationService.class);
         KnowledgeDocumentServiceImpl service = new KnowledgeDocumentServiceImpl(
                 manualMapper,
                 storage,
                 producer,
                 mock(RedissonClient.class),
-                mock(ExpirationService.class),
+                expirationService,
                 mock(ManualDeviceMapper.class)
         );
         ReflectionTestUtils.setField(service, "baseMapper", documentMapper);
@@ -295,6 +297,13 @@ class KnowledgeDocumentImportIdentityTest {
         when(documentMapper.selectOne(any(), anyBoolean())).thenReturn(callbackDocument);
         when(documentMapper.selectById(102L)).thenReturn(activeDocument);
         when(manualMapper.selectByIdForUpdate(20L)).thenReturn(manual);
+        doAnswer(invocation -> {
+            invocation.getArgument(5, Runnable.class).run();
+            return null;
+        }).when(expirationService).checkManualUpgradeAsync(
+                eq(20L), eq("kdoc_v3"), eq("kdoc_v2"),
+                eq("设备维修手册"), any(), any(Runnable.class)
+        );
 
         TransactionSynchronizationManager.initSynchronization();
         service.onParseSuccess("kdoc_v3", Map.of());

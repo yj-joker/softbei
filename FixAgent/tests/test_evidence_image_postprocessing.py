@@ -6,6 +6,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.main import (
@@ -718,7 +720,7 @@ def test_action_context_filter_keeps_later_evidence_page_even_when_next_install_
 
 
 def test_collect_direct_evidence_page_images_renders_pdf_page_when_no_indexed_image(tmp_path, monkeypatch) -> None:
-    fitz = __import__("fitz")
+    fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional on LoongArch")
     pdf_path = tmp_path / "manual.pdf"
     doc = fitz.open()
     page = doc.new_page(width=200, height=120)

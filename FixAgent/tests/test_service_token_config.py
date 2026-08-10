@@ -20,8 +20,12 @@ def test_application_binds_distinct_directional_tokens_without_defaults() -> Non
     text = JAVA_CONFIG.read_text(encoding="utf-8")
 
     assert re.search(r"(?m)^\s*internal-token:\s*\$\{INTERNAL_TOKEN\}\s*$", text)
-    assert re.search(r"(?m)^\s*api-token:\s*\$\{AI_API_TOKEN\}\s*$", text)
+    assert re.search(
+        r"(?m)^\s*api-token:\s*\$\{AI_API_TOKEN:\$\{API_TOKEN\}\}\s*$",
+        text,
+    )
     assert "api-token: ${AI_API_TOKEN:}" not in text
+    assert "api-token: ${API_TOKEN:}" not in text
     assert "internal-token: ${INTERNAL_TOKEN:}" not in text
     assert "internal-token: fix-agent-internal-2026" not in text
     assert not re.search(r"(?m)^API_TOKEN\s*=\s*\$\{INTERNAL_TOKEN\}\s*$", text)
