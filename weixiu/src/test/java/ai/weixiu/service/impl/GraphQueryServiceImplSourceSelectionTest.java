@@ -1,14 +1,52 @@
 package ai.weixiu.service.impl;
 
 import org.junit.jupiter.api.Test;
+import ai.weixiu.knowledge.GraphStableIdentity;
+import ai.weixiu.pojo.query.GraphQueryContract;
 import ai.weixiu.pojo.vo.GraphCandidateVO;
 
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class GraphQueryServiceImplSourceSelectionTest {
+
+    @Test
+    void graphQueryContractCarriesGroundedComponentAndFaultSpans() throws Exception {
+        assertEquals(String.class, GraphQueryContract.class.getDeclaredField("rawComponentSpan").getType());
+        assertEquals(String.class, GraphQueryContract.class.getDeclaredField("fault").getType());
+        assertEquals(String.class, GraphQueryContract.class.getDeclaredField("rawFaultSpan").getType());
+    }
+
+    @Test
+    void structuredFaultDescriptionDoesNotIncludeTheWholeRawQuery() {
+        GraphQueryContract contract = new GraphQueryContract();
+        contract.setRawQuery("摩托车发动机的火花塞出现火花塞损坏");
+        contract.setFault("火花塞损坏");
+        contract.setRawFaultSpan("火花塞损坏");
+        contract.setSymptoms(List.of("无法启动"));
+
+        String description = GraphQueryServiceImpl.candidateFaultDescription(contract);
+
+        assertEquals("火花塞损坏 无法启动", description);
+        assertFalse(description.contains("摩托车发动机"));
+    }
+
+    @Test
+    void rawQueryIsOnlyTheFallbackForAnEmptyStructuredFault() {
+        GraphQueryContract contract = new GraphQueryContract();
+        contract.setRawQuery("发动机无法启动");
+
+        assertEquals(
+                "发动机无法启动",
+                GraphQueryServiceImpl.candidateFaultDescription(contract)
+        );
+    }
 
     @Test
     void diagnosticPathUsesFaultChunksInsteadOfWholeComponentSection() {
@@ -84,5 +122,54 @@ class GraphQueryServiceImplSourceSelectionTest {
         assertEquals(25L, GraphQueryServiceImpl.searchRecallLimit(5));
         assertEquals(50L, GraphQueryServiceImpl.searchRecallLimit(10));
         assertEquals(100L, GraphQueryServiceImpl.searchRecallLimit(50));
+    }
+
+    @Test
+    void graphCandidatePathIdUsesStableNodeIdsInsteadOfInternalUuids() {
+        String expected = GraphStableIdentity.pathId(
+                "kg:device:stable", "kg:component:stable", "kg:fault:stable");
+
+        assertEquals(expected, GraphQueryServiceImpl.stablePathId(
+                "kg:device:stable", "kg:component:stable", "kg:fault:stable"));
+    }
+
+    @Test
+    void pathScopeUsesThePersistedCauseRelationshipIdentity() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ai/weixiu/service/impl/GraphQueryServiceImpl.java"));
+
+        assertTrue(source.contains("causes.path_stable_id IN $allowedPathIds"));
+        assertFalse(source.contains("'kgpath:' +"));
+    }
+
+    @Test
+    void runtimePathProjectionUsesStableNodesAndAtomicFaultProvenance() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ai/weixiu/service/impl/GraphQueryServiceImpl.java"));
+
+        assertTrue(source.contains("Stream.of(deviceStableId, componentStableId, faultStableId)"));
+        assertTrue(source.contains("CASE WHEN f IS NULL THEN c.section_id ELSE f.section_id END AS sectionId"));
+        assertTrue(source.contains("CASE WHEN f IS NULL THEN c.page_start ELSE f.page_start END AS pageStart"));
+        assertFalse(source.contains("coalesce(c.section_id, f.section_id) AS sectionId"));
+        assertFalse(source.contains("coalesce(f.page_start, c.page_start, d.page_start) AS pageStart"));
+    }
+
+    @Test
+    void resolvedStableNodeScopeFiltersOnStableIds() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ai/weixiu/service/impl/GraphQueryServiceImpl.java"));
+
+        assertTrue(source.contains("coalesce(d.stable_id, d.id) IN $allowedGraphNodeIds"));
+        assertTrue(source.contains("coalesce(c.stable_id, c.id) IN $allowedGraphNodeIds"));
+        assertTrue(source.contains("coalesce(f.stable_id, f.id) IN $allowedGraphNodeIds"));
+    }
+
+    @Test
+    void candidateProjectionKeepsCauseRelationshipUntilStablePathReturn() throws Exception {
+        String source = Files.readString(Path.of(
+                "src/main/java/ai/weixiu/service/impl/GraphQueryServiceImpl.java"));
+
+        assertTrue(source.contains("WITH DISTINCT d, c, f, causes,"));
+        assertTrue(source.contains("causes.path_stable_id AS pathStableId"));
     }
 }

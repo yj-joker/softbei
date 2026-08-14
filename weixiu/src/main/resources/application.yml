@@ -93,7 +93,7 @@ ai:
   # FixAgent→Java 使用 X-Internal-Token；Java→FixAgent 使用 X-Api-Token，二者必须不同。
   internal-token: ${INTERNAL_TOKEN}
   # Java→FixAgent 使用 X-Api-Token，与 FixAgent .env 中的 API_TOKEN 保持一致。
-  api-token: ${API_TOKEN:}
+  api-token: ${AI_API_TOKEN:${API_TOKEN}}
 weixiu:
   cors:
     allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000,http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173}

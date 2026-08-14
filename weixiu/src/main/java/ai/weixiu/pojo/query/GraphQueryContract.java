@@ -12,6 +12,9 @@ public class GraphQueryContract {
     private String intent = "";
     private String deviceIdentity = "";
     private String component = "";
+    private String rawComponentSpan = "";
+    private String fault = "";
+    private String rawFaultSpan = "";
     private String partSpec = "";
     private List<String> symptoms = new ArrayList<>();
     private List<String> operatingConditions = new ArrayList<>();

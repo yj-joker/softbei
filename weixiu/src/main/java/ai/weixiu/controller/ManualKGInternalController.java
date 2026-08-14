@@ -1,5 +1,6 @@
 package ai.weixiu.controller;
 
+import ai.weixiu.knowledge.GraphStableIdentity;
 import ai.weixiu.pojo.Result;
 import ai.weixiu.utils.EmbeddingUtils;
 import ai.weixiu.utils.MultimodalEmbeddingUtils;
@@ -39,6 +40,8 @@ public class ManualKGInternalController {
             String sectionId    = asText(body.get("sectionId"));
             String chunkUid     = asText(body.get("sourceChunkUid"));
             String identityKey  = canonicalIdentity(name, model, manufacturer);
+            String stableId = GraphStableIdentity.nodeId(
+                    documentId, documentVersion, "device", identityKey);
             Long pageStart      = toLong(body.get("pageStart"));
             Long pageEnd        = toLong(body.get("pageEnd"));
             Long manualId       = toLong(body.get("manualId"));
@@ -51,10 +54,12 @@ public class ManualKGInternalController {
                     MERGE (d:Device {document_id: $documentId, identity_key: $identityKey})
                     ON CREATE SET
                         d.id           = randomUUID(),
+                        d.stable_id    = $stableId,
                         d.name         = $name,
                         d.model        = $model,
                         d.manufacturer = $manufacturer,
                         d.source       = 'manual',
+                        d.graph_revision = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         d.document_version = $documentVersion,
                         d.section_id   = $sectionId,
                         d.source_chunk_uid = $chunkUid,
@@ -64,6 +69,8 @@ public class ManualKGInternalController {
                         d.created_at   = datetime()
                     ON MATCH SET
                         d.updated_at   = datetime(),
+                        d.stable_id    = coalesce(d.stable_id, $stableId),
+                        d.graph_revision = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         d.name         = coalesce($name, d.name),
                         d.model        = coalesce($model, d.model),
                         d.manufacturer = coalesce($manufacturer, d.manufacturer),
@@ -85,6 +92,7 @@ public class ManualKGInternalController {
                     .bind(manufacturer).to("manufacturer")
                     .bind(documentId).to("documentId")
                     .bind(identityKey).to("identityKey")
+                    .bind(stableId).to("stableId")
                     .bind(documentVersion).to("documentVersion")
                     .bind(sectionId).to("sectionId")
                     .bind(chunkUid).to("chunkUid")
@@ -131,6 +139,8 @@ public class ManualKGInternalController {
             Long pageStart       = toLong(body.get("pageStart"));
             Long pageEnd         = toLong(body.get("pageEnd"));
             Long manualId        = toLong(body.get("manualId"));
+            String componentStableId = componentStableIdentity(
+                    documentId, documentVersion, name, componentType, spec);
 
             // deviceId 必填：Component 必须锚定到 Device（设备隔离，防跨设备同名合并）
             if (deviceId == null || deviceId.isBlank()) {
@@ -144,9 +154,11 @@ public class ManualKGInternalController {
                     MERGE (d)-[:OWNS]->(c:Component {name: $name})
                     ON CREATE SET
                         c.id               = randomUUID(),
+                        c.stable_id        = $componentStableId,
                         c.component_type   = $componentType,
                         c.specification    = $spec,
                         c.source           = 'manual',
+                        c.graph_revision   = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         c.source_chunk_uid = $chunkUid,
                         c.source_chunk_uids = $sourceChunkUids,
                         c.document_id      = $documentId,
@@ -158,6 +170,8 @@ public class ManualKGInternalController {
                         c.created_at       = datetime()
                     ON MATCH SET
                         c.updated_at       = datetime(),
+                        c.stable_id        = coalesce(c.stable_id, $componentStableId),
+                        c.graph_revision   = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         c.source_chunk_uid = coalesce($chunkUid, c.source_chunk_uid),
                         c.source_chunk_uids = CASE WHEN size($sourceChunkUids) = 0 THEN coalesce(c.source_chunk_uids, []) ELSE $sourceChunkUids END,
                         c.document_id      = coalesce($documentId, c.document_id),
@@ -175,6 +189,7 @@ public class ManualKGInternalController {
             Optional<Map<String, Object>> row = neo4jClient.query(cypher)
                     .bind(deviceId).to("deviceId")
                     .bind(name).to("name")
+                    .bind(componentStableId).to("componentStableId")
                     .bind(componentType).to("componentType")
                     .bind(spec).to("spec")
                     .bind(manualId).to("manualId")
@@ -268,6 +283,22 @@ public class ManualKGInternalController {
                 return Result.error("400", "componentId required: Fault must be anchored to a Component");
             }
 
+            Optional<Map<String, Object>> anchorRow = neo4jClient.query("""
+                    MATCH (d:Device)-[:OWNS]->(c:Component {id: $componentId})
+                    RETURN d.stable_id AS deviceStableId, c.stable_id AS componentStableId
+                    """)
+                    .bind(componentId).to("componentId")
+                    .fetch()
+                    .first();
+            if (anchorRow.isEmpty()) {
+                return Result.error("500", "component graph anchor was not found");
+            }
+            String deviceStableId = asText(anchorRow.get().get("deviceStableId"));
+            String componentStableId = asText(anchorRow.get().get("componentStableId"));
+            if (deviceStableId.isBlank() || componentStableId.isBlank()) {
+                return Result.error("409", "component graph anchor has no stable identity");
+            }
+
             // A section-level component is not proof of the subject of a conditional
             // maintenance statement.  When the extractor supplies a subject, it must
             // be explicitly present in the immutable source excerpt before the edge
@@ -279,23 +310,33 @@ public class ManualKGInternalController {
             }
 
             if (faultIdentityKey.isBlank()) {
-                faultIdentityKey = "legacy-fault:" + componentId + ":" + faultName.trim();
+                faultIdentityKey = "legacy-fault:" + canonicalIdentity(
+                        faultName, faultDescription, "");
             }
             if (solutionIdentityKey.isBlank()) {
                 solutionIdentityKey = "legacy-solution:" + faultIdentityKey + ":" + solutionTitle.trim();
             }
+
+            String faultStableId = faultStableIdentity(
+                    documentId, documentVersion, componentStableId, faultName, faultDescription);
+            String solutionStableId = solutionStableIdentity(
+                    documentId, documentVersion, faultStableId, solutionTitle, solutionDesc);
+            String pathStableId = GraphStableIdentity.pathId(
+                    deviceStableId, componentStableId, faultStableId);
 
             String stepsText = String.join("\n", solutionSteps);
 
             // --- Fault MERGE（严格要求 componentId）---
             String faultCypher = """
                     MATCH (c:Component {id: $componentId})
-                    MERGE (f:Fault {identity_key: $faultIdentityKey})
+                    MERGE (f:Fault {stable_id: $faultStableId, identity_key: $faultIdentityKey})
                     ON CREATE SET
                         f.id                = randomUUID(),
+                        f.identity_key      = $faultIdentityKey,
                         f.name              = $faultName,
                         f.description       = $faultDescription,
                         f.source            = 'manual',
+                        f.graph_revision    = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         f.verified          = false,
                         f.status            = 'active',
                         f.manual_confidence = $confidence,
@@ -310,6 +351,8 @@ public class ManualKGInternalController {
                         f.created_at        = datetime()
                     ON MATCH SET
                         f.updated_at        = datetime(),
+                        f.stable_id         = $faultStableId,
+                        f.graph_revision    = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         f.name              = $faultName,
                         f.description       = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $faultDescription ELSE f.description END,
                         f.manual_confidence = CASE WHEN (f.source IS NULL OR f.source = 'manual') THEN $confidence         ELSE f.manual_confidence END,
@@ -326,13 +369,17 @@ public class ManualKGInternalController {
                             WHEN $manualId IN coalesce(f.manual_ids, []) THEN f.manual_ids
                             ELSE coalesce(f.manual_ids, []) + $manualId END
                     WITH c, f, (f.updated_at IS NULL) AS faultCreated
-                    MERGE (c)-[:CAUSES]->(f)
+                    MERGE (c)-[causes:CAUSES]->(f)
+                    SET causes.path_stable_id = $pathStableId,
+                        causes.graph_revision = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1'
                     RETURN f.id AS faultId, faultCreated
                     """;
 
             Optional<Map<String, Object>> faultRow = neo4jClient.query(faultCypher)
                     .bind(componentId).to("componentId")
                     .bind(faultIdentityKey).to("faultIdentityKey")
+                    .bind(faultStableId).to("faultStableId")
+                    .bind(pathStableId).to("pathStableId")
                     .bind(faultName).to("faultName")
                     .bind(faultDescription).to("faultDescription")
                     .bind(confidence).to("confidence")
@@ -355,13 +402,15 @@ public class ManualKGInternalController {
             // --- Solution MERGE ---
             String solutionCypher = """
                     MATCH (f:Fault {id: $faultId})
-                    MERGE (s:Solution {identity_key: $solutionIdentityKey})
+                    MERGE (s:Solution {stable_id: $solutionStableId, identity_key: $solutionIdentityKey})
                     ON CREATE SET
                         s.id               = randomUUID(),
+                        s.identity_key     = $solutionIdentityKey,
                         s.title             = $solutionTitle,
                         s.description      = $solutionDesc,
                         s.steps_text       = $stepsText,
                         s.source           = 'manual',
+                        s.graph_revision   = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         s.verified         = false,
                         s.status           = 'active',
                         s.source_chunk_uid = $chunkUid,
@@ -375,6 +424,8 @@ public class ManualKGInternalController {
                         s.created_at       = datetime()
                     ON MATCH SET
                         s.updated_at       = datetime(),
+                        s.stable_id        = $solutionStableId,
+                        s.graph_revision   = 'manual:' + $documentId + ':' + $documentVersion + ':stable-v1',
                         s.title             = $solutionTitle,
                         s.description      = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $solutionDesc ELSE s.description END,
                         s.steps_text       = CASE WHEN (s.source IS NULL OR s.source = 'manual') THEN $stepsText    ELSE s.steps_text END,
@@ -398,6 +449,7 @@ public class ManualKGInternalController {
             Optional<Map<String, Object>> solutionRow = neo4jClient.query(solutionCypher)
                     .bind(faultId).to("faultId")
                     .bind(solutionIdentityKey).to("solutionIdentityKey")
+                    .bind(solutionStableId).to("solutionStableId")
                     .bind(solutionTitle).to("solutionTitle")
                     .bind(solutionDesc).to("solutionDesc")
                     .bind(stepsText).to("stepsText")
@@ -425,8 +477,14 @@ public class ManualKGInternalController {
                 String embText   = "故障名称：" + faultName + "\n故障描述：" + faultDescription;
                 List<Double> emb      = embeddingUtils.getEmbedding(embText);
                 List<Double> multiEmb = multimodalEmbeddingUtils.getMultimodalEmbedding(embText, null);
-                if (emb == null || emb.size() != 1536) {
-                    throw new IllegalStateException("fault embedding must contain 1536 dimensions");
+                if (!hasExpectedEmbeddingDimensions(emb)) {
+                    int actualDimensions = emb == null ? 0 : emb.size();
+                    throw new IllegalStateException(
+                            "fault embedding must contain "
+                                    + EmbeddingUtils.TEXT_EMBEDDING_DIMENSIONS
+                                    + " dimensions, actual "
+                                    + actualDimensions
+                    );
                 }
 
                 String embCypher = """
@@ -551,6 +609,56 @@ public class ManualKGInternalController {
             }
         }
         return null;
+    }
+
+    static String componentStableIdentity(
+            String documentId,
+            String documentVersion,
+            String name,
+            String componentType,
+            String specification
+    ) {
+        return GraphStableIdentity.nodeId(
+                documentId,
+                documentVersion,
+                "component",
+                canonicalIdentity(name, componentType, specification)
+        );
+    }
+
+    static String faultStableIdentity(
+            String documentId,
+            String documentVersion,
+            String componentStableId,
+            String faultName,
+            String faultDescription
+    ) {
+        return GraphStableIdentity.nodeId(
+                documentId,
+                documentVersion,
+                "fault",
+                canonicalIdentity(componentStableId, faultName, faultDescription)
+        );
+    }
+
+    static String solutionStableIdentity(
+            String documentId,
+            String documentVersion,
+            String faultStableId,
+            String solutionTitle,
+            String solutionDescription
+    ) {
+        return GraphStableIdentity.nodeId(
+                documentId,
+                documentVersion,
+                "solution",
+                canonicalIdentity(faultStableId, solutionTitle, solutionDescription)
+        );
+    }
+
+    static boolean hasExpectedEmbeddingDimensions(List<Double> embedding) {
+        return embedding != null
+                && embedding.size() == EmbeddingUtils.TEXT_EMBEDDING_DIMENSIONS;
     }
 
     static String compactForSubjectMatch(String value) {

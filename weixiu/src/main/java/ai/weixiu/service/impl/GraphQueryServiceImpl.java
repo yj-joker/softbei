@@ -1,6 +1,8 @@
 package ai.weixiu.service.impl;
 
 import ai.weixiu.pojo.PageResult;
+import ai.weixiu.knowledge.GraphPathProvenance;
+import ai.weixiu.knowledge.GraphStableIdentity;
 import ai.weixiu.pojo.query.DiagnosisSearchQuery;
 import ai.weixiu.pojo.query.GraphCandidateQuery;
 import ai.weixiu.pojo.query.GraphQueryContract;
@@ -218,11 +220,7 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 contract.getAssemblyContext(),
                 contract.getOrientation()
         );
-        String faultDescription = joinText(
-                contract.getSymptoms(),
-                contract.getOperatingConditions(),
-                contract.getRawQuery()
-        );
+        String faultDescription = candidateFaultDescription(contract);
         int limit = Math.max(1, Math.min(request.getLimit(), 50));
         int recallLimit = overfetchLimit(limit);
         double minScore = Math.max(0.0, Math.min(request.getMinScore(), 1.0));
@@ -335,15 +333,17 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 "f.id IN $allowedFaultIds");
         addListFilter(params, scopeConditions, "allowedPathIds", "allowedPathFilter",
                 request.getAllowedPathIds(),
-                "('kgpath:' + d.id + ':' + c.id + ':' + coalesce(f.id, '')) IN $allowedPathIds");
+                "causes.path_stable_id IN $allowedPathIds");
         addListFilter(params, scopeConditions, "allowedGraphNodeIds", "allowedGraphNodeFilter",
                 request.getAllowedGraphNodeIds(),
-                "d.id IN $allowedGraphNodeIds AND c.id IN $allowedGraphNodeIds AND (f IS NULL OR f.id IN $allowedGraphNodeIds)");
+                "coalesce(d.stable_id, d.id) IN $allowedGraphNodeIds AND "
+                        + "coalesce(c.stable_id, c.id) IN $allowedGraphNodeIds AND "
+                        + "(f IS NULL OR coalesce(f.stable_id, f.id) IN $allowedGraphNodeIds)");
 
         String cypher = """
                 MATCH (d:Device)-[:OWNS]->(c:Component)
-                OPTIONAL MATCH (c)-[:CAUSES]->(f:Fault)
-                WITH d, c, f
+                OPTIONAL MATCH (c)-[causes:CAUSES]->(f:Fault)
+                WITH d, c, f, causes
                 WHERE (%s)
                   AND ($deviceFilter = false OR d.id IN $deviceIds)
                   AND ($faultRequired = false OR f IS NOT NULL)
@@ -353,49 +353,47 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                   AND ($allowedDeviceFilter = false OR d.id IN $allowedDeviceIds)
                   AND ($allowedComponentFilter = false OR c.id IN $allowedComponentIds)
                   AND ($allowedFaultFilter = false OR f.id IN $allowedFaultIds)
-                  AND ($allowedPathFilter = false OR ('kgpath:' + d.id + ':' + c.id + ':' + coalesce(f.id, '')) IN $allowedPathIds)
-                  AND ($allowedGraphNodeFilter = false OR (d.id IN $allowedGraphNodeIds AND c.id IN $allowedGraphNodeIds AND (f IS NULL OR f.id IN $allowedGraphNodeIds)))
-                WITH DISTINCT d, c, f,
+                  AND ($allowedPathFilter = false OR causes.path_stable_id IN $allowedPathIds)
+                  AND ($allowedGraphNodeFilter = false OR (coalesce(d.stable_id, d.id) IN $allowedGraphNodeIds AND coalesce(c.stable_id, c.id) IN $allowedGraphNodeIds AND (f IS NULL OR coalesce(f.stable_id, f.id) IN $allowedGraphNodeIds)))
+                WITH DISTINCT d, c, f, causes,
                      CASE WHEN coalesce($componentScores[c.id], 0.0) > coalesce($faultScores[f.id], 0.0)
                           THEN coalesce($componentScores[c.id], 0.0)
                           ELSE coalesce($faultScores[f.id], 0.0) END AS graphScore
                 ORDER BY graphScore DESC, c.id, f.id
                 LIMIT $limit
                 RETURN d.id AS deviceId,
+                       coalesce(d.stable_id, d.id) AS deviceStableId,
                        d.name AS deviceName,
                        c.id AS componentId,
+                       coalesce(c.stable_id, c.id) AS componentStableId,
                        c.name AS componentName,
                        f.id AS faultId,
+                       coalesce(f.stable_id, f.id) AS faultStableId,
+                       causes.path_stable_id AS pathStableId,
                        f.name AS faultName,
-                       coalesce(c.document_id, d.document_id, f.document_id) AS documentId,
-                       coalesce(c.document_version, d.document_version, f.document_version) AS documentVersion,
-                       coalesce(c.section_id, f.section_id) AS sectionId,
+                       CASE WHEN f IS NULL THEN c.document_id ELSE f.document_id END AS documentId,
+                       CASE WHEN f IS NULL THEN c.document_version ELSE f.document_version END AS documentVersion,
+                       CASE WHEN f IS NULL THEN c.section_id ELSE f.section_id END AS sectionId,
                        coalesce(c.source_chunk_uids, CASE WHEN c.source_chunk_uid IS NULL THEN [] ELSE [c.source_chunk_uid] END) AS componentChunks,
                        coalesce(f.source_chunk_uids, CASE WHEN f.source_chunk_uid IS NULL THEN [] ELSE [f.source_chunk_uid] END) AS faultChunks,
-                       coalesce(f.page_start, c.page_start, d.page_start) AS pageStart,
-                       coalesce(f.page_end, c.page_end, d.page_end) AS pageEnd,
+                       CASE WHEN f IS NULL THEN c.page_start ELSE f.page_start END AS pageStart,
+                       CASE WHEN f IS NULL THEN c.page_end ELSE f.page_end END AS pageEnd,
                        coalesce(f.distinguishing_features, f.observable_symptoms, f.symptoms, []) AS distinguishingFeatures,
                        coalesce(f.verification_actions, f.check_actions, []) AS verificationActions,
                        CASE WHEN f IS NULL THEN 'procedure' ELSE 'fault' END AS pathType,
                        coalesce($componentScores[c.id], 0.0) AS componentScore,
                        coalesce($faultScores[f.id], 0.0) AS faultScore,
                        graphScore,
-                       coalesce(
-                           f.graph_revision,
-                           c.graph_revision,
-                           d.graph_revision,
-                           CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL
-                                  OR coalesce(c.document_version, d.document_version, f.document_version) IS NULL
-                                THEN NULL
-                                ELSE 'manual:' + coalesce(c.document_id, d.document_id, f.document_id)
-                                     + ':' + coalesce(c.document_version, d.document_version, f.document_version)
-                           END) AS graphRevision,
-                       CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL THEN 'missing'
-                            WHEN coalesce(c.document_version, d.document_version, f.document_version) IS NULL THEN 'partial'
-                            WHEN coalesce(c.section_id, f.section_id) IS NULL THEN 'partial'
-                            WHEN size(coalesce(c.source_chunk_uids, [])) = 0 AND c.source_chunk_uid IS NULL THEN 'partial'
-                            WHEN coalesce(c.page_start, d.page_start, f.page_start) IS NULL THEN 'partial'
-                            ELSE 'complete' END AS provenanceStatus
+                       CASE WHEN f IS NULL THEN c.graph_revision ELSE f.graph_revision END AS graphRevision,
+                       CASE WHEN f IS NULL THEN
+                            CASE WHEN c.document_id IS NULL OR c.document_version IS NULL OR c.section_id IS NULL
+                                      OR (size(coalesce(c.source_chunk_uids, [])) = 0 AND c.source_chunk_uid IS NULL)
+                                      OR c.page_start IS NULL THEN 'partial' ELSE 'complete' END
+                            ELSE
+                            CASE WHEN f.document_id IS NULL OR f.document_version IS NULL OR f.section_id IS NULL
+                                      OR (size(coalesce(f.source_chunk_uids, [])) = 0 AND f.source_chunk_uid IS NULL)
+                                      OR f.page_start IS NULL THEN 'partial' ELSE 'complete' END
+                            END AS provenanceStatus
                 """.formatted(String.join(" OR ", matchConditions));
 
         List<GraphCandidateVO> fetchedCandidates = new ArrayList<>();
@@ -701,10 +699,15 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         candidate.setProvenanceStatus(asText(row.get("provenanceStatus")));
         candidate.setDistinguishingFeatures(concatTextLists(row.get("distinguishingFeatures")));
         candidate.setVerificationActions(concatTextLists(row.get("verificationActions")));
-        String pathId = "kgpath:" + String.join(":", candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId());
-        candidate.setPathId(pathId);
+        String deviceStableId = firstText(row.get("deviceStableId"), candidate.getDeviceId());
+        String componentStableId = firstText(row.get("componentStableId"), candidate.getComponentId());
+        String faultStableId = firstText(row.get("faultStableId"), candidate.getFaultId());
+        candidate.setPathId(firstText(
+                row.get("pathStableId"),
+                stablePathId(deviceStableId, componentStableId, faultStableId)
+        ));
         candidate.setNodeIds(java.util.stream.Stream.of(
-                        candidate.getDeviceId(), candidate.getComponentId(), candidate.getFaultId())
+                        deviceStableId, componentStableId, faultStableId)
                 .filter(this::hasText)
                 .toList());
         List<String> relationshipTypes = new ArrayList<>();
@@ -715,8 +718,9 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             relationshipTypes.add("CAUSES");
         }
         candidate.setRelationshipTypes(relationshipTypes);
+        boolean faultPath = !candidate.getFaultId().isBlank();
         candidate.setSourceChunkUids(selectPathSourceChunkUids(
-                !candidate.getFaultId().isBlank(),
+                faultPath,
                 row.get("componentChunks"),
                 row.get("faultChunks")
         ));
@@ -727,7 +731,28 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                     ? List.of(pageStart)
                     : List.of(pageStart, pageEnd));
         }
+        GraphPathProvenance provenance = new GraphPathProvenance(
+                candidate.getDocumentId(),
+                candidate.getDocumentVersion(),
+                candidate.getSectionId(),
+                candidate.getSourceChunkUids(),
+                pageStart,
+                pageEnd,
+                candidate.getGraphRevision(),
+                faultPath ? "fault" : "component",
+                faultPath ? faultStableId : componentStableId
+        );
+        candidate.setProvenanceStatus(provenance.isComplete() ? "complete" : "partial");
         return candidate;
+    }
+
+    static String stablePathId(String deviceStableId, String componentStableId, String faultStableId) {
+        return GraphStableIdentity.pathId(deviceStableId, componentStableId, faultStableId);
+    }
+
+    private static String firstText(Object preferred, String fallback) {
+        String value = asText(preferred);
+        return !value.isBlank() ? value : asText(fallback);
     }
 
     private static void addListFilter(
@@ -769,6 +794,16 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                 .filter(value -> !value.isBlank())
                 .distinct()
                 .collect(java.util.stream.Collectors.joining(" "));
+    }
+
+    static String candidateFaultDescription(GraphQueryContract contract) {
+        String structured = joinText(
+                contract.getRawFaultSpan(),
+                contract.getFault(),
+                contract.getSymptoms(),
+                contract.getOperatingConditions()
+        );
+        return !structured.isBlank() ? structured : joinText(contract.getRawQuery());
     }
 
     // ===== 核心 Cypher：OR 匹配 + matchScore 评分（单次查询返回 records + total）=====
@@ -845,18 +880,18 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         // 不再从 Component-HAS_PROCEDURE 读取手册内容的有损副本。
         String cypher = """
                 MATCH (c:Component)
-                OPTIONAL MATCH (c)-[:CAUSES]->(f:Fault)
+                OPTIONAL MATCH (c)-[causes:CAUSES]->(f:Fault)
                 WHERE (f IS NULL OR f.status IS NULL OR f.status <> 'deprecated')
-                WITH c, f
+                WITH c, f, causes
                 WHERE %s %s
                 OPTIONAL MATCH (d:Device)-[:OWNS]->(c)
                 OPTIONAL MATCH (d)-[hf:HAS_FAULT]->(f)
-                WITH c, f, d, hf
-                WHERE ($allowedPathFilter = false OR ('kgpath:' + coalesce(d.id, '') + ':' + coalesce(c.id, '') + ':' + coalesce(f.id, '')) IN $allowedPathIds)
+                WITH c, f, d, hf, causes
+                WHERE ($allowedPathFilter = false OR causes.path_stable_id IN $allowedPathIds)
                   AND ($allowedDeviceFilter = false OR d.id IN $allowedDeviceIds)
                   AND ($allowedComponentFilter = false OR c.id IN $allowedComponentIds)
                   AND ($allowedFaultFilter = false OR f.id IN $allowedFaultIds)
-                WITH DISTINCT c, f, d, hf IS NOT NULL AS hasHistory,
+                WITH DISTINCT c, f, d, causes.path_stable_id AS pathStableId, hf IS NOT NULL AS hasHistory,
                      CASE WHEN f IS NOT NULL AND f.id IN $faultIds THEN 1 ELSE 0 END +
                      CASE WHEN c.id IN $componentIds THEN 1 ELSE 0 END +
                      CASE WHEN d IS NOT NULL AND d.id IN $deviceIds THEN 1 ELSE 0 END +
@@ -867,21 +902,21 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                           ELSE coalesce($faultScores[f.id], 0.0) END AS vecScore
                 ORDER BY matchScore DESC, vecScore DESC, hasHistory DESC
                 WITH collect({
-                    d: d, c: c, f: f, hasHistory: hasHistory, matchScore: matchScore,
+                    d: d, c: c, f: f, pathStableId: pathStableId, hasHistory: hasHistory, matchScore: matchScore,
                     componentScore: coalesce($compScores[c.id], 0.0),
                     faultScore: coalesce($faultScores[f.id], 0.0),
                     semanticScore: vecScore
                 }) AS allPaths
                 WITH allPaths, size(allPaths) AS total
                 UNWIND allPaths[$skip..$endIdx] AS path
-                WITH path.d AS d, path.c AS c, path.f AS f,
+                WITH path.d AS d, path.c AS c, path.f AS f, path.pathStableId AS pathStableId,
                      path.hasHistory AS hasHistory, path.matchScore AS matchScore,
                      path.componentScore AS componentScore, path.faultScore AS faultScore,
                      path.semanticScore AS semanticScore, total
                 // 诊断方案只来自真实故障链：Fault-HAS_SOLUTION->Solution
                 OPTIONAL MATCH (f)-[:HAS_SOLUTION]->(fs:Solution)
                 WHERE (fs.status IS NULL OR fs.status <> 'deprecated')
-                WITH d, c, f, hasHistory, matchScore, componentScore, faultScore, semanticScore, total,
+                WITH d, c, f, pathStableId, hasHistory, matchScore, componentScore, faultScore, semanticScore, total,
                      collect(DISTINCT {
                          id: fs.id, title: fs.title,
                          estimatedTime: fs.estimated_time,
@@ -890,33 +925,28 @@ public class GraphQueryServiceImpl implements GraphQueryService {
                          kind: coalesce(fs.solution_kind, 'fault_solution')
                      }) AS solutions
                 RETURN d.id AS deviceId,
+                       coalesce(d.stable_id, d.id) AS deviceStableId,
                        d.name AS deviceName,
                        c.id AS componentId,
+                       coalesce(c.stable_id, c.id) AS componentStableId,
                        c.name AS componentName,
                        f.id AS faultId,
+                       coalesce(f.stable_id, f.id) AS faultStableId,
                        f.name AS faultName,
+                       pathStableId,
                        f.severity AS faultSeverity,
-                       coalesce(c.document_id, d.document_id, f.document_id) AS documentId,
-                       coalesce(c.document_version, d.document_version, f.document_version) AS documentVersion,
-                       coalesce(c.section_id, f.section_id) AS sectionId,
+                       CASE WHEN f IS NULL THEN c.document_id ELSE f.document_id END AS documentId,
+                       CASE WHEN f IS NULL THEN c.document_version ELSE f.document_version END AS documentVersion,
+                       CASE WHEN f IS NULL THEN c.section_id ELSE f.section_id END AS sectionId,
                        coalesce(c.source_chunk_uids, CASE WHEN c.source_chunk_uid IS NULL THEN [] ELSE [c.source_chunk_uid] END) AS componentChunks,
                        coalesce(f.source_chunk_uids, CASE WHEN f.source_chunk_uid IS NULL THEN [] ELSE [f.source_chunk_uid] END) AS faultChunks,
-                       coalesce(f.page_start, c.page_start, d.page_start) AS pageStart,
-                       coalesce(f.page_end, c.page_end, d.page_end) AS pageEnd,
-                       coalesce(
-                           f.graph_revision,
-                           c.graph_revision,
-                           d.graph_revision,
-                           CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL
-                                  OR coalesce(c.document_version, d.document_version, f.document_version) IS NULL
-                                THEN NULL
-                                ELSE 'manual:' + coalesce(c.document_id, d.document_id, f.document_id)
-                                     + ':' + coalesce(c.document_version, d.document_version, f.document_version)
-                           END) AS graphRevision,
-                       CASE WHEN coalesce(c.document_id, d.document_id, f.document_id) IS NULL THEN 'missing'
-                            WHEN coalesce(c.section_id, f.section_id) IS NULL THEN 'partial'
-                            WHEN size(coalesce(c.source_chunk_uids, [])) = 0 AND c.source_chunk_uid IS NULL
-                                 AND size(coalesce(f.source_chunk_uids, [])) = 0 AND f.source_chunk_uid IS NULL THEN 'partial'
+                       CASE WHEN f IS NULL THEN c.page_start ELSE f.page_start END AS pageStart,
+                       CASE WHEN f IS NULL THEN c.page_end ELSE f.page_end END AS pageEnd,
+                       CASE WHEN f IS NULL THEN c.graph_revision ELSE f.graph_revision END AS graphRevision,
+                       CASE WHEN (CASE WHEN f IS NULL THEN c.document_id ELSE f.document_id END) IS NULL THEN 'missing'
+                            WHEN (CASE WHEN f IS NULL THEN c.section_id ELSE f.section_id END) IS NULL THEN 'partial'
+                            WHEN f IS NULL AND size(coalesce(c.source_chunk_uids, [])) = 0 AND c.source_chunk_uid IS NULL THEN 'partial'
+                            WHEN f IS NOT NULL AND size(coalesce(f.source_chunk_uids, [])) = 0 AND f.source_chunk_uid IS NULL THEN 'partial'
                             ELSE 'complete' END AS provenanceStatus,
                        hasHistory,
                        matchScore,
@@ -962,6 +992,11 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         vo.setSectionId(record.get("sectionId").asString(null));
         vo.setGraphRevision(record.get("graphRevision").asString(null));
         vo.setProvenanceStatus(record.get("provenanceStatus").asString("missing"));
+        String deviceStableId = record.get("deviceStableId").asString(vo.getDeviceId());
+        String componentStableId = record.get("componentStableId").asString(vo.getComponentId());
+        String faultStableId = record.get("faultStableId").asString(vo.getFaultId());
+        vo.setPathId(record.get("pathStableId").asString(
+                stablePathId(deviceStableId, componentStableId, faultStableId)));
         vo.setSourceChunkUids(selectPathSourceChunkUids(
                 hasText(vo.getFaultId()),
                 record.get("componentChunks").asList(),
@@ -976,6 +1011,18 @@ public class GraphQueryServiceImpl implements GraphQueryService {
         } else {
             vo.setPages(List.of());
         }
+        GraphPathProvenance provenance = new GraphPathProvenance(
+                vo.getDocumentId(),
+                vo.getDocumentVersion(),
+                vo.getSectionId(),
+                vo.getSourceChunkUids(),
+                pageStart,
+                pageEnd,
+                vo.getGraphRevision(),
+                hasText(vo.getFaultId()) ? "fault" : "component",
+                hasText(vo.getFaultId()) ? faultStableId : componentStableId
+        );
+        vo.setProvenanceStatus(provenance.isComplete() ? "complete" : "partial");
 
         // 解析聚合的 solutions 列表（含诊断方案 + 维修规程，按 id 去重、过滤空对象）
         List<DiagnosisPathVO.SolutionBrief> solutions = new ArrayList<>();
@@ -1018,22 +1065,15 @@ public class GraphQueryServiceImpl implements GraphQueryService {
             vo.setVerified(best.getVerified());
         }
 
-        List<String> nodeIds = new ArrayList<>();
-        if (hasText(vo.getDeviceId())) nodeIds.add(vo.getDeviceId());
-        if (hasText(vo.getComponentId())) nodeIds.add(vo.getComponentId());
-        if (hasText(vo.getFaultId())) nodeIds.add(vo.getFaultId());
-        vo.setNodeIds(nodeIds);
+        vo.setNodeIds(Stream.of(deviceStableId, componentStableId, faultStableId)
+                .filter(this::hasText)
+                .toList());
 
         List<String> relationshipTypes = new ArrayList<>();
         if (hasText(vo.getDeviceId()) && hasText(vo.getComponentId())) relationshipTypes.add("OWNS");
         if (hasText(vo.getComponentId()) && hasText(vo.getFaultId())) relationshipTypes.add("CAUSES");
         if (!solutions.isEmpty()) relationshipTypes.add("HAS_SOLUTION");
         vo.setRelationshipTypes(relationshipTypes);
-
-        if (hasText(vo.getDeviceId()) && hasText(vo.getComponentId()) && hasText(vo.getFaultId())) {
-            String pathId = "kgpath:" + vo.getDeviceId() + ":" + vo.getComponentId() + ":" + vo.getFaultId();
-            vo.setPathId(pathId);
-        }
 
         return vo;
     }

@@ -20,7 +20,7 @@ import java.util.Map;
 @Component
 public class EmbeddingUtils {
     /** 与 Neo4j 文本/多模态向量索引统一为 1024 维。 */
-    static final int TEXT_EMBEDDING_DIMENSIONS = 1024;
+    public static final int TEXT_EMBEDDING_DIMENSIONS = 1024;
 
     private final ObjectMapper objectMapper;
     private final WebClient webClient;
