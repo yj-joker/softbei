@@ -1,6 +1,7 @@
 """ResponsePlan generation and deterministic answer-audit tests."""
 
 from services.retrieval.evidence import EvidenceLedger
+from services.retrieval import response_plan as response_plan_module
 from services.retrieval.response_plan import ResponsePlan, build_response_plan, finalize_response
 
 
@@ -35,6 +36,220 @@ def _bundle(status: str, **extra) -> dict:
     }
     base.update(extra)
     return base
+
+
+def _additive_ledger() -> EvidenceLedger:
+    return EvidenceLedger([
+        {
+            "evidence_id": "manual:manual-1:spark-treatment",
+            "source_type": "manual",
+            "qualification": "qualified",
+            "text": "若火花塞损坏或变形，应更换火花塞。",
+            "source": {
+                "document_id": "manual-1",
+                "document_version": "v1",
+                "chunk_id": "spark-treatment",
+                "page": 3,
+            },
+        },
+        {
+            "evidence_id": "graph:kgpath:engine:spark-plug:damaged:none",
+            "source_type": "graph",
+            "qualification": "qualified",
+            "text": "摩托车发动机 -> OWNS -> 火花塞 -> CAUSES -> 火花塞损坏",
+            "relationship_types": ["OWNS", "CAUSES"],
+            "device": {"id": "engine", "name": "摩托车发动机"},
+            "component": {"id": "spark-plug", "name": "火花塞"},
+            "fault": {"id": "damaged", "name": "火花塞损坏"},
+            "solution": {"title": "不得由图谱授权的拆装步骤", "verified": True},
+            "claim_types": [
+                "device_identity",
+                "component_ownership",
+                "fault_relation",
+                "verified_solution",
+                "procedure",
+                "safety",
+                "image",
+            ],
+            "authorized_claim_types": [
+                "device_identity",
+                "component_ownership",
+                "fault_relation",
+                "verified_solution",
+                "procedure",
+                "safety",
+                "image",
+            ],
+            "supports_aspect_ids": ["device", "component", "fault-cause"],
+            "source": {
+                "document_id": "manual-1",
+                "document_version": "v1",
+                "section_id": "spark-plug",
+                "pages": [3],
+            },
+        },
+    ])
+
+
+def _additive_bundle() -> dict:
+    return {
+        "coverage_status": "complete",
+        "aspect_support": [
+            {
+                "aspect_id": "manual-treatment",
+                "aspect_text": "更换火花塞",
+                "supported": True,
+                "evidence_ids": ["manual:manual-1:spark-treatment"],
+                "supporting_source_types": ["manual"],
+                "user_obligation": True,
+            },
+            {
+                "aspect_id": "fault-cause",
+                "aspect_text": "火花塞损坏的故障关系",
+                "supported": True,
+                "evidence_ids": ["graph:kgpath:engine:spark-plug:damaged:none"],
+                "supporting_source_types": ["graph"],
+                "aspect_origin": "graph_capability",
+                "user_obligation": True,
+            },
+        ],
+        "missing_aspect_ids": [],
+        "conflict_eligible": [],
+        "capabilities": {"may_cite_manual": True},
+    }
+
+
+def test_response_plan_separates_manual_baseline_from_graph_additions() -> None:
+    plan = build_response_plan(
+        "火花塞损坏时如何处理，故障属于什么关系？",
+        _additive_bundle(),
+        _additive_ledger(),
+    )
+
+    assert plan.base_manual_claims == ("manual-treatment",)
+    assert plan.baseline_evidence_refs == ("manual:manual-1:spark-treatment",)
+    assert plan.graph_additions == (
+        "device_identity",
+        "component_ownership",
+        "fault_relation",
+    )
+    assert "verified_solution" not in plan.graph_additions
+    assert "procedure" not in plan.graph_additions
+    assert "safety" not in plan.graph_additions
+    assert "image" not in plan.graph_additions
+
+
+def test_no_qualified_graph_evidence_keeps_the_baseline_answer_byte_for_byte() -> None:
+    plan = build_response_plan("火花塞损坏时如何处理？", _bundle("complete"), _ledger())
+    baseline = "火花塞间隙标准为 0.7 到 0.9 mm。"
+
+    audited = finalize_response(plan, baseline)
+
+    assert audited.answer == baseline
+    assert audited.used_fallback is False
+
+
+def test_graph_relations_are_appended_without_rewriting_manual_baseline() -> None:
+    plan = build_response_plan(
+        "火花塞损坏时如何处理，故障属于什么关系？",
+        _additive_bundle(),
+        _additive_ledger(),
+    )
+    baseline = "若火花塞损坏或变形，应更换火花塞。"
+
+    audited = finalize_response(plan, baseline)
+
+    assert audited.passed is True
+    assert audited.answer.startswith(baseline)
+    assert audited.answer != baseline
+    assert "故障关系" in audited.answer
+    assert "摩托车发动机" in audited.answer
+    assert "火花塞损坏" in audited.answer
+    assert "不得由图谱授权的拆装步骤" not in audited.answer
+    assert audited.graph_evidence_used_ids == (
+        "graph:kgpath:engine:spark-plug:damaged:none",
+    )
+
+
+def test_additive_graph_finalization_is_idempotent() -> None:
+    plan = build_response_plan(
+        "火花塞损坏时如何处理，故障属于什么关系？",
+        _additive_bundle(),
+        _additive_ledger(),
+    )
+    baseline = "若火花塞损坏或变形，应更换火花塞。"
+
+    first = finalize_response(plan, baseline)
+    second = finalize_response(plan, first.answer)
+
+    assert first.passed is True
+    assert second.passed is True
+    assert second.answer == first.answer
+    assert second.answer.count("故障关系：知识图谱确认") == 1
+
+
+def test_internal_aggregate_manual_claim_does_not_block_graph_addition() -> None:
+    bundle = _additive_bundle()
+    bundle["aspect_support"].insert(0, {
+        "aspect_id": "direct-manual-answer",
+        "aspect_text": "本次直取手册答案",
+        "supported": True,
+        "evidence_ids": ["manual:manual-1:spark-treatment"],
+        "supporting_source_types": ["manual"],
+        "user_obligation": True,
+    })
+    plan = build_response_plan(
+        "火花塞损坏时如何处理，故障属于什么关系？",
+        bundle,
+        _additive_ledger(),
+    )
+    baseline = "若火花塞损坏或变形，应更换火花塞。"
+
+    audited = finalize_response(plan, baseline)
+
+    assert plan.base_manual_claims == ("manual-treatment",)
+    assert audited.passed is True
+    assert audited.used_fallback is False
+    assert audited.answer.startswith(baseline)
+    assert audited.graph_evidence_used_ids == (
+        "graph:kgpath:engine:spark-plug:damaged:none",
+    )
+
+
+def test_internal_knowledge_answer_claim_is_not_a_manual_monotonicity_obligation() -> None:
+    bundle = _additive_bundle()
+    bundle["aspect_support"].insert(0, {
+        "aspect_id": "knowledge-answer",
+        "aspect_text": "当前问题",
+        "supported": True,
+        "evidence_ids": ["manual:manual-1:spark-treatment"],
+        "supporting_source_types": ["manual"],
+        "user_obligation": True,
+    })
+    plan = build_response_plan(
+        "火花塞损坏时如何处理，故障属于什么关系？",
+        bundle,
+        _additive_ledger(),
+    )
+
+    assert "knowledge-answer" not in plan.base_manual_claims
+
+
+def test_additive_monotonicity_audit_rejects_dropped_manual_baseline() -> None:
+    plan = build_response_plan(
+        "火花塞损坏时如何处理，故障属于什么关系？",
+        _additive_bundle(),
+        _additive_ledger(),
+    )
+    baseline = "若火花塞损坏或变形，应更换火花塞。"
+
+    violations = response_plan_module._audit_additive_monotonicity(
+        plan,
+        baseline,
+        "故障关系：摩托车发动机的火花塞发生火花塞损坏。",
+    )
+
+    assert "baseline_answer_not_preserved" in violations
 
 
 def test_normal_complete_plan_is_conclusion_first_without_manual_lead() -> None:
@@ -730,6 +945,50 @@ def test_graph_diagnostic_fallback_accepts_manual_page_inside_graph_page_range()
     assert "更换同种规格保险" in answer
 
 
+def test_graph_diagnostic_fallback_accepts_same_section_when_optional_locators_are_missing() -> None:
+    graph = {
+        "evidence_id": "graph:kgpath:engine:pump:gasket:none",
+        "source_type": "graph",
+        "qualification": "qualified",
+        "relationship_types": ["OWNS", "CAUSES"],
+        "device": {"name": "摩托车发动机"},
+        "component": {"name": "机油泵"},
+        "fault": {"name": "油泵座垫变形"},
+        "solution": {},
+        "source": {
+            "document_id": "manual-engine",
+            "document_version": "v1",
+            "section_id": "sec-oil-pump",
+            "source_chunk_uids": ["sec-oil-pump:text:0000"],
+            "pages": [18],
+        },
+    }
+    manual = {
+        "evidence_id": "manual:manual-engine:oil-pump-treatment",
+        "source_type": "manual",
+        "qualification": "qualified",
+        "text": "若油泵座垫变形或开裂，应更换油泵座垫。",
+        "source": {
+            "document_id": "manual-engine",
+            "parent_section_id": "sec-oil-pump",
+        },
+    }
+    plan = ResponsePlan(
+        plan_id="response-plan-missing-optional-locators",
+        coverage_status="complete",
+        source_mode="normal",
+        allowed_evidence=(graph, manual),
+        missing_aspects=(),
+        conflicts=(),
+        ledger_digest="digest",
+    )
+
+    answer = plan.deterministic_fallback()
+
+    assert "更换油泵座垫" in answer
+    assert "当前合格证据未给出进一步处理方法" not in answer
+
+
 def test_graph_diagnostic_fallback_binds_solution_from_same_table_line() -> None:
     graph = {
         "evidence_id": "graph:kgpath:device-a:component-a:fault-a:none",
@@ -826,6 +1085,7 @@ def test_graph_diagnostic_fallback_binds_treatment_from_same_manual_chunk() -> N
 
     assert "火花塞损坏" in answer
     assert "更换火花塞" in answer
+    assert "处理动作：火花塞更换" in answer
     assert "当前合格证据未给出进一步处理方法" not in answer
 
 
@@ -874,6 +1134,7 @@ def test_graph_diagnostic_fallback_emits_canonical_replacement_target() -> None:
 
     assert "更换相应凸轮轴" in answer
     assert "处理结论：更换凸轮轴" in answer
+    assert "处理动作：凸轮轴更换" in answer
 
 
 def test_unsupported_plan_never_offers_generic_causes_or_operations() -> None:
@@ -929,6 +1190,58 @@ def test_bound_facts_pass_without_second_generation() -> None:
     assert audited.passed is True
     assert audited.used_fallback is False
     assert audited.answer == draft
+
+
+def test_complete_plan_falls_back_when_one_supported_manual_obligation_is_omitted() -> None:
+    entries = [
+        {
+            "evidence_id": "manual:manual-engine:pump-check",
+            "source_type": "manual",
+            "qualification": "qualified",
+            "text": "检查机油泵转子是否转动灵活。",
+            "source": {"document_id": "manual-engine", "chunk_id": "pump-check", "page": 18},
+        },
+        {
+            "evidence_id": "manual:manual-engine:pump-repair",
+            "source_type": "manual",
+            "qualification": "qualified",
+            "text": "若油泵座垫变形或开裂，应更换油泵座垫。",
+            "source": {"document_id": "manual-engine", "chunk_id": "pump-repair", "page": 18},
+        },
+    ]
+    bundle = {
+        "aspect_support": [
+            {
+                "aspect_id": "inspection",
+                "aspect_text": "机油泵检查方法",
+                "supported": True,
+                "evidence_ids": ["manual:manual-engine:pump-check"],
+                "user_obligation": True,
+            },
+            {
+                "aspect_id": "treatment",
+                "aspect_text": "油泵座垫维修方法",
+                "supported": True,
+                "evidence_ids": ["manual:manual-engine:pump-repair"],
+                "user_obligation": True,
+            },
+        ],
+        "missing_aspect_ids": [],
+        "conflict_eligible": [],
+    }
+    plan = build_response_plan(
+        "机油泵怎么检查，油泵座垫损坏后怎么维修",
+        bundle,
+        EvidenceLedger(entries),
+    )
+
+    audited = finalize_response(plan, "检查机油泵转子是否转动灵活。")
+
+    assert audited.passed is False
+    assert audited.used_fallback is True
+    assert "检查机油泵转子" in audited.answer
+    assert "更换油泵座垫" in audited.answer
+    assert "omitted_supported_claim:treatment" in audited.violations
 
 
 def test_evidence_rendered_table_is_not_discarded_for_manual_lead_style() -> None:

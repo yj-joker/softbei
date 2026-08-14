@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Iterable
+from typing import Any, Iterable, Mapping
 
 from services.intent_router import IntentDecision
-from services.retrieval.device_identity import DeviceCatalog, QueryContract
+from services.retrieval.device_identity import (
+    DeviceCatalog,
+    QueryContract,
+    normalize_query_identity,
+)
 from services.retrieval.section_index import SectionRef
 from services.routing.document_candidate_resolver import DocumentCandidateResolver
 from services.routing.entity_resolver import EntityResolver
@@ -38,8 +42,10 @@ class SemanticRoutingOrchestrator:
         query_contract: QueryContract | None = None,
         graph_candidates: Iterable = (),
         preserve_query_contract: bool = False,
+        graph_policy: Mapping[str, Any] | None = None,
     ) -> RoutePlan:
         contract = query_contract or QueryContract.from_mapping(decision.model_dump(), raw_query=query)
+        contract = normalize_query_identity(contract, catalog).contract
         if decision.intent == "knowledge_inventory":
             return RoutePlan(
                 action=RouteAction.KNOWLEDGE_INVENTORY,
@@ -77,7 +83,11 @@ class SemanticRoutingOrchestrator:
             refs,
             graph_candidates=graph_input,
         )
-        resolved_contract = contract if preserve_query_contract else entity.contract
+        resolved_contract = (
+            contract
+            if preserve_query_contract
+            else normalize_query_identity(entity.contract, catalog).contract
+        )
         graph_document_ids = tuple(dict.fromkeys(
             str(
                 getattr(candidate, "document_id", "")
@@ -97,11 +107,14 @@ class SemanticRoutingOrchestrator:
             session_document_id=session_document_id,
             graph_document_ids=graph_document_ids,
         )
+        multi_target_graph_scope = _multi_target_graph_scope(resolved_contract, graph_input)
         graph_values, explicit_graph_path = _narrow_explicit_graph_candidates(
             resolved_contract,
             graph_input,
         )
-        multi_target_graph_scope = _multi_target_graph_scope(resolved_contract, graph_values)
+        candidate_set_scope = (
+            _candidate_set_scope(graph_values) if len(graph_values) > 1 else {}
+        )
         combined_clarification = None
         selected_graph_candidate = None
         graph_scope: dict[str, object] = {}
@@ -146,14 +159,31 @@ class SemanticRoutingOrchestrator:
             else tuple(dict.fromkeys((*section_dimensions, *graph_dimensions)))
         )
         document_scope_clarification = candidates.action == RouteAction.CLARIFY_DOCUMENT
-        should_decide = not multi_target_graph_scope and (
-            bool(graph_values) or candidates.action == RouteAction.CLARIFY_DOCUMENT or (
-            decision.task_action != "find_cause"
+        # Sections inside an already selected document are retrieval scope, not
+        # mutually exclusive user choices.  Clarification is reserved for a
+        # real document conflict or graph paths that require an observable
+        # discriminator; full-document retrieval can rank multiple sections.
+        procedure_section_choice = bool(
+            decision.task_action == "formal_procedure"
             and len(section_candidates) > 1
-            and bool(unresolved_dimensions)
-            )
+            and unresolved_dimensions
         )
-        if multi_target_graph_scope:
+        should_decide = not multi_target_graph_scope and (
+            bool(graph_values)
+            or candidates.action == RouteAction.CLARIFY_DOCUMENT
+            or procedure_section_choice
+        )
+        if candidate_set_scope:
+            graph_scope = candidate_set_scope
+            scoped_document_id = str(candidate_set_scope.get("document_id") or "").strip()
+            if scoped_document_id and catalog.document(scoped_document_id) is not None:
+                candidates = DocumentCandidateResolution(
+                    action=RouteAction.GROUNDED_RETRIEVAL,
+                    candidate_document_ids=(scoped_document_id,),
+                    selected_document_id=scoped_document_id,
+                    reason="graph_candidate_set_scope",
+                )
+        elif multi_target_graph_scope:
             graph_scope = multi_target_graph_scope
             scoped_document_id = str(multi_target_graph_scope.get("document_id") or "").strip()
             if scoped_document_id and catalog.document(scoped_document_id) is not None:
@@ -289,6 +319,7 @@ class SemanticRoutingOrchestrator:
             )
         else:
             options = ()
+        authorized_document = catalog.document(candidates.selected_document_id)
         return RoutePlan(
             action=candidates.action,
             intent=decision.intent,
@@ -301,6 +332,9 @@ class SemanticRoutingOrchestrator:
             answer_source=answer_source,
             allow_ai_fallback=allow_ai_fallback,
             reason=candidates.reason,
+            authorized_device_identity=(
+                authorized_document.device_name if authorized_document is not None else ""
+            ),
             clarification_options=options,
             clarification_kind=(
                 "graph_observation"
@@ -329,6 +363,7 @@ class SemanticRoutingOrchestrator:
                 if selected_graph_candidate is not None
                 else ""
             ),
+            graph_policy=dict(graph_policy or {}),
         )
 
 
@@ -364,6 +399,70 @@ def _candidate_scope(candidate) -> dict[str, object]:
     return scope
 
 
+def _candidate_set_scope(
+    candidates: Iterable[KnowledgeCandidate],
+) -> dict[str, object]:
+    """Build one allow-list for candidates sharing an independently fixed root."""
+    values = tuple(candidates)
+    if not values:
+        return {}
+    document_ids = {candidate.document_id for candidate in values if candidate.document_id}
+    device_ids = {
+        str(candidate.dimensions.get("device_id") or "").strip()
+        for candidate in values
+        if str(candidate.dimensions.get("device_id") or "").strip()
+    }
+    versions = {candidate.document_version for candidate in values if candidate.document_version}
+    if (
+        len(document_ids) != 1
+        or len(device_ids) != 1
+        or len(versions) != 1
+        or any(not candidate.document_id or not candidate.document_version for candidate in values)
+    ):
+        return {}
+
+    scope: dict[str, object] = {
+        "document_id": next(iter(document_ids)),
+        "document_version": next(iter(versions)),
+        "scope_mode": "candidate_set",
+        "graph_quality_tier": (
+            "medium" if any(candidate.quality_tier == "medium" for candidate in values) else "high"
+        ),
+    }
+    for dimension, key in (
+        ("path_id", "allowed_path_ids"),
+        ("device_id", "allowed_device_ids"),
+        ("component_id", "allowed_component_ids"),
+        ("fault_id", "allowed_fault_ids"),
+    ):
+        items = list(dict.fromkeys(
+            str(candidate.dimensions.get(dimension) or "").strip()
+            for candidate in values
+            if str(candidate.dimensions.get(dimension) or "").strip()
+        ))
+        if items:
+            scope[key] = items
+    for attribute, key in (
+        ("section_id", "allowed_section_ids"),
+        ("evidence_refs", "allowed_evidence_refs"),
+        ("source_chunk_uids", "allowed_source_chunk_uids"),
+        ("pages", "pages"),
+        ("node_ids", "allowed_graph_node_ids"),
+    ):
+        items = list(dict.fromkeys(
+            item
+            for candidate in values
+            for item in (
+                (getattr(candidate, attribute),)
+                if attribute == "section_id" and getattr(candidate, attribute)
+                else (getattr(candidate, attribute) or ())
+            )
+        ))
+        if items:
+            scope[key] = items
+    return scope
+
+
 def _narrow_explicit_graph_candidates(
     contract: QueryContract,
     candidates: tuple[KnowledgeCandidate, ...],
@@ -373,13 +472,36 @@ def _narrow_explicit_graph_candidates(
         return (), None
 
     narrowed = candidates
-    normalized_query = _normalized_text(contract.raw_query)
+    explicit_fault_terms = tuple(dict.fromkeys(
+        value
+        for value in (
+            _normalized_text(contract.raw_fault_span),
+            _normalized_text(contract.fault),
+        )
+        if len(value) >= 2
+    ))
+    symptom_terms = tuple(dict.fromkeys(
+        value
+        for value in (_normalized_text(item) for item in contract.symptoms)
+        if len(value) >= 2
+    ))
     exact_fault_matches = tuple(
         candidate
         for candidate in candidates
-        if len(_normalized_text(candidate.dimensions.get("fault"))) >= 2
-        and _normalized_text(candidate.dimensions.get("fault")) in normalized_query
+        if any(
+            _texts_overlap(term, _normalized_text(candidate.dimensions.get("fault")))
+            for term in explicit_fault_terms
+        )
     )
+    if not exact_fault_matches and symptom_terms:
+        exact_fault_matches = tuple(
+            candidate
+            for candidate in candidates
+            if any(
+                _texts_overlap(term, _normalized_text(candidate.dimensions.get("fault")))
+                for term in symptom_terms
+            )
+        )
     if exact_fault_matches:
         # The raw query retains phrases that an LLM-produced component slot can
         # lose (for example "空调压缩机" becoming only "压缩机").  An exact
@@ -422,28 +544,6 @@ def _narrow_explicit_graph_candidates(
         )
         if component_matches:
             narrowed = component_matches
-
-    if not exact_fault_matches:
-        symptom_terms = tuple(
-            dict.fromkeys(
-                value
-                for value in (
-                    *(_normalized_text(item) for item in contract.symptoms),
-                    normalized_query,
-                )
-                if len(value) >= 2
-            )
-        )
-        fault_matches = tuple(
-            candidate
-            for candidate in narrowed
-            if any(
-                _texts_overlap(term, _normalized_text(candidate.dimensions.get("fault")))
-                for term in symptom_terms
-            )
-        )
-        if fault_matches:
-            narrowed = fault_matches
 
     explicit_path = narrowed[0] if len(narrowed) == 1 and narrowed != candidates else None
     return narrowed, explicit_path

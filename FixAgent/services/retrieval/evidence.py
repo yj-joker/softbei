@@ -244,7 +244,7 @@ def _append_graph_entries(ledger: EvidenceLedger, payload: Any) -> None:
                 isinstance(entry, Mapping)
                 and entry.get("source_type") == "graph"
                 and entry.get("qualification") == "qualified"
-                and entry.get("quality_tier") in {None, "", "high"}
+                and _normalized_graph_entry_is_ledger_qualified(entry)
             ):
                 ledger.append(entry)
     scope = payload.get("graph_scope") or payload.get("scope")
@@ -253,6 +253,25 @@ def _append_graph_entries(ledger: EvidenceLedger, payload: Any) -> None:
     for evidence in batch.evidence:
         if evidence.qualification == "qualified":
             ledger.append(evidence.to_ledger_entry())
+
+
+def _normalized_graph_entry_is_ledger_qualified(entry: Mapping[str, Any]) -> bool:
+    quality_tier = str(entry.get("quality_tier") or "").strip()
+    if quality_tier in {"", "high"}:
+        return True
+    if quality_tier != "medium":
+        return False
+    authorized_claims = {
+        str(value).strip() for value in entry.get("authorized_claim_types") or ()
+        if str(value or "").strip()
+    }
+    return bool(
+        str(entry.get("qualification_basis") or "") == "structural_exact"
+        and str(entry.get("provenance_status") or "") == "complete"
+        and authorized_claims
+        and authorized_claims.issubset({"component_ownership", "fault_relation"})
+        and "verified_solution" not in authorized_claims
+    )
 
 
 def _apply_medium_graph_cross_validation(

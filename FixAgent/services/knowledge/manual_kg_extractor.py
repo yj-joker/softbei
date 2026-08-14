@@ -107,6 +107,7 @@ _FAULT_SOLUTION_SYSTEM = """你是工业设备维修领域的专家。给定一�
 
 规则：
 - 一段内容可能包含多个故障，每个故障对应一个条目
+- 原文出现多个明确对象或多个并列异常状态时，按每个明确对象与异常状态组合分别输出一个条目；例如“卡滞或磨损”必须分别输出卡滞、磨损，不能只保留其中一个
 - 故障名称要简洁（10字以内），描述可详细
 - `source_subject` 必须是原文明确出现的故障/处置对象；禁止从“设备/章节部件”上下文推断
 - 如果条件句没有明确主语，`source_subject` 返回空字符串，不能补写总成名称
@@ -375,13 +376,30 @@ class ManualKGExtractor:
                                 component_name=component.name if component else "",
                                 chunk_uid=chunk_uid,
                             )
-                        fact_items.extend((source_fact, item) for item in items)
+                        has_multiple_items = len(items) > 1
+                        fact_items.extend(
+                            (source_fact, item, has_multiple_items)
+                            for item in items
+                        )
 
-                    for source_fact, item in fact_items:
+                    for source_fact, item, has_multiple_items in fact_items:
                         result.fault_items_extracted += 1
                         source_subject = (
                             item.source_subject.strip()
                             or _extract_source_subject(source_fact)
+                        )
+                        fault_name = _canonical_fault_name(
+                            item.fault_name,
+                            source_subject,
+                        )
+                        item_disambiguator = (
+                            "|".join((
+                                source_subject,
+                                item.component_name.strip(),
+                                fault_name,
+                            ))
+                            if has_multiple_items
+                            else ""
                         )
                         section_component_name = component.name if component else ""
                         llm_component_name = item.component_name.strip()
@@ -394,7 +412,7 @@ class ManualKGExtractor:
                             result.fault_items_unanchored += 1
                             result.review_items.append({
                                 "reason": "source_subject_missing_or_unsupported",
-                                "fault_name": item.fault_name,
+                                "fault_name": fault_name,
                                 "solution_title": item.solution_title,
                                 "confidence": item.confidence,
                                 "chunk_uid": item.source_chunk_uid,
@@ -405,17 +423,18 @@ class ManualKGExtractor:
                                 "source_excerpt": _source_excerpt(source_fact),
                             })
                             continue
-                        if not requested_name:
-                            requested_name = section_component_name
-                        normalized_name = _normalize_component_name(requested_name)
-                        candidates = component_ids_by_name.get(normalized_name, [])
-                        if not requested_name and current_comp_id:
-                            candidates = [current_comp_id]
+                        candidates = _resolve_component_anchor_candidates(
+                            source_fact=source_fact,
+                            requested_name=requested_name,
+                            section_component_name=section_component_name,
+                            current_component_id=current_comp_id,
+                            component_ids_by_name=component_ids_by_name,
+                        )
                         if len(candidates) != 1:
                             result.fault_items_unanchored += 1
                             result.review_items.append({
                                 "reason": "component_anchor_not_unique",
-                                "fault_name": item.fault_name,
+                                "fault_name": fault_name,
                                 "solution_title": item.solution_title,
                                 "confidence": item.confidence,
                                 "chunk_uid": item.source_chunk_uid,
@@ -435,16 +454,17 @@ class ManualKGExtractor:
                         source_excerpt = _source_excerpt(source_fact)
                         fault_identity_key, solution_identity_key = _diagnostic_fact_identity(
                             document_id=document_id,
-                            component_id=candidates[0],
+                            component_identity=source_subject or requested_name,
                             chunk_uid=item.source_chunk_uid,
                             source_fact=source_fact,
                             action_text=source_fact,
+                            item_disambiguator=item_disambiguator,
                         )
                         try:
                             async with sem_api:
                                 fs_resp = await self._call_java("/weixiu/kg/internal/upsert-fault-solution", {
                                     "componentId": candidates[0],
-                                    "faultName": item.fault_name,
+                                    "faultName": fault_name,
                                     "faultDescription": source_excerpt,
                                     "solutionTitle": item.solution_title,
                                     "solutionDescription": source_excerpt,
@@ -480,7 +500,7 @@ class ManualKGExtractor:
                             result.solutions_created += 1
                         if item.confidence < 0.7:
                             result.review_items.append({
-                                "fault_name": item.fault_name,
+                                "fault_name": fault_name,
                                 "confidence": item.confidence,
                                 "chunk_uid": item.source_chunk_uid,
                             })
@@ -783,7 +803,7 @@ class ManualKGExtractor:
                     {"role": "system", "content": _FAULT_SOLUTION_SYSTEM},
                     {"role": "user", "content": context},
                 ],
-                temperature=0.1,
+                temperature=0,
                 max_tokens=800,
                 response_format={"type": "json_object"},
                 model=self.settings.intent_router_model,
@@ -864,9 +884,11 @@ def _source_excerpt(text: str, limit: int = 400) -> str:
 
 
 _FACT_BOUNDARY = re.compile(r"(?<=[。！？；;])\s*|\r?\n+")
-_FACT_PREFIX = re.compile(r"^\s*(?:[-*•·]|\(?\d+[.)、]|[①②③④⑤⑥⑦⑧⑨⑩])\s*")
+_FACT_PREFIX = re.compile(
+    r"^\s*(?:[-*•·]|[（(]?\s*\d+\s*[.)、]?\s*[）)]?|[①②③④⑤⑥⑦⑧⑨⑩])\s*"
+)
 _FACT_ABNORMAL = re.compile(
-    r"故障|异常|损坏|磨损|弯曲|开裂|断裂|卡住|干涉|漏油|松动|"
+    r"故障|异常|损坏|磨损|弯曲|开裂|断裂|卡住|卡滞|干涉|漏油|松动|"
     r"不灵活|不顺畅|不能|无法|过大|过小|发黑|变形|相对滑动"
 )
 _FACT_ACTION = re.compile(
@@ -878,9 +900,54 @@ def _normalize_source_fact(text: str) -> str:
     return re.sub(r"\s+", "", str(text or "")).strip("|，,；;。")
 
 
+def _diagnostic_heading(text: str) -> str:
+    """Return an explicit inspection heading, normalized for fact context."""
+    candidate = _FACT_PREFIX.sub("", str(text or "")).strip()
+    if not candidate:
+        return ""
+    if re.search(r"[：:]\s*$", candidate):
+        return candidate.rstrip("：:") + "："
+    match = re.match(r"^(?:检查|确认|查看|观察|测量)\s*(.{1,50})$", candidate)
+    if match:
+        body = match.group(1).strip()
+        if body and not _FACT_ABNORMAL.search(body) and not _FACT_ACTION.search(body):
+            return candidate + "："
+    return ""
+
+
 _SUBJECT_HEADING = re.compile(
     r"^\s*(?:检查|确认|查看|观察|测量)\s*([^：:，,。；;]{1,50})\s*[：:]"
 )
+
+_FAULT_STATE_SUFFIX = re.compile(
+    r"(不能自由转动|转动不灵活|不灵活|不顺畅|卡滞|卡住|磨损|损坏|损伤|"
+    r"划伤|刮痕|腐蚀|弯曲|变形|开裂|硬化|断裂|松弛|松动|齿伤|干涉)$"
+)
+_GENERIC_SOURCE_SUBJECT = re.compile(r"各部件|缺陷部件|部件|情况")
+
+
+def _canonical_fault_name(fault_name: str, source_subject: str) -> str:
+    """Attach only an explicit source subject to otherwise context-free states."""
+    fault = str(fault_name or "").strip()
+    subject = str(source_subject or "").strip()
+    if not fault or not subject or _GENERIC_SOURCE_SUBJECT.search(subject):
+        return fault
+
+    normalized_fault = _normalize_component_name(fault)
+    normalized_subject = _normalize_component_name(subject)
+    if not normalized_fault or not normalized_subject or normalized_subject in normalized_fault:
+        return fault
+
+    state_match = _FAULT_STATE_SUFFIX.search(normalized_fault)
+    if not state_match:
+        return fault
+    state = state_match.group(1)
+    named_object = normalized_fault[: -len(state)] if state else normalized_fault
+    if not named_object:
+        return f"{subject}{state}"
+    if len(named_object) == 1 and normalized_subject.endswith(named_object):
+        return f"{subject}{state}"
+    return fault
 
 
 def _extract_source_subject(text: str) -> str:
@@ -906,6 +973,31 @@ def _subject_supported_by_source(
     )
 
 
+def _resolve_component_anchor_candidates(
+    *,
+    source_fact: str,
+    requested_name: str,
+    section_component_name: str,
+    current_component_id: str,
+    component_ids_by_name: Dict[str, List[str]],
+) -> List[str]:
+    """Resolve an explicit subcomponent to the containing section assembly."""
+    requested = _normalize_component_name(requested_name)
+    if requested:
+        exact = list(component_ids_by_name.get(requested, []))
+        if exact:
+            return exact
+    source = _normalize_component_name(source_fact)
+    if (
+        requested
+        and requested in source
+        and section_component_name
+        and current_component_id
+    ):
+        return [current_component_id]
+    return []
+
+
 def _split_diagnostic_facts(text: str) -> List[str]:
     """Deterministically isolate condition/action facts before LLM naming."""
     source = str(text or "").strip()
@@ -919,18 +1011,29 @@ def _split_diagnostic_facts(text: str) -> List[str]:
     ]
     facts: List[str] = []
     pending = ""
+    heading = ""
     for part in parts:
+        part = _FACT_PREFIX.sub("", part).strip()
+        detected_heading = _diagnostic_heading(part)
+        if detected_heading:
+            heading = detected_heading
+            pending = ""
+            continue
+
+        contextual = part
+        if heading and not part.startswith(heading.rstrip("：:")):
+            contextual = heading + part
         has_abnormal = bool(_FACT_ABNORMAL.search(part))
         has_action = bool(_FACT_ACTION.search(part))
         if has_abnormal and has_action:
-            facts.append(f"{pending}{part}" if pending else part)
+            facts.append(f"{pending}{contextual}" if pending else contextual)
             pending = ""
         elif has_abnormal:
-            pending = part
+            pending = contextual
         elif has_action and re.search(r"[：:]\s*$", part):
-            pending = part
+            pending = contextual
         elif pending and has_action:
-            facts.append(f"{pending}{part}")
+            facts.append(f"{pending}{contextual}")
             pending = ""
 
     # Explicit troubleshooting rows and compact prose may not contain our
@@ -941,19 +1044,24 @@ def _split_diagnostic_facts(text: str) -> List[str]:
 def _diagnostic_fact_identity(
     *,
     document_id: str,
-    component_id: str,
+    component_identity: str,
     chunk_uid: str,
     source_fact: str,
     action_text: str,
+    item_disambiguator: str = "",
 ) -> tuple[str, str]:
+    fact_material = _normalize_source_fact(source_fact)
+    if item_disambiguator:
+        fact_material += "|item:" + _normalize_source_fact(item_disambiguator)
     fact_digest = hashlib.sha256(
-        _normalize_source_fact(source_fact).encode("utf-8")
+        fact_material.encode("utf-8")
     ).hexdigest()[:16]
     action_digest = hashlib.sha256(
         _normalize_source_fact(action_text).encode("utf-8")
     ).hexdigest()[:16]
     fault_key = (
-        f"kgfault:{document_id}:{component_id}:{chunk_uid}:{fact_digest}"
+        f"kgfault:{document_id}:{_normalize_source_fact(component_identity)}:"
+        f"{chunk_uid}:{fact_digest}"
     )
     return fault_key, f"kgsolution:{fault_key}:{action_digest}"
 

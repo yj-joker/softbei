@@ -13,6 +13,7 @@ from embeddings.text_embedding import get_text_embedding
 from schemas.models import VectorSearchResult
 from services.retrieval.planner import build_retrieval_plan, confidence_intent
 from services.retrieval.provenance import dedupe_and_sort_manual_records
+from services.retrieval.manual_scope import apply_authoritative_manual_scope
 from services.retrieval.ranker import rank_candidates
 from services.retrieval.context_expander import expand_retrieval_context
 from services.retrieval.fusion import DEFAULT_RRF_CONSTANT, reciprocal_rank_fusion
@@ -34,6 +35,11 @@ from services.retrieval.query_constraints import (
     extract_query_constraints,
 )
 from services.retrieval.query_understanding import has_negative_image_request, understand_query
+from services.retrieval.query_variants import (
+    QueryVariant,
+    build_query_variants,
+    build_variant_route_pairs,
+)
 from services.retrieval.section_index import SectionTitleIndex
 from services.knowledge.vector_service import build_redis_filter, escape_redis_tag_value, get_vector_service
 from tools.base_tool import BaseTool, ToolException
@@ -45,6 +51,86 @@ IMAGE_LOCATOR_LOOKUP_LIMIT = 20
 PAGE_SELECTOR_SCAN_LIMIT = 60
 PAGE_SELECTOR_LOOKUP_LIMIT = 80
 IMAGE_LOCATOR_PAGE_RE = re.compile(r"(?:\u7b2c\s*)?(\d{1,3})\s*\u9875")
+
+
+def merge_additive_manual_results(
+    baseline: Any,
+    graph_seed: Any,
+) -> list[Any]:
+    """Union manual evidence without allowing graph seed to remove baseline IDs."""
+    merged: list[Any] = []
+    positions: dict[str, int] = {}
+    for origin, values in (("baseline", baseline or ()), ("graph_seed", graph_seed or ())):
+        for index, item in enumerate(values):
+            key = _manual_evidence_key(item, fallback=f"{origin}:{index}")
+            position = positions.get(key)
+            if position is None:
+                positions[key] = len(merged)
+                merged.append(item)
+                continue
+            if _manual_source_completeness(item) > _manual_source_completeness(merged[position]):
+                merged[position] = item
+    return merged
+
+
+def _manual_evidence_key(item: Any, *, fallback: str) -> str:
+    payload = item if isinstance(item, dict) else {}
+    metadata = (
+        payload.get("metadata")
+        if isinstance(payload, dict)
+        else getattr(item, "metadata", {})
+    ) or {}
+    evidence_id = str(
+        payload.get("evidence_id")
+        or metadata.get("evidence_id")
+        or payload.get("id")
+        or getattr(item, "id", "")
+        or ""
+    ).strip()
+    if evidence_id:
+        return f"evidence:{evidence_id}"
+    document_id = str(metadata.get("document_id") or payload.get("document_id") or "").strip()
+    chunk_uid = str(
+        metadata.get("chunk_uid")
+        or metadata.get("source_chunk_uid")
+        or payload.get("chunk_uid")
+        or ""
+    ).strip()
+    if document_id and chunk_uid:
+        return f"chunk_uid:{document_id}:{chunk_uid}"
+    chunk_id = str(
+        metadata.get("chunk_id")
+        or metadata.get("source_chunk_id")
+        or payload.get("chunk_id")
+        or payload.get("doc_id")
+        or getattr(item, "doc_id", "")
+        or ""
+    ).strip()
+    if document_id and chunk_id:
+        return f"chunk_id:{document_id}:{chunk_id}"
+    return f"opaque:{fallback}"
+
+
+def _manual_source_completeness(item: Any) -> tuple[int, int]:
+    payload = item if isinstance(item, dict) else {}
+    metadata = (
+        payload.get("metadata")
+        if isinstance(payload, dict)
+        else getattr(item, "metadata", {})
+    ) or {}
+    source_fields = (
+        "document_id",
+        "document_version",
+        "chunk_uid",
+        "source_chunk_uid",
+        "chunk_id",
+        "source_chunk_id",
+        "parent_section_id",
+        "page",
+    )
+    populated = sum(metadata.get(field) not in (None, "", [], ()) for field in source_fields)
+    content = str(payload.get("content") or getattr(item, "content", "") or "")
+    return populated, len(content)
 
 
 async def _emit_retrieval_event(
@@ -294,6 +380,114 @@ class KnowledgeRetrievalTool(BaseTool):
         )
 
     @staticmethod
+    def _has_usable_qualified_evidence(items: Any) -> bool:
+        for item in items or ():
+            metadata = (
+                item.get("metadata")
+                if isinstance(item, dict)
+                else getattr(item, "metadata", {})
+            ) or {}
+            if (
+                metadata.get("qualification") == "qualified"
+                and metadata.get("answer_policy") != "insufficient_evidence"
+            ):
+                return True
+        return False
+
+    @staticmethod
+    def _mark_graph_manual_fallback(items: Any, graph_failure_reason: str) -> None:
+        for item in items or ():
+            if isinstance(item, dict):
+                metadata = item.setdefault("metadata", {})
+            else:
+                metadata = getattr(item, "metadata", None)
+                if metadata is None:
+                    metadata = {}
+                    setattr(item, "metadata", metadata)
+            metadata["manual_fallback_reason"] = "graph_failed_manual_fallback"
+            metadata["graph_failure_reason"] = (
+                graph_failure_reason or "graph_scope_evidence_unusable"
+            )
+
+    async def run(self, **kwargs):
+        """Run ordinary RAG first and treat graph locators as additive seeds."""
+        graph_seed_scope = kwargs.pop("_graph_seed_scope", None)
+        if graph_seed_scope:
+            event_sink = kwargs.get("_event_sink")
+            stage_traces: list[dict[str, Any]] = []
+
+            async def capture_additive_events(payload: Dict[str, Any]) -> None:
+                if payload.get("event") == "retrieval_stage":
+                    stage_traces.append(dict(payload.get("data") or {}))
+                    return
+                if event_sink is not None:
+                    result = event_sink(payload)
+                    if inspect.isawaitable(result):
+                        await result
+
+            additive_kwargs = dict(kwargs)
+            if event_sink is not None:
+                additive_kwargs["_event_sink"] = capture_additive_events
+            baseline = await super().run(**additive_kwargs)
+            if not baseline.success:
+                return baseline
+            seed_kwargs = apply_authoritative_manual_scope(additive_kwargs, graph_seed_scope)
+            seed = await super().run(**seed_kwargs)
+            if not seed.success or not seed.data:
+                if event_sink is not None and stage_traces:
+                    await _emit_retrieval_event(event_sink, "retrieval_stage", stage_traces[0])
+                return baseline
+            merged = merge_additive_manual_results(baseline.data, seed.data)
+            if event_sink is not None:
+                stage_fields = (
+                    "candidate_ids",
+                    "filtered_ids",
+                    "reranked_ids",
+                    "selected_ids",
+                    "expanded_ids",
+                )
+                merged_trace: dict[str, list[str]] = {}
+                for field in stage_fields:
+                    merged_trace[field] = list(dict.fromkeys(
+                        identifier
+                        for trace in stage_traces
+                        for identifier in trace.get(field) or ()
+                        if str(identifier).strip()
+                    ))
+                merged_trace["visible_ids"] = self._retrieval_stage_ids(merged)
+                await _emit_retrieval_event(event_sink, "retrieval_stage", merged_trace)
+            return self._success(merged)
+
+        # Compatibility for stored route snapshots created before additive
+        # scopes were introduced.  New requests never enter this branch.
+        allow_fallback = bool(kwargs.pop("_allow_graph_scope_fallback", False))
+        graph_failure_reason = str(kwargs.pop("_graph_failure_reason", "") or "")
+        first = await super().run(**kwargs)
+        if (
+            not allow_fallback
+            or not first.success
+        ):
+            return first
+
+        locator_keys = {
+            "allowed_evidence_refs",
+            "allowed_source_chunk_uids",
+            "allowed_section_ids",
+            "parent_section_id",
+            "pages",
+        }
+        if not any(kwargs.get(key) for key in locator_keys):
+            return first
+        fallback_kwargs = {
+            key: value for key, value in kwargs.items() if key not in locator_keys
+        }
+        fallback = await super().run(**fallback_kwargs)
+        if fallback.success and self._has_usable_qualified_evidence(fallback.data):
+            self._mark_graph_manual_fallback(fallback.data, graph_failure_reason)
+            return fallback
+        return first
+
+    @staticmethod
     def _is_step(item: Dict) -> bool:
         metadata = item.get("metadata") or {}
         return metadata.get("chunk_label") == "step" or metadata.get("chunk_type") == "step_raw"
@@ -443,6 +637,7 @@ class KnowledgeRetrievalTool(BaseTool):
 
         counter: Dict[tuple, int] = {}
         score_by_sec: Dict[tuple, float] = {}
+        provenance_by_sec: Dict[tuple, Dict[str, Any]] = {}
         for it in selected:
             meta = it.get("metadata") or {}
             key = (str(meta.get("document_id") or ""), str(meta.get("parent_section_id") or ""))
@@ -451,6 +646,19 @@ class KnowledgeRetrievalTool(BaseTool):
             counter[key] = counter.get(key, 0) + 1
             sc = float(it.get("relevance_score") or it.get("score") or 0.0)
             score_by_sec[key] = max(score_by_sec.get(key, 0.0), sc)
+            provenance = provenance_by_sec.setdefault(key, {
+                "routes": [],
+                "query_variants": [],
+                "local_rerank_features": {},
+                "feature_score": -1.0,
+            })
+            provenance["routes"] = sorted(set(provenance["routes"]) | set(it.get("routes") or []))
+            for variant in cls._candidate_query_variants(it):
+                if variant not in provenance["query_variants"]:
+                    provenance["query_variants"].append(variant)
+            if meta.get("local_rerank_features") and sc >= provenance["feature_score"]:
+                provenance["local_rerank_features"] = dict(meta["local_rerank_features"])
+                provenance["feature_score"] = sc
         if not counter:
             return selected
         sm_ids = {str(sid) for sid in (getattr(plan, "section_match_ids", None) or [])}
@@ -463,6 +671,7 @@ class KnowledgeRetrievalTool(BaseTool):
         snapshots: List[Dict] = []
         completed_sections: set[tuple[str, str]] = set()
         for document_id, parent_section_id in target_sections:
+            section_provenance = provenance_by_sec.get((document_id, parent_section_id), {})
             try:
                 records = vector_service.get_section_records(
                     document_id, parent_section_id, limit=30, chunk_type=intent_chunk_type
@@ -479,12 +688,17 @@ class KnowledgeRetrievalTool(BaseTool):
                 if not text:
                     continue
                 meta["context_role"] = "section_step" if plan.intent == "procedure" else "section_param"
+                if section_provenance.get("query_variants"):
+                    meta["query_variants"] = list(section_provenance["query_variants"])
+                if section_provenance.get("local_rerank_features"):
+                    meta["local_rerank_features"] = dict(section_provenance["local_rerank_features"])
                 section_records.append({
                     "doc_id": rid,
                     "id": rid,
                     "text": text,
                     "content": text,
                     "metadata": meta,
+                    "routes": list(section_provenance.get("routes") or []),
                 })
             ordered = dedupe_and_sort_manual_records(section_records)
             if not ordered:
@@ -527,6 +741,51 @@ class KnowledgeRetrievalTool(BaseTool):
         item["retrieval_route"] = route
         return item
 
+    @staticmethod
+    def _retrieval_stage_ids(items: Iterable[Dict[str, Any]]) -> List[str]:
+        identifiers: List[str] = []
+        seen: set[str] = set()
+        for item in items or ():
+            payload = item if isinstance(item, dict) else {}
+            metadata = (
+                payload.get("metadata")
+                if isinstance(item, dict)
+                else getattr(item, "metadata", {})
+            ) or {}
+            identifier = str(
+                metadata.get("parent_section_id")
+                or metadata.get("chunk_uid")
+                or metadata.get("source_chunk_uid")
+                or metadata.get("chunk_id")
+                or payload.get("doc_id")
+                or getattr(item, "doc_id", "")
+                or ""
+            ).strip()
+            if identifier and identifier not in seen:
+                seen.add(identifier)
+                identifiers.append(identifier)
+        return identifiers
+
+    @classmethod
+    def _build_retrieval_stage_trace(
+        cls,
+        *,
+        fused: Iterable[Dict[str, Any]],
+        filtered: Iterable[Dict[str, Any]],
+        reranked: Iterable[Dict[str, Any]],
+        selected: Iterable[Dict[str, Any]],
+        expanded: Iterable[Dict[str, Any]],
+        visible: Iterable[Dict[str, Any]],
+    ) -> Dict[str, List[str]]:
+        return {
+            "candidate_ids": cls._retrieval_stage_ids(fused),
+            "filtered_ids": cls._retrieval_stage_ids(filtered),
+            "reranked_ids": cls._retrieval_stage_ids(reranked),
+            "selected_ids": cls._retrieval_stage_ids(selected),
+            "expanded_ids": cls._retrieval_stage_ids(expanded),
+            "visible_ids": cls._retrieval_stage_ids(visible),
+        }
+
     @classmethod
     def _merge_candidates(cls, candidates: List[Dict]) -> List[Dict]:
         merged: Dict[str, Dict] = {}
@@ -535,9 +794,15 @@ class KnowledgeRetrievalTool(BaseTool):
             if key not in merged:
                 item = dict(candidate)
                 item["doc_id"] = key
+                item["metadata"] = dict(candidate.get("metadata") or {})
+                item["metadata"]["query_variants"] = cls._candidate_query_variants(candidate)
                 merged[key] = item
                 continue
             current = merged[key]
+            query_variants = cls._candidate_query_variants(current)
+            for variant in cls._candidate_query_variants(candidate):
+                if variant not in query_variants:
+                    query_variants.append(variant)
             routes = sorted(set(current.get("routes") or []) | set(candidate.get("routes") or []))
             if candidate.get("relevance_score", 0.0) > current.get("relevance_score", 0.0):
                 current.update(candidate)
@@ -547,7 +812,33 @@ class KnowledgeRetrievalTool(BaseTool):
             current_meta.update(
                 {name: value for name, value in (candidate.get("metadata") or {}).items() if value not in ("", None)}
             )
+            current_meta["query_variants"] = query_variants
         return list(merged.values())
+
+    @staticmethod
+    def _candidate_query_variants(candidate: Dict) -> List[Dict[str, str]]:
+        metadata = candidate.get("metadata") or {}
+        variants: List[Dict[str, str]] = []
+        existing = metadata.get("query_variants") or []
+        if isinstance(existing, list):
+            for value in existing:
+                if not isinstance(value, dict) or not str(value.get("text") or "").strip():
+                    continue
+                variants.append({
+                    "text": str(value.get("text") or "").strip(),
+                    "source": str(value.get("source") or "").strip(),
+                    "target_id": str(value.get("target_id") or "").strip(),
+                })
+        text = str(metadata.get("query_variant_text") or "").strip()
+        if text:
+            current = {
+                "text": text,
+                "source": str(metadata.get("query_variant_source") or "").strip(),
+                "target_id": str(metadata.get("query_variant_target_id") or "").strip(),
+            }
+            if current not in variants:
+                variants.append(current)
+        return variants
 
     @staticmethod
     def _is_outline_candidate(candidate: Dict) -> bool:
@@ -1442,6 +1733,7 @@ class KnowledgeRetrievalTool(BaseTool):
         allowed_evidence_refs: List[str] = None,
         allowed_source_chunk_uids: List[str] = None,
         pages: List[int] = None,
+        _query_contract: Optional[Dict[str, Any]] = None,
         _event_sink: Optional[Callable[[Dict[str, Any]], Any]] = None,
     ) -> List[VectorSearchResult]:
         resolved_sections = tuple(dict.fromkeys(
@@ -1459,7 +1751,23 @@ class KnowledgeRetrievalTool(BaseTool):
         if parent_section_id and not resolved_sections:
             resolved_sections = (str(parent_section_id),)
         query_understanding = understand_query(query)
-        query_vectors = await self._embed_query_vectors(query, image_urls)
+        question_aspects = split_question_aspects(query)
+        query_variants = build_query_variants(
+            query,
+            _query_contract,
+            aspects=question_aspects,
+        )
+        variant_vectors = await asyncio.gather(*(
+            self._embed_query_vectors(
+                variant.text,
+                image_urls if variant.source == "original" else None,
+            )
+            for variant in query_variants
+        ))
+        query_vectors_by_text = {
+            variant.text: vectors for variant, vectors in zip(query_variants, variant_vectors)
+        }
+        query_vectors = query_vectors_by_text.get(query) or variant_vectors[0]
         # B: 标题命中查找（纯字符串匹配，< 1ms），提前 build 并传入 plan
         section_index = SectionTitleIndex.get_instance()
         try:
@@ -1492,6 +1800,14 @@ class KnowledgeRetrievalTool(BaseTool):
                 "hasImages": bool(image_urls),
                 "sectionMatchCount": len(section_match_hits),
                 "queryUnderstanding": query_understanding.to_metadata(),
+                "queryVariants": [
+                    {
+                        "text": variant.text,
+                        "source": variant.source,
+                        "targetId": variant.target_id,
+                    }
+                    for variant in query_variants
+                ],
             },
         )
 
@@ -1527,11 +1843,24 @@ class KnowledgeRetrievalTool(BaseTool):
         image_vector = query_vectors.get("image_vector") or text_vector
         route_cache = CandidateRequestCache()
 
-        async def run_route(route: str, relaxed: bool = False, limit: int = None) -> List[Dict]:
+        async def run_route(
+            route: str,
+            variant: QueryVariant,
+            relaxed: bool = False,
+            limit: int = None,
+        ) -> List[Dict]:
             route_filter = filter_for_route(route, relaxed=relaxed)
             route_name = self._route_name(route, relaxed=relaxed)
             route_top_k = limit or recall_k
-            cache_key = (route, relaxed, route_filter, route_top_k)
+            cache_key = (route, variant.text, relaxed, route_filter, route_top_k)
+
+            def mark_variant(doc: Dict) -> Dict:
+                marked = self._mark_route(doc, route_name)
+                metadata = marked.setdefault("metadata", {})
+                metadata["query_variant_source"] = variant.source
+                metadata["query_variant_target_id"] = variant.target_id
+                metadata["query_variant_text"] = variant.text
+                return marked
 
             async def fetch_route() -> List[Dict]:
                 if route in {"keyword", "table_keyword", "image_summary_keyword"}:
@@ -1551,12 +1880,12 @@ class KnowledgeRetrievalTool(BaseTool):
                         return []
                     docs = await asyncio.to_thread(
                         vector_service.keyword_search,
-                        query,
+                        variant.text,
                         top_k=route_top_k,
                         include_metadata=True,
                         filter=route_filter,
                     )
-                    marked = [self._mark_route(doc, route_name) for doc in docs]
+                    marked = [mark_variant(doc) for doc in docs]
                     await _emit_retrieval_event(
                         _event_sink,
                         "retrieval_route",
@@ -1565,16 +1894,19 @@ class KnowledgeRetrievalTool(BaseTool):
                             "sourceRoute": route,
                             "candidateCount": len(marked),
                             "limit": route_top_k,
-                            "relaxed": relaxed,
-                        },
-                    )
+                                "relaxed": relaxed,
+                                "queryVariantSource": variant.source,
+                                "queryVariantTargetId": variant.target_id,
+                            },
+                        )
                     return marked
 
-                route_vector = text_vector
+                vectors = query_vectors_by_text[variant.text]
+                route_vector = vectors.get("text_vector")
                 if route == "image_vector":
-                    route_vector = image_vector
+                    route_vector = vectors.get("image_vector") or route_vector
                 elif route == "image_summary":
-                    route_vector = text_vector or image_vector
+                    route_vector = route_vector or vectors.get("image_vector")
                 if not route_vector:
                     await _emit_retrieval_event(
                         _event_sink,
@@ -1596,7 +1928,7 @@ class KnowledgeRetrievalTool(BaseTool):
                     include_metadata=True,
                     filter=route_filter,
                 )
-                marked = [self._mark_route(doc, route_name) for doc in docs]
+                marked = [mark_variant(doc) for doc in docs]
                 await _emit_retrieval_event(
                     _event_sink,
                     "retrieval_route",
@@ -1606,11 +1938,21 @@ class KnowledgeRetrievalTool(BaseTool):
                         "candidateCount": len(marked),
                         "limit": route_top_k,
                         "relaxed": relaxed,
+                        "queryVariantSource": variant.source,
+                        "queryVariantTargetId": variant.target_id,
                     },
                 )
                 return marked
 
             return await route_cache.get_or_fetch(cache_key, fetch_route)
+
+        async def run_route_group(route: str, limit: int = None) -> List[Dict]:
+            variant_results = await asyncio.gather(*(
+                run_route(route, variant, limit=limit) for variant in query_variants
+            ))
+            return self._merge_candidates([
+                item for result in variant_results for item in result
+            ])
 
         try:
             # vector_service / section_index 已在上面 build 过了，直接复用
@@ -1655,7 +1997,10 @@ class KnowledgeRetrievalTool(BaseTool):
                 return all_records
 
             route_results = await asyncio.gather(
-                *(run_route(route) for route in plan.routes),
+                *(
+                    run_route(route, variant)
+                    for route, variant in build_variant_route_pairs(plan.routes, query_variants)
+                ),
                 fetch_section_match_candidates(),
             )
             candidate_lists = [
@@ -1671,7 +2016,10 @@ class KnowledgeRetrievalTool(BaseTool):
 
             if not any(candidate_lists) and optional_filter_used and not document_id:
                 logger.info("No evidence matched optional retrieval filters; retrying without inferred metadata filters")
-                relaxed_results = await asyncio.gather(*(run_route(route, relaxed=True) for route in plan.routes))
+                relaxed_results = await asyncio.gather(*(
+                    run_route(route, variant, relaxed=True)
+                    for route, variant in build_variant_route_pairs(plan.routes, query_variants)
+                ))
                 candidate_lists = [list(docs) for docs in relaxed_results]
         except Exception as e:
             raise ToolException(code="SEARCH_FAILED", message=f"retrieval search failed: {e}")
@@ -1726,7 +2074,6 @@ class KnowledgeRetrievalTool(BaseTool):
 
         # 首轮质量与证据覆盖共同决定是否执行唯一一次补召。
         first_quality = evaluate_retrieval_quality(plan, ranked, selected, top_k=final_top_k)
-        question_aspects = split_question_aspects(query)
         first_qualification = qualify_candidates(
             query,
             selected,
@@ -1783,7 +2130,7 @@ class KnowledgeRetrievalTool(BaseTool):
             supplemental_stage = await run_supplemental_stage(
                 candidate_lists,
                 supplemental_decision,
-                lambda route: run_route(route, limit=supplemental_limit),
+                lambda route: run_route_group(route, limit=supplemental_limit),
             )
             candidate_lists = supplemental_stage.candidate_lists
             supplemental_search_used = supplemental_stage.used
@@ -1918,6 +2265,19 @@ class KnowledgeRetrievalTool(BaseTool):
                 "strategy": "parent_section_context",
             },
         )
+        retrieval_stage_trace = self._build_retrieval_stage_trace(
+            fused=fused,
+            filtered=merged,
+            reranked=ranked,
+            selected=selected,
+            expanded=expanded_selected,
+            visible=qualified_docs + reference_docs,
+        )
+        await _emit_retrieval_event(
+            _event_sink,
+            "retrieval_stage",
+            retrieval_stage_trace,
+        )
 
         results: List[VectorSearchResult] = []
         visible_docs = qualified_docs + reference_docs
@@ -1959,6 +2319,7 @@ class KnowledgeRetrievalTool(BaseTool):
             metadata["image_locator_candidate_count"] = image_locator_candidate_count
             metadata["candidate_count_before"] = candidate_count_before
             metadata["candidate_count_after"] = candidate_count_after
+            metadata["retrieval_stage_trace"] = retrieval_stage_trace
             metadata["confidence_reason"] = {
                 "best_relevance_score": confidence["best_relevance_score"],
                 "candidate_count": confidence["candidate_count"],

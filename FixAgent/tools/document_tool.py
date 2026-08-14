@@ -194,9 +194,7 @@ class DocumentParserTool(BaseTool):
                 else:
                     images = self._record_image_positions(page, page_num)
 
-                for image in images:
-                    image.setdefault("context_before", text[:300].strip())
-                    image.setdefault("context_after", text[-300:].strip())
+                self._attach_image_local_context(images, text_blocks)
 
                 pages_data.append({
                     "page": page_num,
@@ -249,6 +247,7 @@ class DocumentParserTool(BaseTool):
         import fitz as fitz_module
 
         images = []
+        failures = []
         page = fitz_doc[page_num - 1]
 
         for img_index, img_info in enumerate(page.get_images(full=True), start=1):
@@ -268,8 +267,16 @@ class DocumentParserTool(BaseTool):
                         pix = fitz_module.Pixmap(fitz_module.csRGB, pix)
                     pix.save(image_path)
                 else:
-                    with open(image_path, "wb") as f:
-                        f.write(image_bytes)
+                    try:
+                        with open(image_path, "wb") as f:
+                            f.write(image_bytes)
+                    except PermissionError:
+                        existing_bytes = b""
+                        if os.path.isfile(image_path):
+                            with open(image_path, "rb") as f:
+                                existing_bytes = f.read()
+                        if existing_bytes != image_bytes:
+                            raise
 
                 rects = page.get_image_rects(xref)
                 bbox = None
@@ -286,8 +293,14 @@ class DocumentParserTool(BaseTool):
                     "format": ext,
                     "bbox": bbox,
                 })
-            except Exception:
-                continue
+            except Exception as exc:
+                failures.append((xref, exc))
+
+        if failures:
+            xref, exc = failures[0]
+            raise RuntimeError(
+                f"image extraction failed page={page_num} xref={xref}: {exc}"
+            ) from exc
 
         # 尝试从页面文字中匹配图注
         page_text = page.get_text("text")
@@ -319,6 +332,65 @@ class DocumentParserTool(BaseTool):
         return images
 
     # ==================== 图注匹配 ====================
+
+    @staticmethod
+    def _attach_image_local_context(images: list, text_blocks: list) -> None:
+        """Assign each text block to its nearest figure before building context."""
+        for image in images or []:
+            image["context_before"] = ""
+            image["context_after"] = ""
+        positioned_images = [
+            (index, DocumentParserTool._bbox(image))
+            for index, image in enumerate(images or [])
+            if DocumentParserTool._bbox(image)
+        ]
+        if not positioned_images:
+            return
+
+        assigned: dict[int, list[tuple[list[float], str]]] = {
+            index: [] for index, _ in positioned_images
+        }
+        for block in text_blocks or []:
+            block_bbox = DocumentParserTool._bbox(block)
+            block_text = str(block.get("text") or "").strip()
+            if not block_bbox or not block_text:
+                continue
+            candidates = []
+            for image_index, image_bbox in positioned_images:
+                overlap = DocumentParserTool._horizontal_overlap_ratio(block_bbox, image_bbox)
+                if overlap < 0.15:
+                    continue
+                if block_bbox[3] < image_bbox[1]:
+                    vertical_gap = image_bbox[1] - block_bbox[3]
+                elif block_bbox[1] > image_bbox[3]:
+                    vertical_gap = block_bbox[1] - image_bbox[3]
+                else:
+                    vertical_gap = 0.0
+                candidates.append((vertical_gap + (1.0 - overlap) * 24.0, image_index))
+            if not candidates:
+                continue
+            _, nearest_image_index = min(candidates, key=lambda item: (item[0], item[1]))
+            assigned[nearest_image_index].append((block_bbox, block_text))
+
+        for image_index, image_bbox in positioned_images:
+            before = [
+                (image_bbox[1] - bbox[3], bbox[1], text)
+                for bbox, text in assigned[image_index]
+                if bbox[3] <= image_bbox[1] + 8
+            ]
+            after = [
+                (bbox[1] - image_bbox[3], bbox[1], text)
+                for bbox, text in assigned[image_index]
+                if bbox[1] >= image_bbox[3] - 8
+            ]
+            before_text = [
+                text for _, _, text in sorted(before, key=lambda item: (item[0], -item[1]))[:3]
+            ]
+            after_text = [
+                text for _, _, text in sorted(after, key=lambda item: (item[0], item[1]))[:3]
+            ]
+            images[image_index]["context_before"] = "\n".join(reversed(before_text))[:600]
+            images[image_index]["context_after"] = "\n".join(after_text)[:600]
 
     # ==================== 表格清理 ====================
 
@@ -356,6 +428,7 @@ class DocumentParserTool(BaseTool):
                         best_score = score
                 if best:
                     image["caption"] = str(best.get("text", "")).strip()
+                    image["caption_bbox"] = DocumentParserTool._bbox(best)
                     image["caption_confidence"] = 0.9
 
         caption_pattern = re.compile(
@@ -763,6 +836,36 @@ class DocumentParserTool(BaseTool):
         return chunks
 
     @staticmethod
+    def _attach_chunk_bboxes(chunks: list, text_blocks: list) -> None:
+        """Attach page-layout coordinates to parser chunks when text is traceable.
+
+        A chunk can span several PDF text blocks.  Keeping the union lets the
+        indexer bind a figure to the nearest actual instruction rather than to
+        every instruction that happens to be on the same page.
+        """
+        candidates = [
+            block for block in text_blocks or []
+            if DocumentParserTool._bbox(block) and DocumentParserTool._normalize_block_text(block.get("text", ""))
+        ]
+        for chunk in chunks or []:
+            chunk_text = DocumentParserTool._normalize_block_text(chunk.get("text", ""))
+            if not chunk_text:
+                continue
+            matched = []
+            for block in candidates:
+                block_text = DocumentParserTool._normalize_block_text(block.get("text", ""))
+                if len(block_text) >= 6 and (block_text in chunk_text or chunk_text in block_text):
+                    matched.append(DocumentParserTool._bbox(block))
+            if not matched:
+                continue
+            chunk["bbox"] = [
+                min(bbox[0] for bbox in matched),
+                min(bbox[1] for bbox in matched),
+                max(bbox[2] for bbox in matched),
+                max(bbox[3] for bbox in matched),
+            ]
+
+    @staticmethod
     def _heading_pos(page_text: str, entry: dict) -> int:
         """在页面文本里定位某目录标题所在的行首位置；找不到返回 -1。
 
@@ -975,6 +1078,7 @@ class DocumentParserTool(BaseTool):
 
             # 本页 text chunk：先取字符偏移再标 toc_path（_assign_toc_paths 会 pop _off）
             page_chunks = DocumentParserTool._split_page_text(text, page_num) if text.strip() else []
+            DocumentParserTool._attach_chunk_bboxes(page_chunks, text_blocks)
             chunk_offs = [int(c.get("_off", 0) or 0) for c in page_chunks]
             if page_chunks:
                 DocumentParserTool._assign_toc_paths(text, page_chunks, page_num, toc_entries)

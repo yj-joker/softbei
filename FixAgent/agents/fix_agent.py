@@ -318,10 +318,10 @@ class FixAgent(BaseAgent):
             )
         elif run_context.experiment_tool_profile == "rag_kg" and qualified_graph:
             prompt += (
-                "\n\n【图谱预检索已完成】\n"
-                "服务器已经完成本轮图谱查询，结构化图谱证据将在下方注入。"
-                "不要再次调用图谱工具；如需补充检查方法、拆装步骤、参数或安全要求，"
-                "只能调用 knowledge_retrieval 获取维修手册证据。"
+                "\n\n【图谱增量装配】\n"
+                "服务器已经完成本轮图谱查询，但当前模型生成阶段只生成普通 RAG 手册基础答案。"
+                "图谱结构关系由服务端在证据审计后追加，不向本轮生成暴露图谱事实。"
+                "不要再次调用图谱工具；检查方法、拆装步骤、参数或安全要求只能通过维修手册检索。"
             )
         elif run_context.experiment_tool_profile == "rag_kg":
             prompt += (
@@ -329,14 +329,6 @@ class FixAgent(BaseAgent):
                 "本轮只允许使用 knowledge_retrieval、java_graph_diagnosis_path、"
                 "java_graph_device_search 和 component_reverse_device。"
                 "不得调用流程推荐、记忆或其他结构化知识工具。"
-            )
-        if qualified_graph:
-            prompt += (
-                "\n\n【服务器预检索图谱证据】\n"
-                "以下 JSON 是服务器已限定设备/部件/故障范围后取得的结构化事实，只能用于设备身份、"
-                "部件归属、可能故障、故障关系和已验证方案。不得据此补写检查方法、拆装步骤、参数、"
-                "安全要求或图片内容。\n"
-                + json.dumps(qualified_graph, ensure_ascii=False, sort_keys=True)
             )
         return prompt
 
@@ -450,10 +442,15 @@ class FixAgent(BaseAgent):
             if hint and hint not in query:
                 kwargs["query"] = hint if not query else f"{query} {hint}"
         if tool_name == "knowledge_retrieval":
+            kwargs.pop("_query_contract", None)
+            if run_context.query_contract:
+                kwargs["_query_contract"] = dict(run_context.query_contract)
             kwargs = apply_authoritative_manual_scope(
                 kwargs,
                 run_context.retrieval_scope,
             )
+            if run_context.graph_seed_retrieval_scope:
+                kwargs["_graph_seed_scope"] = dict(run_context.graph_seed_retrieval_scope)
         return kwargs
 
     async def _run_with_react_contextual(
@@ -582,7 +579,16 @@ class FixAgent(BaseAgent):
             return None
         scope = run_context.retrieval_scope or {}
         try:
-            retrieval_kwargs = build_manual_retrieval_kwargs(query, scope, top_k=5)
+            retrieval_kwargs = build_manual_retrieval_kwargs(
+                query,
+                scope,
+                top_k=5,
+                query_contract=run_context.query_contract,
+            )
+            if run_context.graph_seed_retrieval_scope:
+                retrieval_kwargs["_graph_seed_scope"] = dict(
+                    run_context.graph_seed_retrieval_scope
+                )
             retrieval = await get_knowledge_retrieval_tool().run(**retrieval_kwargs)
         except Exception as exc:
             logger.warning("[fix_agent][forced_retrieval] 检索异常: %s", exc)
@@ -637,7 +643,12 @@ class FixAgent(BaseAgent):
         ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
         first_metadata = getattr(evidence_items[0], "metadata", {}) or {}
         evidence_bundle = dict(first_metadata.get("evidence_bundle") or {})
-        evidence_bundle = fuse_evidence_support(query, evidence_bundle, ledger)
+        evidence_bundle = fuse_evidence_support(
+            query,
+            evidence_bundle,
+            ledger,
+            query_contract=run_context.intent_decision,
+        )
         response_plan = build_response_plan(query, evidence_bundle, ledger)
         if response_plan.coverage_status == "conflict":
             return self._response_plan_output(
@@ -675,7 +686,12 @@ class FixAgent(BaseAgent):
         )
         manual_call["result_data"] = serialized_evidence
         ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
-        evidence_bundle = fuse_evidence_support(query, evidence_bundle, ledger)
+        evidence_bundle = fuse_evidence_support(
+            query,
+            evidence_bundle,
+            ledger,
+            query_contract=run_context.intent_decision,
+        )
         response_plan = build_response_plan(query, evidence_bundle, ledger)
         evidence_text = "\n\n".join(
             self._forced_evidence_to_text(item, idx)
@@ -736,6 +752,7 @@ class FixAgent(BaseAgent):
             audit_passed=audited.passed,
             audit_violations=audited.violations,
             used_fallback=audited.used_fallback,
+            audit_metadata=audited.to_metadata(),
             raw_response=response if isinstance(response, dict) else None,
             retrieval_top_score=evidence_items[0].score if evidence_items else 0.0,
         )
@@ -751,6 +768,7 @@ class FixAgent(BaseAgent):
         audit_passed: bool,
         audit_violations: tuple[str, ...],
         used_fallback: bool,
+        audit_metadata: Optional[dict[str, Any]] = None,
         raw_response: Optional[dict[str, Any]] = None,
         retrieval_top_score: float = 0.0,
         low_confidence: bool = False,
@@ -777,6 +795,7 @@ class FixAgent(BaseAgent):
                 "graph_pre_retrieval": graph_batch,
                 "graph_scope": dict(run_context.graph_scope or {}),
                 **plan.to_metadata(),
+                **(audit_metadata or {}),
                 "response_audit": {
                     "passed": audit_passed,
                     "violations": list(audit_violations),
@@ -799,6 +818,12 @@ class FixAgent(BaseAgent):
         if not bundle:
             return output
         ledger = EvidenceLedger.from_react_trace({"react_trace": trace})
+        bundle = fuse_evidence_support(
+            run_context.user_message,
+            bundle,
+            ledger,
+            query_contract=run_context.intent_decision,
+        )
         plan = build_response_plan(run_context.user_message, bundle, ledger)
         audited = finalize_response(plan, output.message)
         output.message = audited.answer

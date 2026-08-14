@@ -20,7 +20,11 @@ from services.routing.entity_resolver import EntityResolver
 from services.routing.executor import RouteExecutor
 from services.routing.evidence_gate import EvidenceDocumentGate
 from services.routing.models import RouteAction
-from services.routing.orchestrator import SemanticRoutingOrchestrator
+from services.routing.orchestrator import (
+    SemanticRoutingOrchestrator,
+    _narrow_explicit_graph_candidates,
+)
+from services.clarification.models import KnowledgeCandidate
 
 
 def _catalog(*documents: tuple[str, str, str, str]) -> DeviceCatalog:
@@ -55,6 +59,27 @@ def _technical_decision(**overrides) -> IntentDecision:
     return IntentDecision(**payload)
 
 
+def _graph_candidate(candidate_id: str, *, component: str, fault: str) -> KnowledgeCandidate:
+    return KnowledgeCandidate(
+        candidate_id=candidate_id,
+        document_id="manual-a",
+        section_id=f"section-{candidate_id}",
+        section_title=f"{component} / {fault}",
+        dimensions={
+            "path_id": candidate_id,
+            "device_id": "device-a",
+            "component_id": f"component-{candidate_id}",
+            "fault_id": f"fault-{candidate_id}",
+            "component": component,
+            "fault": fault,
+        },
+        source_kind="graph",
+        source_kinds=("graph",),
+        quality_tier="high",
+        provenance_status="complete",
+    )
+
+
 def test_dynamic_section_recovers_device_when_model_omits_component_field() -> None:
     catalog = _catalog(("manual-a", "摩托车发动机", "发动机", "摩托车"))
     contract = QueryContract.from_mapping(
@@ -73,6 +98,45 @@ def test_dynamic_section_recovers_device_when_model_omits_component_field() -> N
     assert resolution.contract.raw_device_span == "摩托车发动机"
     assert resolution.contract.component == "气缸活塞"
     assert resolution.entity_role == "device_identity"
+
+
+def test_query_contract_accepts_only_fault_span_grounded_in_current_query() -> None:
+    grounded = QueryContract.from_mapping(
+        {"fault": "油泵座垫变形", "raw_fault_span": "油泵座垫变形"},
+        raw_query="油泵座垫变形时应该怎么处理",
+    )
+    hallucinated = QueryContract.from_mapping(
+        {"fault": "油泵座垫开裂", "raw_fault_span": "油泵座垫开裂"},
+        raw_query="油泵座垫变形时应该怎么处理",
+    )
+
+    assert grounded.fault == "油泵座垫变形"
+    assert grounded.raw_fault_span == "油泵座垫变形"
+    assert hallucinated.fault == ""
+    assert hallucinated.raw_fault_span == ""
+
+
+def test_graph_path_narrowing_uses_structured_component_and_fault_contract() -> None:
+    contract = QueryContract.from_mapping(
+        {
+            "component": "油泵座垫",
+            "raw_component_span": "油泵座垫",
+            "fault": "变形",
+            "raw_fault_span": "变形",
+        },
+        raw_query="油泵座垫变形时应该怎么处理",
+    )
+    candidates = (
+        _graph_candidate("deformed", component="油泵座垫", fault="变形"),
+        _graph_candidate("cracked", component="油泵座垫", fault="开裂"),
+        _graph_candidate("gear", component="减速齿轮", fault="变形"),
+    )
+
+    narrowed, explicit = _narrow_explicit_graph_candidates(contract, candidates)
+
+    assert [candidate.candidate_id for candidate in narrowed] == ["deformed"]
+    assert explicit is not None
+    assert explicit.candidate_id == "deformed"
 
 
 def test_dynamic_section_role_demotes_unseen_component_phrase_without_keyword_lists() -> None:
@@ -242,6 +306,66 @@ def test_component_span_with_conjunction_is_demoted_by_dynamic_section_role() ->
     assert entity.contract.identity_resolution == "confirmed_absent"
     assert candidates.action == RouteAction.GROUNDED_RETRIEVAL
     assert candidates.selected_document_id == "manual-a"
+
+
+def test_selected_document_with_multiple_matching_sections_continues_grounded_retrieval() -> None:
+    catalog = _catalog(("manual-a", "摩托车发动机", "发动机", "摩托车"))
+    decision = _technical_decision(
+        target_object="机油泵检查与维修",
+        component="机油泵",
+        raw_component_span="机油泵",
+        requested_fields=["检查方法", "维修方法"],
+    )
+
+    plan = asyncio.run(
+        SemanticRoutingOrchestrator().build_plan(
+            query="机油泵的检查方法和维修方法是什么",
+            decision=decision,
+            catalog=catalog,
+            section_refs=(
+                SectionRef("section-a", "manual-a", "机油泵的检查", "4.2 机油泵的检查"),
+                SectionRef("section-b", "manual-a", "机油泵的维修", "4.3 机油泵的维修"),
+            ),
+            request_document_id="manual-a",
+        )
+    )
+
+    assert plan.action == RouteAction.GROUNDED_RETRIEVAL
+    assert plan.selected_document_id == "manual-a"
+    assert "knowledge_retrieval" in plan.allowed_tools
+    assert plan.allow_ai_fallback is False
+
+
+def test_diagnostic_query_with_unique_document_never_falls_back_to_general_ai() -> None:
+    catalog = _catalog(("manual-a", "摩托车发动机", "发动机", "摩托车"))
+    decision = _technical_decision(
+        target_object="机油泵故障",
+        intent="fault_diagnosis",
+        task_action="find_cause",
+        component="机油泵",
+        raw_component_span="机油泵",
+        symptoms=["供油不足"],
+        requires_graph_search=True,
+        allowed_tools=["knowledge_retrieval", "java_graph_diagnosis_path"],
+    )
+
+    plan = asyncio.run(
+        SemanticRoutingOrchestrator().build_plan(
+            query="机油泵供油不足是什么原因",
+            decision=decision,
+            catalog=catalog,
+            section_refs=(
+                SectionRef("section-a", "manual-a", "机油泵的检查", "4.2 机油泵的检查"),
+                SectionRef("section-b", "manual-a", "润滑系统故障诊断", "8.1 润滑系统故障诊断"),
+            ),
+            request_document_id="manual-a",
+        )
+    )
+
+    assert plan.action == RouteAction.GROUNDED_RETRIEVAL
+    assert plan.selected_document_id == "manual-a"
+    assert "knowledge_retrieval" in plan.allowed_tools
+    assert plan.allow_ai_fallback is False
 
 
 def test_unknown_explicit_device_is_not_demoted_or_bound_to_existing_document() -> None:

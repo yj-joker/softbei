@@ -27,6 +27,7 @@ from embeddings.image_embedding import get_image_embedding
 from services.file_storage import get_file_storage
 from services.knowledge.image_summary_service import get_image_summary_service
 from services.knowledge.chunking_policy import build_section_index_chunks
+from services.knowledge.image_binding import IMAGE_BINDING_SCHEMA_VERSION
 from services.knowledge.vector_service import get_vector_service
 from services.retrieval.device_identity import (
     DocumentIdentity,
@@ -291,6 +292,7 @@ class KnowledgeService:
             "status": "indexing",
             "category": category,
             "tags": tags or [],
+            "image_binding_schema_version": IMAGE_BINDING_SCHEMA_VERSION,
             **({"document_identity": authorized_identity} if authorized_identity else {}),
             **({"prev_document_id": old_document_id} if old_document_id else {}),
         })
@@ -641,6 +643,11 @@ class KnowledgeService:
             )
             ready_image_jobs.append(image_job)
 
+        image_binding_relationship_count = sum(
+            len(job.get("policy_metadata", {}).get("image_bindings") or [])
+            for job in ready_image_jobs
+        )
+
         image_embedding_started = time.time()
         image_input_jobs = [job for job in ready_image_jobs if job.get("embedding_input")]
         caption_image_jobs = [job for job in ready_image_jobs if not job.get("embedding_input")]
@@ -774,6 +781,12 @@ class KnowledgeService:
                     "local_path": image_result["local_path"],
                     "image_url": image_result["image_url"],
                     "caption": image_result["caption"],
+                    "bbox": img.get("bbox") or image_result["policy_metadata"].get("bbox") or [],
+                    "caption_bbox": img.get("caption_bbox") or image_result["policy_metadata"].get("caption_bbox") or [],
+                    "caption_confidence": img.get("caption_confidence") or image_result["policy_metadata"].get("caption_confidence", 0.0),
+                    "image_width": img.get("width") or image_result["policy_metadata"].get("image_width"),
+                    "image_height": img.get("height") or image_result["policy_metadata"].get("image_height"),
+                    "image_format": img.get("format") or image_result["policy_metadata"].get("image_format", ""),
                     "embedding_source": image_result["embedding_source"],
                     "embedding_error": image_result.get("embedding_error", ""),
                 }
@@ -903,6 +916,9 @@ class KnowledgeService:
                     "page": img.get("page"),
                     "image_name": summary_result["img_name"],
                     "image_url": summary_result["image_url"],
+                    "bbox": img.get("bbox") or summary_result["policy_metadata"].get("bbox") or [],
+                    "caption_bbox": img.get("caption_bbox") or summary_result["policy_metadata"].get("caption_bbox") or [],
+                    "caption_confidence": img.get("caption_confidence") or summary_result["policy_metadata"].get("caption_confidence", 0.0),
                     "image_title": summary.get("image_title", ""),
                     "image_summary": summary_result["summary_text"],
                     "summary_source": summary.get("summary_source", ""),
@@ -955,6 +971,8 @@ class KnowledgeService:
             "image_embedding_failed_count": image_embedding_failed_count,
             "image_summary_count": image_summary_count,
             "image_summary_failed_count": image_summary_failed_count,
+            "image_binding_schema_version": IMAGE_BINDING_SCHEMA_VERSION,
+            "image_binding_relationship_count": image_binding_relationship_count,
             "table_count": table_count,
             "table_success_count": table_success_count,
             "table_failed_count": table_failed_count,
@@ -1220,6 +1238,49 @@ class KnowledgeService:
                     for value in values
                     if value
                 ]
+        image_bindings = resolved.get("image_bindings")
+        if isinstance(image_bindings, list):
+            mapped_bindings = []
+            for binding in image_bindings:
+                if not isinstance(binding, Mapping) or not binding.get("target_id"):
+                    continue
+                target_id = str(binding.get("target_id") or "")
+                mapped_target_id = local_chunk_doc_ids.get(target_id)
+                if mapped_target_id is None and target_id.startswith("sec:"):
+                    continue
+                mapped_bindings.append({
+                    **binding,
+                    "target_id": mapped_target_id or target_id,
+                })
+
+            resolved["image_bindings"] = mapped_bindings
+            resolved["related_step_chunk_ids"] = list(dict.fromkeys(
+                str(binding["target_id"])
+                for binding in mapped_bindings
+                if binding.get("target_type") == "step"
+            ))
+            resolved["related_text_chunk_ids"] = list(dict.fromkeys(
+                str(binding["target_id"])
+                for binding in mapped_bindings
+            ))
+            if mapped_bindings:
+                resolved["binding_role"] = (
+                    "positioned_step"
+                    if resolved["related_step_chunk_ids"]
+                    else "positioned_text"
+                )
+                resolved["binding_confidence"] = max(
+                    float(binding.get("confidence") or 0.0)
+                    for binding in mapped_bindings
+                )
+            else:
+                resolved["procedure_scope_ids"] = []
+                resolved["binding_role"] = (
+                    "section_fallback"
+                    if resolved.get("binding_role") == "section_fallback"
+                    else "page_fallback"
+                )
+                resolved["binding_confidence"] = 0.0
         return resolved
 
     def _mark_failed_import(

@@ -44,19 +44,37 @@ class DiagnosisItem(BaseModel):
     root_cause: str = Field(default="", serialization_alias="rootCause", description="根本原因说明")
     knowledge_basis: str = Field(default="", serialization_alias="knowledgeBasis", description="知识库依据")
 
+
+class ImageEvidenceBinding(BaseModel):
+    target_id: str = Field(default="", serialization_alias="targetId")
+    target_type: str = Field(default="", serialization_alias="targetType")
+    relation: str = ""
+    confidence: float = 0.0
+
+
 class EvidenceImage(BaseModel):
     image_url: str = Field(default="", serialization_alias="imageUrl")
     caption: str = ""
+    caption_confidence: float = Field(default=0.0, serialization_alias="captionConfidence")
+    image_title: str = Field(default="", serialization_alias="imageTitle")
+    image_summary: str = Field(default="", serialization_alias="imageSummary")
     page: Optional[Any] = None
+    section_id: str = Field(default="", serialization_alias="sectionId")
+    source_section_id: str = Field(default="", serialization_alias="sourceSectionId")
     section_title: str = Field(default="", serialization_alias="sectionTitle")
+    source_section_title: str = Field(default="", serialization_alias="sourceSectionTitle")
     document_id: str = Field(default="", serialization_alias="documentId")
     source_chunk_id: str = Field(default="", serialization_alias="sourceChunkId")
     context_role: str = Field(default="", serialization_alias="contextRole")
     step_id: str = Field(default="", serialization_alias="stepId")
     step_ids: List[str] = Field(default_factory=list, serialization_alias="stepIds")
+    text_ids: List[str] = Field(default_factory=list, serialization_alias="textIds")
+    procedure_scope_ids: List[str] = Field(default_factory=list, serialization_alias="procedureScopeIds")
     aspect_id: str = Field(default="", serialization_alias="aspectId")
     role: str = ""
     binding_confidence: float = Field(default=0.0, serialization_alias="bindingConfidence")
+    binding_schema_version: int = Field(default=0, exclude=True)
+    bindings: List[ImageEvidenceBinding] = Field(default_factory=list, exclude=True)
 
 
 class ChatStreamEvent(BaseModel):

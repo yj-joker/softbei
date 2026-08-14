@@ -78,6 +78,8 @@ class IntentDecision(BaseModel):
     model: str = ""
     component: str = ""
     raw_component_span: str = ""
+    fault: str = ""
+    raw_fault_span: str = ""
     part_spec: str = ""
     assembly_context: str = ""
     action: str = ""
@@ -107,6 +109,15 @@ class IntentRouter:
         r"(怎么办|咋办|怎么弄|如何处理|怎么处理|怎么解决|怎么排查|怎么修|咋修|如何修|如何维修|如何检修)"
     )
     _CAUSE_ACTION_RE = re.compile(r"(什么原因|为啥|为什么|哪里坏|哪坏|原因|导致|造成|怎么回事|咋回事)")
+    _RELATION_LOOKUP_RE = re.compile(
+        r"(已确认故障|沿.{0,8}故障关系.{0,8}定位|定位所属部件|"
+        r"(?:它|该故障|此故障).{0,8}对应.{0,8}部件|对应设备的?.{0,6}部件|"
+        r"故障.{0,12}(?:所属|对应).{0,8}部件)"
+    )
+    _QUOTED_OBSERVATION_RE = re.compile(r"“([^”]+)”|\"([^\"]+)\"|'([^']+)'")
+    _FAULT_STATE_SUFFIX_RE = re.compile(
+        r"^(?P<component>.+?)(?:损坏|磨损|变形|断裂|松动|脱落|卡滞|烧蚀|腐蚀|泄漏|异响|故障|(?:动作)?不顺畅)$"
+    )
     _FORMAL_PROCEDURE_ACTION_RE = re.compile(
         r"(生成|制定|输出|编写|做一份|给我一份).{0,16}"
         r"(检修方案|维修方案|检修流程|维修流程|工单|作业单|SOP|标准作业|作业指导书)|"
@@ -291,6 +302,7 @@ class IntentRouter:
                 decision = self._merge_query_contract(decision, contract)
             except Exception as exc:
                 logger.warning("[intent_router] focused query contract extraction failed: %s", exc)
+        decision = self._apply_relationship_contract_fallback(decision, text)
         decision = self._apply_strategy(decision)
         decision = self._apply_safety_override(decision, text)
         return decision
@@ -313,8 +325,9 @@ class IntentRouter:
             "confidence 为 0 到 1。不要生成用户回答，只判断用户当前想做什么。"
             "同一次 JSON 中还要提取当前轮查询契约：raw_device_span 必须逐字复制用户消息中连续出现的设备短语，"
             "没有明确设备时必须为空；device_name、device_category、carrier_or_application、manufacturer、model、"
-            "component、raw_component_span、part_spec、assembly_context、action、orientation、risk_level 分别表示"
-            "部件、部件原文跨度、规格、装配上下文、动作、方向和风险等级。"
+            "component、raw_component_span、fault、raw_fault_span、part_spec、assembly_context、action、orientation、risk_level 分别表示"
+            "部件、部件原文跨度、故障、故障原文跨度、规格、装配上下文、动作、方向和风险等级。"
+            "raw_fault_span 必须逐字复制当前问题中连续出现的故障或异常状态短语，没有则为空。"
             "多对象查询必须输出 targets 数组，每项含 target_id、raw_component_span、component、part_spec、"
             "assembly_context、action、orientation、requested_fields；同时输出 requested_fields、symptoms、"
             "operating_conditions。不得从历史或常识补写用户本轮未提到的设备或部件。"
@@ -367,6 +380,8 @@ class IntentRouter:
             model=query_contract.model,
             component=query_contract.component,
             raw_component_span=query_contract.raw_component_span,
+            fault=query_contract.fault,
+            raw_fault_span=query_contract.raw_fault_span,
             part_spec=query_contract.part_spec,
             assembly_context=query_contract.assembly_context,
             action=query_contract.action,
@@ -388,9 +403,9 @@ class IntentRouter:
             "如果当前问题只说部件、故障或操作，没有明确设备身份，raw_device_span 必须为空字符串。"
             "不得从常识、对话历史、候选文档或知识库补写用户本轮没有说出的身份。"
             "返回字段 raw_device_span、device_name、device_category、carrier_or_application、"
-            "manufacturer、model、component、raw_component_span、part_spec、assembly_context、action、orientation、"
+            "manufacturer、model、component、raw_component_span、fault、raw_fault_span、part_spec、assembly_context、action、orientation、"
             "risk_level、requested_fields、symptoms、operating_conditions、targets；未知字符串字段使用空字符串，"
-            "未知数组字段使用空数组。targets 中的部件跨度必须逐字来自当前问题。"
+            "未知数组字段使用空数组。部件和故障的原文跨度都必须逐字来自当前问题。"
         )
         response = await self.llm_service.chat(
             [
@@ -424,6 +439,8 @@ class IntentRouter:
             "model",
             "component",
             "raw_component_span",
+            "fault",
+            "raw_fault_span",
             "part_spec",
             "assembly_context",
             "action",
@@ -489,7 +506,7 @@ class IntentRouter:
             return "formal_procedure"
         if self._REPAIR_ACTION_RE.search(text or ""):
             return "repair_guidance"
-        if self._CAUSE_ACTION_RE.search(text or ""):
+        if self._CAUSE_ACTION_RE.search(text or "") or self._RELATION_LOOKUP_RE.search(text or ""):
             return "find_cause"
         if self._PARAMETER_RE.search(text or ""):
             return "parameter_lookup"
@@ -500,6 +517,47 @@ class IntentRouter:
         if self._DOCUMENT_RE.search(text or ""):
             return "document_explain"
         return "general_answer"
+
+    def _apply_relationship_contract_fallback(
+        self,
+        decision: IntentDecision,
+        text: str,
+    ) -> IntentDecision:
+        if not text or not self._RELATION_LOOKUP_RE.search(text):
+            return decision
+
+        quoted_fault = ""
+        match = self._QUOTED_OBSERVATION_RE.search(text)
+        if match:
+            quoted_fault = next((value.strip() for value in match.groups() if value), "")
+
+        data = decision.model_dump()
+        data.update(
+            intent="fault_diagnosis",
+            target_layer="document_content",
+            task_action="find_cause",
+            confidence=max(decision.confidence, 0.85),
+            source="rules",
+        )
+        if quoted_fault:
+            if not data.get("fault"):
+                data["fault"] = quoted_fault
+            if not data.get("raw_fault_span"):
+                data["raw_fault_span"] = quoted_fault
+            symptoms = list(data.get("symptoms") or [])
+            if quoted_fault not in symptoms:
+                symptoms.append(quoted_fault)
+            data["symptoms"] = symptoms
+
+            component_match = self._FAULT_STATE_SUFFIX_RE.fullmatch(quoted_fault)
+            if component_match:
+                component = component_match.group("component").strip()
+                if component and component in text:
+                    if not data.get("component"):
+                        data["component"] = component
+                    if not data.get("raw_component_span"):
+                        data["raw_component_span"] = component
+        return IntentDecision(**data)
 
     def _detect_intent_injection(self, text: str) -> Optional[IntentDecision]:
         if not text:

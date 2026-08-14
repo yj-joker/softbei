@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from services.retrieval.graph_evidence import GraphEvidenceBatch
+from services.retrieval.graph_evidence import GraphAuthorizationContext, GraphEvidenceBatch
 from services.routing.graph_candidate_provider import get_graph_candidate_provider
 from services.routing.graph_policy import decide_graph_use
 
@@ -25,25 +25,24 @@ class GraphPreRetrievalService:
         variant = str(rag_variant or "production").strip().lower()
         contract = route_plan.get("query_contract")
         contract = contract if isinstance(contract, Mapping) else {}
-        policy = decide_graph_use(
-            variant,
-            {**dict(contract), "intent": route_plan.get("intent"), "task_action": route_plan.get("task_action")},
-        )
-        if not policy.pre_retrieval_enabled:
-            return _status_batch("not_applicable", policy.reason)
+        route_policy = route_plan.get("graph_policy")
+        if isinstance(route_policy, Mapping) and "pre_retrieval_enabled" in route_policy:
+            pre_retrieval_enabled = bool(route_policy.get("pre_retrieval_enabled"))
+            policy_reason = str(route_policy.get("reason") or "route_policy")
+        else:
+            policy = decide_graph_use(
+                variant,
+                {**dict(contract), "intent": route_plan.get("intent"), "task_action": route_plan.get("task_action")},
+            )
+            pre_retrieval_enabled = policy.pre_retrieval_enabled
+            policy_reason = policy.reason
+        if not pre_retrieval_enabled:
+            return _status_batch("not_applicable", policy_reason)
 
         task_action = str(route_plan.get("task_action") or "").strip()
         intent = str(route_plan.get("intent") or "").strip()
         action = str(route_plan.get("action") or "").strip()
-        if task_action in {"list_items", "procedure_lookup"}:
-            return _status_batch("not_applicable", "non_diagnostic_request")
-        if task_action == "parameter_lookup" and intent != "fault_diagnosis":
-            return _status_batch("not_applicable", "non_diagnostic_request")
-        if intent not in {
-            "fault_diagnosis",
-            "maintenance_guidance",
-            "procedure_planning",
-        } or action in {"clarify_document", "clarify"}:
+        if action in {"clarify_document", "clarify"}:
             return _status_batch("not_applicable", "non_diagnostic_request")
 
         scope = dict(graph_scope or {})
@@ -71,6 +70,7 @@ class GraphPreRetrievalService:
                 or contract.get("device_identity")
                 or ""
             ).strip()
+        authorization_context = _authorization_context(route_plan, contract, scope)
         return await self.provider.retrieve_path_evidence(
             keyword=keyword,
             fault_description=fault_description,
@@ -80,6 +80,7 @@ class GraphPreRetrievalService:
             allowed_device_ids=list(scope.get("allowed_device_ids") or ()),
             allowed_component_ids=list(scope.get("allowed_component_ids") or ()),
             allowed_fault_ids=list(scope.get("allowed_fault_ids") or ()),
+            authorization_context=authorization_context,
         )
 
 
@@ -97,11 +98,52 @@ def _status_batch(status: str, reason: str) -> GraphEvidenceBatch:
     )
 
 
+def _authorization_context(
+    route_plan: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    scope: Mapping[str, Any],
+) -> GraphAuthorizationContext | None:
+    selected_document_id = str(route_plan.get("selected_document_id") or "").strip()
+    scoped_document_id = str(scope.get("document_id") or "").strip()
+    allowed_paths = _text_tuple(scope.get("allowed_path_ids"))
+    allowed_sections = _text_tuple(scope.get("allowed_section_ids"))
+    allowed_chunks = _text_tuple(scope.get("allowed_source_chunk_uids"))
+    if (
+        not selected_document_id
+        or scoped_document_id != selected_document_id
+        or not allowed_paths
+        or not allowed_sections
+        or not allowed_chunks
+    ):
+        return None
+
+    canonical_device = str(route_plan.get("authorized_device_identity") or "").strip()
+    if not canonical_device and str(contract.get("identity_resolution") or "") == "catalog_exact":
+        canonical_device = str(contract.get("device_name") or "").strip()
+    if not canonical_device:
+        return None
+    document_version = str(scope.get("document_version") or "").strip()
+    return GraphAuthorizationContext(
+        canonical_device_identity=canonical_device,
+        document_ids=(selected_document_id,),
+        document_versions=((document_version,) if document_version else ()),
+        section_ids=allowed_sections,
+        source_chunk_uids=allowed_chunks,
+    )
+
+
 def _text_join(values: Any) -> str:
     if not isinstance(values, (list, tuple, set)):
         values = (values,)
     return " ".join(dict.fromkeys(
         str(value).strip() for value in values if str(value or "").strip()
+    ))
+
+
+def _text_tuple(values: Any) -> tuple[str, ...]:
+    source = values if isinstance(values, (list, tuple, set)) else (values,)
+    return tuple(dict.fromkeys(
+        str(value).strip() for value in source if str(value or "").strip()
     ))
 
 

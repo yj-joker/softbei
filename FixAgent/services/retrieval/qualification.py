@@ -233,13 +233,42 @@ def _topic_match(query: str, item: Dict[str, Any]) -> str:
             metadata.get("section_title"), metadata.get("chunk_label"), item.get("text"), item.get("content"),
         )
     ).lower()
-    terms = [term for term in _tokenize(query) if len(term) >= 2]
-    hits = sum(1 for term in terms if term in content)
-    if terms and hits == 0 and coverage < 0.15 and title_coverage < 0.15:
+    queries = [query, *_grounded_candidate_query_variants(query, metadata)]
+    term_groups = [
+        [term for term in _tokenize(candidate_query) if len(term) >= 2]
+        for candidate_query in queries
+    ]
+    term_groups = [terms for terms in term_groups if terms]
+    best_hit_ratio = max(
+        (
+            sum(1 for term in terms if term in content) / len(terms)
+            for terms in term_groups
+        ),
+        default=0.0,
+    )
+    if term_groups and best_hit_ratio == 0 and coverage < 0.15 and title_coverage < 0.15:
         return "conflict"
-    if coverage >= 0.35 or title_coverage >= 0.35 or (terms and hits / len(terms) >= 0.5):
+    if coverage >= 0.35 or title_coverage >= 0.35 or best_hit_ratio >= 0.5:
         return "matched"
     return "weak"
+
+
+def _grounded_candidate_query_variants(query: str, metadata: Dict[str, Any]) -> List[str]:
+    variants = metadata.get("query_variants") or []
+    if not isinstance(variants, list):
+        return []
+    normalized_query = _normalize_compact(query)
+    grounded: List[str] = []
+    for variant in variants:
+        if not isinstance(variant, dict):
+            continue
+        text = str(variant.get("text") or "").strip()
+        terms = [term for term in _tokenize(text) if len(term) >= 2]
+        if not terms or any(_normalize_compact(term) not in normalized_query for term in terms):
+            continue
+        if text not in grounded:
+            grounded.append(text)
+    return grounded
 
 
 def _detect_conflicts(

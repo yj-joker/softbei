@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
+import pytest
+
+import services.retrieval.device_identity as device_identity
 from services.retrieval.device_identity import (
     DeviceCatalog,
     DocumentIdentity,
@@ -12,7 +17,7 @@ from services.retrieval.device_identity import (
 )
 
 
-def test_overcaptured_device_span_is_trimmed_only_when_dynamic_catalog_improves_match():
+def test_overcaptured_device_span_preserves_raw_text_and_normalizes_catalog_identity():
     catalog = DeviceCatalog((
         DocumentIdentity(
             document_id="manual-motorcycle",
@@ -34,7 +39,9 @@ def test_overcaptured_device_span_is_trimmed_only_when_dynamic_catalog_improves_
 
     reconciled = reconcile_query_device_span(query, catalog)
 
-    assert reconciled.raw_device_span == "摩托车发动机"
+    assert reconciled.raw_device_span == "摩托车发动机气缸活塞"
+    assert reconciled.device_name == "摩托车发动机"
+    assert reconciled.identity_resolution == "catalog_exact"
     assert reconciled.component == "气缸活塞"
 
 
@@ -217,7 +224,7 @@ def test_generic_document_name_never_prefix_matches_a_more_specific_device() -> 
     assert result.conflicts == ("device_name",)
 
 
-def test_grounded_raw_span_overrides_model_generic_device_name() -> None:
+def test_grounded_raw_span_controls_effective_unsigned_device_identity() -> None:
     catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
     query = _contract(
         "飞机发动机异响是什么原因",
@@ -226,7 +233,8 @@ def test_grounded_raw_span_overrides_model_generic_device_name() -> None:
         device_category="发动机",
     )
 
-    assert query.device_name == "飞机发动机"
+    assert query.device_name == "发动机"
+    assert query.effective_device_identity == "飞机发动机"
     assert catalog.match(query)[0].relation == "unmatched"
 
 
@@ -406,3 +414,163 @@ def test_device_name_with_component_suffix_matches_dynamic_document_identity() -
 
     assert result.relation == "matched"
     assert result.conflicts == ()
+
+
+def _normalize(query: QueryContract, catalog: DeviceCatalog):
+    normalizer = getattr(device_identity, "normalize_query_identity", None)
+    assert callable(normalizer), "normalize_query_identity must be implemented"
+    return normalizer(query, catalog)
+
+
+@pytest.mark.parametrize(
+    ("raw_span", "component", "raw_component_span", "carrier"),
+    [
+        ("摩托车发动机的火花塞", "火花塞", "火花塞", "摩托车发动机"),
+        ("摩托车发动机机油泵", "机油泵从动齿轮", "机油泵从动齿轮", "摩托车"),
+        ("摩托车发动机的传动装置", "拨叉", "拨叉", "传动装置"),
+    ],
+)
+def test_composite_device_span_preserves_raw_text_and_signs_catalog_identity(
+    raw_span: str,
+    component: str,
+    raw_component_span: str,
+    carrier: str,
+) -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    raw_query = f"{raw_span}出现{raw_component_span}损坏"
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": raw_span,
+            "device_name": raw_span,
+            "carrier_or_application": carrier,
+            "component": component,
+            "raw_component_span": raw_component_span,
+        },
+        raw_query=raw_query,
+    )
+
+    result = _normalize(query, catalog)
+
+    assert result.contract.raw_device_span == raw_span
+    assert result.contract.device_name == "摩托车发动机"
+    assert result.contract.carrier_or_application == "摩托车"
+    assert result.contract.identity_resolution == "catalog_exact"
+    assert result.matched_document_id == "manual-motorcycle"
+    assert result.status == "matched"
+
+
+def test_composite_device_span_recovers_grounded_parent_component_when_model_extracts_fault_part() -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    raw_query = "摩托车发动机的气缸总成出现气缸内壁损伤时如何处理"
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "摩托车发动机的气缸总成",
+            "device_name": "摩托车发动机的气缸总成",
+            "component": "气缸内壁",
+            "raw_component_span": "气缸内壁",
+            "fault": "气缸内壁损伤",
+            "raw_fault_span": "气缸内壁损伤",
+        },
+        raw_query=raw_query,
+    )
+
+    result = _normalize(query, catalog)
+
+    assert result.status == "matched"
+    assert result.contract.identity_resolution == "catalog_exact"
+    assert result.contract.raw_device_span == "摩托车发动机的气缸总成"
+    assert result.contract.component == "气缸总成"
+    assert result.contract.raw_component_span == "气缸总成"
+    assert result.contract.fault == "气缸内壁损伤"
+
+
+def test_composite_component_recovery_never_promotes_an_external_device() -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "飞机发动机的气缸总成",
+            "device_name": "飞机发动机的气缸总成",
+            "component": "气缸内壁",
+            "raw_component_span": "气缸内壁",
+            "fault": "气缸内壁损伤",
+            "raw_fault_span": "气缸内壁损伤",
+        },
+        raw_query="飞机发动机的气缸总成出现气缸内壁损伤时如何处理",
+    )
+
+    result = _normalize(query, catalog)
+
+    assert result.status == "unmatched"
+    assert result.contract.identity_resolution == ""
+    assert result.contract.raw_device_span == "飞机发动机的气缸总成"
+    assert result.contract.component == "气缸内壁"
+
+
+def test_catalog_identity_normalization_is_idempotent() -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "摩托车发动机的火花塞",
+            "device_name": "摩托车发动机的火花塞",
+            "component": "火花塞",
+            "raw_component_span": "火花塞",
+        },
+        raw_query="摩托车发动机的火花塞损坏",
+    )
+
+    once = _normalize(query, catalog).contract
+    twice = _normalize(once, catalog).contract
+
+    assert twice == once
+
+
+def test_unverified_model_device_name_cannot_override_grounded_external_span() -> None:
+    catalog = DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST])
+    query = QueryContract.from_mapping(
+        {
+            "raw_device_span": "飞机发动机的火花塞",
+            "device_name": "摩托车发动机",
+            "identity_resolution": "catalog_exact",
+            "component": "火花塞",
+            "raw_component_span": "火花塞",
+        },
+        raw_query="飞机发动机的火花塞损坏",
+    )
+
+    result = _normalize(query, catalog)
+
+    assert query.device_name == "摩托车发动机"
+    assert query.identity_resolution == ""
+    assert result.contract.effective_device_identity == "飞机发动机的火花塞"
+    assert result.contract.identity_resolution == ""
+    assert result.matched_document_id == ""
+    assert result.status == "unmatched"
+
+
+def test_generic_identity_and_ambiguous_alias_are_never_promoted() -> None:
+    shared_alias = "试验发动机"
+    catalog = DeviceCatalog((
+        replace(
+            DeviceCatalog.from_manifests([MOTORCYCLE_MANIFEST]).documents[0],
+            aliases=(shared_alias,),
+        ),
+        DocumentIdentity(
+            document_id="manual-truck",
+            device_name="卡车发动机",
+            device_category="发动机",
+            carrier_or_application="卡车",
+            confidence=0.96,
+            aliases=(shared_alias,),
+        ),
+    ))
+    generic = QueryContract.from_mapping(
+        {"raw_device_span": "发动机", "device_name": "发动机"},
+        raw_query="发动机异响",
+    )
+    ambiguous = QueryContract.from_mapping(
+        {"raw_device_span": shared_alias, "device_name": shared_alias},
+        raw_query=f"{shared_alias}异响",
+    )
+
+    assert _normalize(generic, catalog).matched_document_id == ""
+    assert _normalize(ambiguous, catalog).matched_document_id == ""

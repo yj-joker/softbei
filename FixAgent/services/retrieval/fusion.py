@@ -31,6 +31,31 @@ def _routes(item: Dict[str, Any]) -> set[str]:
     return routes
 
 
+def _query_variants(item: Dict[str, Any]) -> List[Dict[str, str]]:
+    metadata = item.get("metadata") or {}
+    variants: List[Dict[str, str]] = []
+    existing = metadata.get("query_variants") or []
+    if isinstance(existing, list):
+        for value in existing:
+            if not isinstance(value, dict) or not str(value.get("text") or "").strip():
+                continue
+            variants.append({
+                "text": str(value.get("text") or "").strip(),
+                "source": str(value.get("source") or "").strip(),
+                "target_id": str(value.get("target_id") or "").strip(),
+            })
+    text = str(metadata.get("query_variant_text") or "").strip()
+    if text:
+        current = {
+            "text": text,
+            "source": str(metadata.get("query_variant_source") or "").strip(),
+            "target_id": str(metadata.get("query_variant_target_id") or "").strip(),
+        }
+        if current not in variants:
+            variants.append(current)
+    return variants
+
+
 def reciprocal_rank_fusion(
     ranked_lists: Iterable[Iterable[Dict[str, Any]]],
     *,
@@ -64,11 +89,15 @@ def reciprocal_rank_fusion(
                     "first_seen": (list_index, rank),
                     "route_ranks": [],
                     "routes": set(),
+                    "query_variants": [],
                 },
             )
             entry["raw_rrf_score"] += 1.0 / (constant + rank)
             entry["route_ranks"].append(rank)
             entry["routes"].update(_routes(candidate))
+            for variant in _query_variants(candidate):
+                if variant not in entry["query_variants"]:
+                    entry["query_variants"].append(variant)
 
             relevance = _score(candidate)
             if relevance > entry["best_relevance_score"]:
@@ -105,6 +134,7 @@ def reciprocal_rank_fusion(
                 "rrf_route_ranks": list(entry["route_ranks"]),
                 "pre_rrf_relevance_score": pre_rrf_score,
                 "fusion_relevance_score": fused_relevance_score,
+                "query_variants": list(entry["query_variants"]),
             }
         )
         item["metadata"] = metadata

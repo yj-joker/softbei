@@ -1,3 +1,5 @@
+import hashlib
+
 from services.retrieval.graph_evidence import normalize_graph_response
 
 
@@ -117,6 +119,24 @@ def test_path_id_must_match_core_node_identity() -> None:
 
     assert batch.evidence == ()
     assert "path_identity_mismatch" in batch.diagnostics["discard_reasons"]
+
+
+def test_hashed_stable_path_matches_stable_node_identity() -> None:
+    record = _production_record()
+    stable_nodes = (
+        "kg:device:" + "1" * 64,
+        "kg:component:" + "2" * 64,
+        "kg:fault:" + "3" * 64,
+    )
+    raw = "\x1f".join(stable_nodes).encode("utf-8")
+    record["nodeIds"] = list(stable_nodes)
+    record["pathId"] = "kgpath:" + hashlib.sha256(raw).hexdigest()
+
+    batch = normalize_graph_response({"status": "found", "records": [record]})
+
+    assert batch.status == "found"
+    assert batch.evidence
+    assert batch.evidence[0].path_id == record["pathId"]
 
 
 def test_verified_solution_requires_has_solution_relationship() -> None:

@@ -801,6 +801,13 @@ def test_ensure_section_steps_replaces_shuffled_selected_steps_with_ordered_snap
         }
 
     selected = [step(4, record_id="selected-4"), step(2, record_id="selected-2")]
+    selected[0]["routes"] = ["text_vector", "keyword"]
+    selected[0]["metadata"].update({
+        "query_variants": [
+            {"text": "涨紧器 不灵活", "source": "component_fault", "target_id": ""},
+        ],
+        "local_rerank_features": {"query_coverage": 0.8, "title_coverage": 0.6},
+    })
     records = [
         step(3, record_id="redis-3"),
         step(1, record_id="redis-1"),
@@ -832,6 +839,14 @@ def test_ensure_section_steps_replaces_shuffled_selected_steps_with_ordered_snap
         "source-3",
         "source-4",
     ]
+    assert all(item["metadata"]["query_variants"] == [
+        {"text": "涨紧器 不灵活", "source": "component_fault", "target_id": ""},
+    ] for item in rebuilt)
+    assert all(item["metadata"]["local_rerank_features"] == {
+        "query_coverage": 0.8,
+        "title_coverage": 0.6,
+    } for item in rebuilt)
+    assert all(item["routes"] == ["keyword", "text_vector"] for item in rebuilt)
 
 
 if __name__ == "__main__":

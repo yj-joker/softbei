@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from services.retrieval.evidence import EvidenceLedger
+from services.retrieval.graph_manual_coverage import evaluate_graph_manual_coverage
 
 
 _PARAMETER_MARKERS = (
@@ -68,6 +69,8 @@ def fuse_evidence_support(
     query: str,
     evidence_bundle: Mapping[str, Any],
     ledger: EvidenceLedger,
+    *,
+    query_contract: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return a bundle whose support rows reference authorized ledger IDs."""
     fused = dict(evidence_bundle or {})
@@ -166,11 +169,15 @@ def fuse_evidence_support(
     # from the same document section supplies the actionable treatment.  This
     # binding is deliberately provenance- and action-gated so graph evidence
     # cannot authorize an unverified procedure by itself.
-    if _query_requests_manual_treatment(query) and not any(
+    structured_treatment_request = _contract_requests_manual_treatment(query_contract)
+    if (structured_treatment_request or _query_requests_manual_treatment(query)) and not any(
         str(row.get("aspect_id") or "") == "manual-treatment"
         for row in output_rows
     ):
-        manual_ids = _same_path_manual_treatment_ids(qualified, query)
+        manual_ids = _same_path_manual_treatment_ids(
+            qualified,
+            require_action_text=not structured_treatment_request,
+        )
         if manual_ids:
             output_rows.append({
                 "aspect_id": "manual-treatment",
@@ -193,6 +200,11 @@ def fuse_evidence_support(
         for row in output_rows
         if row.get("aspect_id") and row.get("supported")
     ]
+    fused["graph_manual_coverage"] = evaluate_graph_manual_coverage(
+        query=query,
+        graph_evidence=[entry for entry in qualified if entry.get("source_type") == "graph"],
+        manual_evidence=[entry for entry in qualified if entry.get("source_type") == "manual"],
+    ).to_dict()
     return fused
 
 
@@ -226,9 +238,15 @@ def _query_requests_manual_treatment(query: str) -> bool:
     ))
 
 
+def _contract_requests_manual_treatment(contract: Mapping[str, Any] | None) -> bool:
+    payload = contract if isinstance(contract, Mapping) else {}
+    return str(payload.get("task_action") or "").strip() == "repair_guidance"
+
+
 def _same_path_manual_treatment_ids(
     qualified: list[dict[str, Any]],
-    query: str,
+    *,
+    require_action_text: bool = True,
 ) -> list[str]:
     graph_entries = [entry for entry in qualified if entry.get("source_type") == "graph"]
     manual_entries = [entry for entry in qualified if entry.get("source_type") == "manual"]
@@ -238,7 +256,7 @@ def _same_path_manual_treatment_ids(
             manual.get("text"), manual.get("content"),
             (manual.get("source") or {}).get("section_title"),
         ))
-        if not any(marker in text for marker in _MANUAL_TREATMENT_MARKERS):
+        if require_action_text and not any(marker in text for marker in _MANUAL_TREATMENT_MARKERS):
             continue
         if not any(_manual_matches_graph_source(manual, graph) for graph in graph_entries):
             continue

@@ -12,6 +12,73 @@ from services.retrieval.device_identity import (
 )
 
 
+def test_resolve_chunk_refs_drops_unindexed_local_image_bindings() -> None:
+    resolved = KnowledgeService._resolve_chunk_refs(
+        {
+            "image_bindings": [
+                {
+                    "target_id": "sec:local:text:0000",
+                    "target_type": "step",
+                    "relation": "layout_anchor",
+                    "confidence": 0.95,
+                },
+                {
+                    "target_id": "sec:local:text:0001",
+                    "target_type": "text",
+                    "relation": "procedure_layout_member",
+                    "confidence": 0.75,
+                },
+            ],
+            "related_step_chunk_ids": ["sec:local:text:0000"],
+            "related_text_chunk_ids": [
+                "sec:local:text:0000",
+                "sec:local:text:0001",
+            ],
+            "procedure_scope_ids": ["proc:install"],
+            "binding_role": "positioned_step",
+            "binding_confidence": 0.95,
+        },
+        {"sec:local:text:0000": "doc:txt:0000"},
+    )
+
+    assert resolved["image_bindings"] == [{
+        "target_id": "doc:txt:0000",
+        "target_type": "step",
+        "relation": "layout_anchor",
+        "confidence": 0.95,
+    }]
+    assert resolved["related_step_chunk_ids"] == ["doc:txt:0000"]
+    assert resolved["related_text_chunk_ids"] == ["doc:txt:0000"]
+    assert resolved["binding_role"] == "positioned_step"
+    assert resolved["binding_confidence"] == 0.95
+
+
+def test_resolve_chunk_refs_demotes_image_when_every_binding_is_unindexed() -> None:
+    resolved = KnowledgeService._resolve_chunk_refs(
+        {
+            "image_bindings": [{
+                "target_id": "sec:local:text:0001",
+                "target_type": "step",
+                "relation": "layout_anchor",
+                "confidence": 0.95,
+            }],
+            "related_step_chunk_ids": ["sec:local:text:0001"],
+            "related_text_chunk_ids": ["sec:local:text:0001"],
+            "procedure_scope_ids": ["proc:install"],
+            "binding_role": "positioned_step",
+            "binding_confidence": 0.95,
+        },
+        {"sec:other:text:0000": "doc:txt:0000"},
+    )
+
+    assert resolved["image_bindings"] == []
+    assert resolved["related_step_chunk_ids"] == []
+    assert resolved["related_text_chunk_ids"] == []
+    assert resolved["procedure_scope_ids"] == []
+    assert resolved["binding_role"] == "page_fallback"
+    assert resolved["binding_confidence"] == 0.0
+
+
 class _IdentityLLM:
     def __init__(self, *, confidence: float = 0.94):
         self.confidence = confidence
@@ -78,6 +145,7 @@ class _ImportParser:
                             "text": "本手册说明设备总成的检查、拆卸和安装要求。",
                             "page": 1,
                             "chunk_label": "general",
+                            "bbox": [20, 40, 320, 80],
                         }
                     ],
                     "tables": [
@@ -92,6 +160,12 @@ class _ImportParser:
                             "page": 1,
                             "image_name": "assembly.png",
                             "caption": "设备总成结构图",
+                            "bbox": [20, 100, 320, 360],
+                            "caption_bbox": [20, 370, 320, 390],
+                            "caption_confidence": 0.9,
+                            "width": 800,
+                            "height": 600,
+                            "format": "png",
                         }
                     ],
                 }
@@ -374,6 +448,23 @@ def test_import_prefers_explicit_identity_and_propagates_it_to_every_index_recor
         assert metadata["model"] == "MODEL-A"
         assert metadata["identity_confidence"] == 0.98
         assert metadata["index_revision"] == 5
+
+    image_metadata = next(item for item in metadata_items if item["chunk_type"] == "image")
+    image_summary_metadata = next(
+        item for item in metadata_items if item["chunk_type"] == "image_summary"
+    )
+    assert image_metadata["bbox"] == [20.0, 100.0, 320.0, 360.0]
+    assert image_metadata["caption_bbox"] == [20.0, 370.0, 320.0, 390.0]
+    assert image_metadata["caption_confidence"] == 0.9
+    assert image_metadata["image_width"] == 800
+    assert image_metadata["image_height"] == 600
+    assert image_metadata["image_format"] == "png"
+    assert image_metadata["image_binding_schema_version"] == 2
+    assert image_metadata["image_bindings"] == image_summary_metadata["image_bindings"]
+    assert image_metadata["image_bindings"][0]["target_id"] in image_metadata["related_text_chunk_ids"]
+    assert image_metadata["image_bindings"][0]["target_id"] != "sec:00:general:0000"
+    assert manifest["image_binding_schema_version"] == 2
+    assert manifest["image_binding_relationship_count"] >= 1
 
 
 def test_import_extracts_identity_from_manual_title_and_opening_text() -> None:

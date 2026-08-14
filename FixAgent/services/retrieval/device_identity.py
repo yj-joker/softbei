@@ -11,7 +11,7 @@ import json
 import math
 import re
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, Mapping
 
 
@@ -141,6 +141,8 @@ class QueryContract:
     model: str = ""
     component: str = ""
     raw_component_span: str = ""
+    fault: str = ""
+    raw_fault_span: str = ""
     part_spec: str = ""
     assembly_context: str = ""
     action: str = ""
@@ -168,6 +170,13 @@ class QueryContract:
         raw_component_span = _text(data.get("raw_component_span"))
         if raw_component_span and raw_component_span.casefold() not in query.casefold():
             raw_component_span = ""
+        fault = _text(data.get("fault"))
+        raw_fault_span = _text(data.get("raw_fault_span"))
+        if not raw_fault_span and fault and fault.casefold() in query.casefold():
+            raw_fault_span = fault
+        if not raw_fault_span or raw_fault_span.casefold() not in query.casefold():
+            raw_fault_span = ""
+            fault = ""
         part_spec = _text(data.get("part_spec"))
         if part_spec and part_spec.casefold() not in query.casefold():
             part_spec = ""
@@ -212,10 +221,11 @@ class QueryContract:
             raw_span = ""
             for field in ("device_name", *_IDENTITY_FIELDS):
                 data[field] = ""
+        # ``catalog_exact`` is a server-issued capability, never a trusted
+        # caller/model field.  Server code signs a validated contract with
+        # dataclasses.replace() after matching it against the live catalog.
         identity_resolution = _text(data.get("identity_resolution"))
-        if identity_resolution not in {"confirmed_absent", "catalog_exact"} or (
-            raw_span and identity_resolution == "confirmed_absent"
-        ):
+        if identity_resolution != "confirmed_absent" or raw_span:
             identity_resolution = ""
         raw_targets = data.get("targets") if isinstance(data.get("targets"), (list, tuple)) else ()
         targets = tuple(
@@ -259,13 +269,15 @@ class QueryContract:
             intent=_text(data.get("intent")),
             task_action=_text(data.get("task_action")),
             raw_device_span=raw_span,
-            device_name=raw_span or _text(data.get("device_name")),
+            device_name=_text(data.get("device_name")) or raw_span,
             device_category=_text(data.get("device_category")),
             carrier_or_application=_text(data.get("carrier_or_application")),
             manufacturer=_text(data.get("manufacturer")),
             model=_text(data.get("model")),
             component=_text(data.get("component")) or (targets[0].component if targets else ""),
             raw_component_span=raw_component_span or (targets[0].raw_component_span if len(targets) == 1 else ""),
+            fault=fault or raw_fault_span,
+            raw_fault_span=raw_fault_span,
             part_spec=part_spec or (targets[0].part_spec if len(targets) == 1 else ""),
             assembly_context=_text(data.get("assembly_context")) or (
                 targets[0].assembly_context if len(targets) == 1 else ""
@@ -284,6 +296,13 @@ class QueryContract:
     def has_explicit_device(self) -> bool:
         return bool(self.raw_device_span)
 
+    @property
+    def effective_device_identity(self) -> str:
+        """Return the only device identity that may authorize retrieval."""
+        if self.identity_resolution == "catalog_exact" and self.device_name:
+            return self.device_name
+        return self.raw_device_span or self.device_name
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "raw_query": self.raw_query,
@@ -297,6 +316,8 @@ class QueryContract:
             "model": self.model,
             "component": self.component,
             "raw_component_span": self.raw_component_span,
+            "fault": self.fault,
+            "raw_fault_span": self.raw_fault_span,
             "part_spec": self.part_spec,
             "assembly_context": self.assembly_context,
             "action": self.action,
@@ -366,6 +387,22 @@ class IdentityComparison:
     matched_fields: tuple[str, ...] = ()
     reason: str = ""
 
+    @property
+    def status(self) -> str:
+        return self.relation
+
+
+@dataclass(frozen=True)
+class IdentityNormalizationResult:
+    contract: QueryContract
+    comparison: IdentityComparison | None = None
+    matched_document_id: str = ""
+    reason: str = ""
+
+    @property
+    def status(self) -> str:
+        return self.comparison.relation if self.comparison is not None else UNMATCHED
+
 
 class DeviceCatalog:
     def __init__(self, documents: Iterable[DocumentIdentity]) -> None:
@@ -422,17 +459,221 @@ def infer_query_identity_from_catalog(
         (name for matched_document, name in matches if matched_document.document_id == document.document_id),
         key=lambda value: len(_normalized(value)),
     )
-    payload = query.to_dict()
-    payload.update({
-        "raw_device_span": matched_name,
-        "device_name": document.device_name,
-        "device_category": document.device_category,
-        "carrier_or_application": document.carrier_or_application,
-        "manufacturer": document.manufacturer,
-        "model": document.model,
-        "identity_resolution": "catalog_exact",
-    })
-    return QueryContract.from_mapping(payload, raw_query=query.raw_query)
+    grounded = replace(query, raw_device_span=matched_name)
+    return _sign_catalog_identity(grounded, document)
+
+
+def normalize_query_identity(
+    query: QueryContract,
+    catalog: DeviceCatalog,
+) -> IdentityNormalizationResult:
+    """Validate a grounded device span and issue one canonical identity bundle.
+
+    Matching is derived exclusively from ready document manifests.  The raw
+    span remains an immutable audit field; only the canonical bundle is signed
+    for document and graph authorization.
+    """
+    if not query.has_explicit_device:
+        inferred = infer_query_identity_from_catalog(query, catalog)
+        if inferred is query:
+            return IdentityNormalizationResult(query, reason="query_device_not_explicit")
+        document = _signed_document(inferred, catalog)
+        comparison = compare_query_to_document(inferred, document) if document else None
+        return IdentityNormalizationResult(
+            inferred,
+            comparison,
+            document.document_id if document else "",
+            "catalog_identity_inferred" if document else "catalog_identity_unverified",
+        )
+
+    raw_span = _normalized(query.raw_device_span)
+    matches: list[tuple[DocumentIdentity, str, str]] = []
+    for document in catalog.documents:
+        for name in (document.device_name, *document.aliases):
+            normalized_name = _normalized(name)
+            if not normalized_name or not raw_span.startswith(normalized_name):
+                continue
+            remainder = raw_span[len(normalized_name):]
+            candidate_query = query
+            if not _composite_remainder_is_grounded(candidate_query, remainder):
+                candidate_query = _recover_composite_parent_component(
+                    candidate_query,
+                    matched_identity=name,
+                    normalized_remainder=remainder,
+                )
+                if candidate_query is query:
+                    continue
+            if _identity_conflicts_catalog(candidate_query, document, remainder):
+                continue
+            if not _composite_remainder_is_grounded(candidate_query, remainder):
+                continue
+            matches.append((document, name, remainder, candidate_query))
+            break
+
+    unique_documents = {item[0].document_id: item[0] for item in matches}
+    if len(unique_documents) != 1:
+        unsigned = replace(query, identity_resolution="")
+        comparison = _best_catalog_comparison(unsigned, catalog)
+        reason = "ambiguous_catalog_identity" if len(unique_documents) > 1 else "catalog_identity_unmatched"
+        return IdentityNormalizationResult(unsigned, comparison, reason=reason)
+
+    document = next(iter(unique_documents.values()))
+    matched_query = next(item[3] for item in matches if item[0].document_id == document.document_id)
+    signed = _sign_catalog_identity(matched_query, document)
+    comparison = compare_query_to_document(signed, document)
+    if comparison.relation != MATCHED:
+        return IdentityNormalizationResult(
+            replace(query, identity_resolution=""),
+            comparison,
+            reason="catalog_identity_not_distinguishing",
+        )
+    return IdentityNormalizationResult(
+        signed,
+        comparison,
+        document.document_id,
+        "catalog_identity_verified",
+    )
+
+
+def _sign_catalog_identity(
+    query: QueryContract,
+    document: DocumentIdentity,
+) -> QueryContract:
+    return replace(
+        query,
+        device_name=document.device_name,
+        device_category=document.device_category,
+        carrier_or_application=document.carrier_or_application,
+        manufacturer=document.manufacturer,
+        model=document.model,
+        identity_resolution="catalog_exact",
+    )
+
+
+def _signed_document(
+    query: QueryContract,
+    catalog: DeviceCatalog,
+) -> DocumentIdentity | None:
+    if query.identity_resolution != "catalog_exact":
+        return None
+    matches = [
+        document
+        for document in catalog.documents
+        if _normalized(document.device_name) == _normalized(query.device_name)
+    ]
+    return matches[0] if len(matches) == 1 else None
+
+
+def _identity_conflicts_catalog(
+    query: QueryContract,
+    document: DocumentIdentity,
+    normalized_remainder: str,
+) -> bool:
+    for field in ("manufacturer", "model"):
+        query_value = _normalized(getattr(query, field))
+        document_value = _normalized(getattr(document, field))
+        if query_value and document_value and query_value != document_value:
+            return True
+
+    carrier = _normalized(query.carrier_or_application)
+    document_carrier = _normalized(document.carrier_or_application)
+    if not carrier or carrier == document_carrier:
+        return False
+    # Common extraction errors put either the complete device span or the
+    # trailing assembly/component span in the carrier slot.  They are safe to
+    # replace because both values remain grounded in raw_device_span.
+    return carrier not in {
+        _normalized(document.device_name),
+        normalized_remainder.removeprefix("的"),
+    }
+
+
+def _composite_remainder_is_grounded(
+    query: QueryContract,
+    normalized_remainder: str,
+) -> bool:
+    remainder = normalized_remainder.removeprefix("的")
+    if not remainder:
+        return True
+    grounded_values = tuple(
+        value
+        for value in (
+            _normalized(query.raw_component_span),
+            _normalized(query.component),
+            _normalized(query.assembly_context),
+            _normalized(query.carrier_or_application),
+        )
+        if value
+    )
+    return any(
+        remainder == value
+        or remainder in value
+        or value in remainder
+        for value in grounded_values
+    )
+
+
+def _recover_composite_parent_component(
+    query: QueryContract,
+    *,
+    matched_identity: str,
+    normalized_remainder: str,
+) -> QueryContract:
+    """Recover a grounded assembly suffix when extraction selected a fault sub-part."""
+    remainder = normalized_remainder.removeprefix("的")
+    if not remainder or not query.raw_fault_span:
+        return query
+
+    raw_span = _text(query.raw_device_span)
+    identity = _text(matched_identity)
+    if not raw_span.startswith(identity):
+        return query
+    parent_component = raw_span[len(identity):].lstrip("的 /-—–·")
+    if _normalized(parent_component) != remainder:
+        return query
+
+    raw_query = _text(query.raw_query)
+    span_start = raw_query.find(raw_span)
+    if span_start < 0:
+        return query
+    tail = raw_query[span_start + len(raw_span):].lstrip()
+    if not re.match(r"^(?:出现|发生|存在|发现|呈现|有)[‘’“\"']?", tail):
+        return query
+
+    fault_context = _normalized(tail)
+    extracted_component = _normalized(query.raw_component_span or query.component)
+    if extracted_component and extracted_component not in fault_context:
+        return query
+
+    targets = tuple(
+        replace(
+            target,
+            raw_component_span=parent_component,
+            component=parent_component,
+        )
+        if _normalized(target.raw_component_span or target.component) == extracted_component
+        else target
+        for target in query.targets
+    )
+    return replace(
+        query,
+        component=parent_component,
+        raw_component_span=parent_component,
+        targets=targets,
+    )
+
+
+def _best_catalog_comparison(
+    query: QueryContract,
+    catalog: DeviceCatalog,
+) -> IdentityComparison | None:
+    comparisons = catalog.match(query)
+    if not comparisons:
+        return None
+    return min(
+        comparisons,
+        key=lambda item: ({MATCHED: 0, UNCERTAIN: 1, UNMATCHED: 2}.get(item.relation, 3), len(item.conflicts)),
+    )
 
 
 def reconcile_query_device_span(
@@ -443,42 +684,7 @@ def reconcile_query_device_span(
 
     只有剥离后的跨度增加了真实目录匹配数时才采用，因而不会形成静态设备白名单。
     """
-    device_span = _text(query.raw_device_span)
-    component_span = _text(query.raw_component_span or query.component)
-    if not device_span or not component_span:
-        return query
-    if not device_span.casefold().endswith(component_span.casefold()):
-        return query
-    prefix = device_span[: len(device_span) - len(component_span)].strip(" \t-_/、，,")
-    if not prefix or _normalized(prefix) == _normalized(device_span):
-        return query
-
-    original_document_ids = {
-        comparison.document.document_id
-        for comparison in catalog.match(query)
-        if comparison.relation == MATCHED
-    }
-    payload = query.to_dict()
-    payload["raw_device_span"] = prefix
-    payload["device_name"] = prefix
-    candidate = QueryContract.from_mapping(payload, raw_query=query.raw_query)
-    candidate_document_ids = {
-        comparison.document.document_id
-        for comparison in catalog.match(candidate)
-        if comparison.relation == MATCHED
-    }
-    prefix_is_imported_identity = any(
-        _normalized(prefix) in {
-            _normalized(document.device_name),
-            *(_normalized(alias) for alias in document.aliases),
-        }
-        for document in catalog.documents
-    )
-    return candidate if (
-        candidate_document_ids
-        and prefix_is_imported_identity
-        and candidate_document_ids.issuperset(original_document_ids)
-    ) else query
+    return normalize_query_identity(query, catalog).contract
 
 
 def document_identity_heads(document: DocumentIdentity) -> tuple[str, ...]:
@@ -587,7 +793,7 @@ def query_is_unqualified_document_head(
 
 
 def _query_device_name_candidates(query: QueryContract) -> tuple[str, ...]:
-    query_name = _normalized(query.device_name or query.raw_device_span)
+    query_name = _normalized(query.effective_device_identity)
     if not query_name:
         return ()
     candidates = [query_name]

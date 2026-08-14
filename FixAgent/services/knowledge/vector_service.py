@@ -6,8 +6,10 @@
 
 import json
 import logging
+import re
 import struct
 import time
+import unicodedata
 import redis
 from typing import List, Dict, Any, Optional
 from config.settings import get_settings
@@ -18,6 +20,8 @@ logger = logging.getLogger(__name__)
 
 
 _REDIS_TAG_ESCAPE_CHARS = set(r',.<>{}[]"\'`:;!@#$%^&*()-+=~|/ ')
+_REDISEARCH_TEXT_ESCAPE_CHARS = set(r',.<>{}[]"\'`:;!@#$%^&*()-+=~|/\\')
+_KEYWORD_BOUNDARY_RE = re.compile(r"[\s×·，。；：！？、,:;!?（）()\[\]{}<>\"'`/\\|+=~]+")
 
 
 def escape_redis_tag_value(value: Any) -> str:
@@ -28,6 +32,33 @@ def escape_redis_tag_value(value: Any) -> str:
             escaped.append("\\")
         escaped.append(char)
     return "".join(escaped)
+
+
+def _escape_redisearch_text_term(value: Any) -> str:
+    escaped: list[str] = []
+    for char in str(value or ""):
+        if char == "\\" or char in _REDISEARCH_TEXT_ESCAPE_CHARS:
+            escaped.append("\\")
+        escaped.append(char)
+    return "".join(escaped)
+
+
+def _build_keyword_query(query_text: Any) -> Optional[str]:
+    normalized = unicodedata.normalize("NFKC", str(query_text or "")).strip()
+    if not normalized:
+        return None
+    normalized = normalized.replace("-", " ")
+    terms: list[str] = []
+    for raw_term in _KEYWORD_BOUNDARY_RE.split(normalized):
+        term = raw_term.strip()
+        if not term:
+            continue
+        escaped = _escape_redisearch_text_term(term)
+        if escaped and escaped not in {"\\-", "-"}:
+            terms.append(escaped)
+    if not terms:
+        return None
+    return f"@text:({' '.join(terms)})"
 
 
 def build_redis_filter(
@@ -493,8 +524,9 @@ class VectorService:
         if not query_text.strip():
             return []
         try:
-            query_body = " ".join(part for part in query_text.replace("-", " ").split() if part)
-            text_query = f"@text:({query_body})"
+            text_query = _build_keyword_query(query_text)
+            if not text_query:
+                return []
             query = f"({filter}) {text_query}" if filter else text_query
             results = self.redis.execute_command(
                 "FT.SEARCH",

@@ -15,6 +15,7 @@ from services.retrieval.section_index import SectionRef
 from services.routing.models import RouteAction
 from services.routing.orchestrator import (
     SemanticRoutingOrchestrator,
+    _candidate_set_scope,
     _narrow_explicit_graph_candidates,
 )
 from services.routing.graph_candidate_provider import (
@@ -76,6 +77,52 @@ def test_graph_records_keep_stable_path_and_provenance() -> None:
     assert first.pages == (12,)
     assert first.distinguishing_features == ("冷机明显",)
     assert first.verification_actions == ("检查离合器间隙",)
+
+
+def test_same_device_document_and_version_candidates_form_union_scope() -> None:
+    records = [
+        {
+            **_records()[0],
+            "pathId": f"path-{suffix}",
+            "componentId": f"component-{suffix}",
+            "faultId": f"fault-{suffix}",
+            "documentId": "manual-a",
+            "documentVersion": "v3",
+            "deviceId": "engine-a",
+            "sourceChunkUid": f"chunk-{suffix}",
+        }
+        for suffix in ("one", "two")
+    ]
+
+    scope = _candidate_set_scope(build_graph_candidates(records))
+
+    assert scope["document_id"] == "manual-a"
+    assert scope["document_version"] == "v3"
+    assert scope["scope_mode"] == "candidate_set"
+    assert set(scope["allowed_path_ids"]) == {"path-one", "path-two"}
+    assert set(scope["allowed_component_ids"]) == {"component-one", "component-two"}
+    assert set(scope["allowed_fault_ids"]) == {"fault-one", "fault-two"}
+
+
+def test_candidate_set_scope_rejects_cross_device_or_version_candidates() -> None:
+    records = [
+        {
+            **_records()[0],
+            "pathId": "path-one",
+            "documentId": "manual-a",
+            "documentVersion": "v3",
+            "deviceId": "engine-a",
+        },
+        {
+            **_records()[0],
+            "pathId": "path-two",
+            "documentId": "manual-a",
+            "documentVersion": "v4",
+            "deviceId": "engine-b",
+        },
+    ]
+
+    assert _candidate_set_scope(build_graph_candidates(records)) == {}
 
 
 def test_graph_candidates_ask_for_observable_symptom_and_bind_exact_graph_scope() -> None:
@@ -366,6 +413,8 @@ def test_orchestrator_prioritizes_exact_fault_phrase_over_generic_symptom() -> N
         task_action="find_cause",
         component="compressor",
         raw_component_span="compressor",
+        fault="fuse and relay damaged",
+        raw_fault_span="fuse and relay damaged",
         symptoms=("damaged",),
     )
     records = [
@@ -674,6 +723,18 @@ def test_orchestrator_keeps_relation_question_with_two_targets_in_same_manual() 
             "intent": "fault_diagnosis",
             "task_action": "parameter_lookup",
             "symptoms": ["压缩压力低于最小值"],
+            "targets": [
+                {
+                    "target_id": "compression",
+                    "raw_component_span": "压缩压力",
+                    "component": "压缩压力",
+                },
+                {
+                    "target_id": "ring",
+                    "raw_component_span": "活塞环",
+                    "component": "活塞环",
+                },
+            ],
         },
         raw_query="压缩压力低于最小值时怎么判断是不是活塞环问题？",
     )
@@ -723,6 +784,7 @@ def test_orchestrator_keeps_relation_question_with_two_targets_in_same_manual() 
 
     assert plan.action == RouteAction.GROUNDED_RETRIEVAL
     assert set(plan.graph_scope["allowed_path_ids"]) == {"path-compression", "path-ring"}
+    assert plan.authorized_device_identity == "摩托车发动机"
     assert plan.clarification_options == ()
 
 
@@ -754,6 +816,35 @@ def test_graph_provider_uses_structured_contract_and_returns_normalized_candidat
     assert calls[0][1].endswith("/weixiu/path/candidates")
     assert calls[0][2]["json"]["queryContract"]["component"] == "离合器"
     assert calls[0][2]["json"]["allowedDocumentIds"] == []
+
+
+def test_graph_provider_keeps_confirmed_fault_procedure_in_graph_route() -> None:
+    calls: list[tuple[str, str, dict]] = []
+
+    async def request_json(method: str, url: str, **kwargs):
+        calls.append((method, url, kwargs))
+        return {"data": _records()[:1]}
+
+    provider = JavaGraphCandidateProvider(
+        base_url="http://java.test",
+        request_json=request_json,
+    )
+    contract = QueryContract.from_mapping(
+        {
+            "intent": "procedure_planning",
+            "task_action": "formal_procedure",
+            "component": "clutch",
+            "symptoms": ["bearing wear"],
+        },
+        raw_query="replace the worn clutch bearing",
+    )
+
+    result = asyncio.run(provider.fetch_result(contract))
+    candidates = result.candidates
+
+    assert candidates
+    assert len(calls) == 1
+    assert result.retrieval_status["status"] == "found"
 
 
 def test_graph_provider_forwards_resolved_graph_allow_lists() -> None:
@@ -903,11 +994,13 @@ def test_graph_candidate_timeout_is_unavailable_not_empty() -> None:
         raw_query="离合器异响是什么原因",
     )
 
-    candidates = asyncio.run(provider.fetch_candidates(contract))
+    result = asyncio.run(provider.fetch_result(contract))
+    candidates = result.candidates
 
     assert candidates == ()
-    assert provider.retrieval_status["status"] == "unavailable"
-    assert provider.retrieval_status["reason"] == "candidate_timeout"
+    assert result.retrieval_status["status"] == "unavailable"
+    assert result.retrieval_status["reason"] == "candidate_timeout"
+    assert result.error_code == "request_timeout"
 
 
 def test_parameter_lookup_is_not_applicable_and_skips_candidate_request() -> None:
@@ -926,11 +1019,12 @@ def test_parameter_lookup_is_not_applicable_and_skips_candidate_request() -> Non
         raw_query="离合器间隙是多少",
     )
 
-    candidates = asyncio.run(provider.fetch_candidates(contract))
+    result = asyncio.run(provider.fetch_result(contract))
+    candidates = result.candidates
 
     assert candidates == ()
     assert calls == []
-    assert provider.retrieval_status["status"] == "not_applicable"
+    assert result.retrieval_status["status"] == "not_applicable"
 
 
 def test_fault_diagnosis_contract_is_not_short_circuited_by_parameter_action() -> None:
@@ -954,11 +1048,12 @@ def test_fault_diagnosis_contract_is_not_short_circuited_by_parameter_action() -
         raw_query="low compression is it a piston ring fault",
     )
 
-    candidates = asyncio.run(provider.fetch_candidates(contract))
+    result = asyncio.run(provider.fetch_result(contract))
+    candidates = result.candidates
 
     assert candidates
     assert len(calls) == 1
-    assert provider.retrieval_status["status"] == "found"
+    assert result.retrieval_status["status"] == "found"
 
 
 def test_unscoped_graph_evidence_query_omits_empty_allow_lists() -> None:
@@ -1001,12 +1096,13 @@ def test_non_diagnostic_request_skips_graph_candidate_query() -> None:
         raw_query="安装火花塞时应该怎么预紧和拧紧？",
     )
 
-    candidates = asyncio.run(provider.fetch_candidates(contract))
+    result = asyncio.run(provider.fetch_result(contract))
+    candidates = result.candidates
 
     assert candidates == ()
     assert calls == []
-    assert provider.retrieval_status["status"] == "not_applicable"
-    assert provider.retrieval_status["reason"] == "non_diagnostic_request"
+    assert result.retrieval_status["status"] == "not_applicable"
+    assert result.retrieval_status["reason"] == "non_diagnostic_request"
 
 
 def test_default_candidate_timeout_covers_java_embedding_roundtrip() -> None:

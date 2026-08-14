@@ -25,6 +25,21 @@ GRAPH_RETRIEVAL_STATUSES = {
 
 
 @dataclass(frozen=True)
+class GraphAuthorizationContext:
+    """Independent facts allowed to authorize graph claims.
+
+    Candidate path/node IDs intentionally do not belong here because a graph
+    candidate cannot prove its own scope membership.
+    """
+
+    canonical_device_identity: str = ""
+    document_ids: tuple[str, ...] = ()
+    document_versions: tuple[str, ...] = ()
+    section_ids: tuple[str, ...] = ()
+    source_chunk_uids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class GraphEvidenceSource:
     document_id: str = ""
     document_version: str = ""
@@ -63,6 +78,8 @@ class GraphEvidence:
     claim_types: tuple[str, ...]
     supports_aspect_ids: tuple[str, ...]
     text: str
+    qualification_basis: str = ""
+    authorized_claim_types: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         result = asdict(self)
@@ -73,6 +90,7 @@ class GraphEvidence:
         result["rejection_reasons"] = list(self.rejection_reasons)
         result["quality_reasons"] = list(self.quality_reasons)
         result["claim_types"] = list(self.claim_types)
+        result["authorized_claim_types"] = list(self.authorized_claim_types)
         result["supports_aspect_ids"] = list(self.supports_aspect_ids)
         return result
 
@@ -97,6 +115,8 @@ class GraphEvidence:
             "source": self.source.to_dict(),
             "rejection_reasons": list(self.rejection_reasons),
             "claim_types": list(self.claim_types),
+            "authorized_claim_types": list(self.authorized_claim_types),
+            "qualification_basis": self.qualification_basis,
             "supports_aspect_ids": list(self.supports_aspect_ids),
         }
 
@@ -123,6 +143,7 @@ def normalize_graph_response(
     scope: Mapping[str, Any] | None = None,
     high_threshold: float = DEFAULT_HIGH_THRESHOLD,
     medium_threshold: float = DEFAULT_MEDIUM_THRESHOLD,
+    authorization_context: GraphAuthorizationContext | None = None,
 ) -> GraphEvidenceBatch:
     """Normalize a Java envelope or graph-tool result without broadening scope."""
     raw_payload = payload if isinstance(payload, Mapping) else {}
@@ -145,6 +166,7 @@ def normalize_graph_response(
                 scope or {},
                 high_threshold,
                 medium_threshold,
+                authorization_context,
             ))
 
     normalized = [
@@ -215,6 +237,7 @@ def _normalize_record(
     scope: Mapping[str, Any],
     high_threshold: float,
     medium_threshold: float,
+    authorization_context: GraphAuthorizationContext | None,
 ) -> list[GraphEvidence]:
     path_id = _text(record.get("pathId") or record.get("path_id"))
     node_ids = _text_tuple(record.get("nodeIds") or record.get("node_ids"))
@@ -245,30 +268,67 @@ def _normalize_record(
     confidence = quality.semantic_score
 
     rejected = _scope_rejections(path_id, device, component, fault, scope)
+    authorization_reasons = _authorization_reasons(
+        device=device,
+        source=source,
+        authorization_context=authorization_context,
+    )
     core_ids = (device["id"], component["id"], fault["id"])
     routing_reasons: list[str] = list(quality.reasons)
     if not path_id:
         rejected.append("missing_path_id")
-    elif all(core_ids) and path_id != f"kgpath:{device['id']}:{component['id']}:{fault['id']}":
+    elif all(core_ids) and not _path_identity_matches(path_id, node_ids, core_ids):
         rejected.append("path_identity_mismatch")
     if not all(core_ids) or not all((device["name"], component["name"], fault["name"])):
         routing_reasons.append("incomplete_core_identity")
-    if all(core_ids) and not set(core_ids).issubset(set(node_ids)):
+    stable_node_identity = _has_stable_node_identity(node_ids)
+    if all(core_ids) and not stable_node_identity and not set(core_ids).issubset(set(node_ids)):
         rejected.append("incomplete_node_identity")
     if not {"OWNS", "CAUSES"}.issubset(set(relationship_types)):
         rejected.append("missing_required_relationship")
+    if authorization_context is not None and authorization_reasons:
+        rejected.extend(authorization_reasons)
+    structural_exact = bool(
+        authorization_context is not None
+        and not authorization_reasons
+        and not rejected
+        and provenance_status == "complete"
+        and source.source_chunk_uids
+        and {"OWNS", "CAUSES"}.issubset(set(relationship_types))
+    )
     if rejected or quality.tier is GraphQualityTier.LOW:
         qualification = "rejected"
         quality_tier = GraphQualityTier.LOW.value
         reasons = tuple(dict.fromkeys(rejected + routing_reasons))
+        qualification_basis = "rejected"
+        authorized_claim_types: tuple[str, ...] = ()
     elif quality.tier is GraphQualityTier.MEDIUM:
-        qualification = "routing_only"
+        qualification = "qualified" if structural_exact else "routing_only"
         quality_tier = GraphQualityTier.MEDIUM.value
-        reasons = tuple(dict.fromkeys(routing_reasons))
+        reasons = tuple(dict.fromkeys(
+            routing_reasons
+            + ([] if authorization_context is not None else ["independent_authorization_missing"])
+        ))
+        qualification_basis = "structural_exact" if structural_exact else "routing_only"
+        authorized_claim_types = (
+            ("component_ownership", "fault_relation") if structural_exact else ()
+        )
     else:
         qualification = "qualified"
         quality_tier = GraphQualityTier.HIGH.value
         reasons = ()
+        qualification_basis = "semantic_high"
+        authorized_claim_types = (
+            "device_identity",
+            "component_ownership",
+            "fault_relation",
+        )
+
+    claim_types = (
+        ("component_ownership", "fault_relation")
+        if qualification_basis == "structural_exact"
+        else ("device_identity", "component_ownership", "fault_relation")
+    )
 
     rejected_identity = hashlib.sha256(
         "|".join((*core_ids, path_id)).encode("utf-8")
@@ -294,12 +354,14 @@ def _normalize_record(
         provenance_status=provenance_status,
         source=source,
         rejection_reasons=reasons,
-        claim_types=("device_identity", "component_ownership", "fault_relation"),
+        claim_types=claim_types,
         supports_aspect_ids=("device", "component", "fault-cause"),
         text=_path_text(device, component, fault),
+        qualification_basis=qualification_basis,
+        authorized_claim_types=authorized_claim_types,
     )
     output = [base]
-    if qualification != "qualified":
+    if qualification != "qualified" or qualification_basis != "semantic_high":
         return output
 
     if "HAS_SOLUTION" not in relationship_types:
@@ -334,8 +396,45 @@ def _normalize_record(
             claim_types=("verified_solution",),
             supports_aspect_ids=("treatment",),
             text=f"{_path_text(device, component, fault)} -> HAS_SOLUTION -> {_text(solution.get('title'))}",
+            qualification_basis="semantic_high",
+            authorized_claim_types=("verified_solution",),
         ))
     return output
+
+
+def _authorization_reasons(
+    *,
+    device: Mapping[str, str],
+    source: GraphEvidenceSource,
+    authorization_context: GraphAuthorizationContext | None,
+) -> list[str]:
+    if authorization_context is None:
+        return []
+    reasons: list[str] = []
+    canonical_device = _text(authorization_context.canonical_device_identity).casefold()
+    if not canonical_device:
+        reasons.append("authorization_device_missing")
+    elif _text(device.get("name")).casefold() != canonical_device:
+        reasons.append("authorization_device_mismatch")
+
+    allowed_documents = set(_text_tuple(authorization_context.document_ids))
+    if not allowed_documents:
+        reasons.append("authorization_document_missing")
+    elif source.document_id not in allowed_documents:
+        reasons.append("authorization_document_mismatch")
+
+    allowed_versions = set(_text_tuple(authorization_context.document_versions))
+    if allowed_versions and source.document_version not in allowed_versions:
+        reasons.append("authorization_document_version_mismatch")
+
+    allowed_sections = set(_text_tuple(authorization_context.section_ids))
+    if allowed_sections and source.section_id not in allowed_sections:
+        reasons.append("authorization_section_mismatch")
+
+    allowed_chunks = set(_text_tuple(authorization_context.source_chunk_uids))
+    if allowed_chunks and not allowed_chunks.intersection(source.source_chunk_uids):
+        reasons.append("authorization_source_anchor_mismatch")
+    return reasons
 
 
 def _scope_rejections(
@@ -387,6 +486,29 @@ def _path_text(
         f"{device.get('name') or device.get('id')} -> OWNS -> "
         f"{component.get('name') or component.get('id')} -> CAUSES -> "
         f"{fault.get('name') or fault.get('id')}"
+    )
+
+
+def _path_identity_matches(
+    path_id: str,
+    node_ids: tuple[str, ...],
+    core_ids: tuple[str, ...],
+) -> bool:
+    legacy = f"kgpath:{core_ids[0]}:{core_ids[1]}:{core_ids[2]}"
+    if path_id == legacy:
+        return True
+    if len(node_ids) != 3 or not all(node_ids):
+        return False
+    if not _has_stable_node_identity(node_ids):
+        return False
+    digest = hashlib.sha256("\x1f".join(node_ids).encode("utf-8")).hexdigest()
+    return path_id == f"kgpath:{digest}"
+
+
+def _has_stable_node_identity(node_ids: tuple[str, ...]) -> bool:
+    stable_types = ("kg:device:", "kg:component:", "kg:fault:")
+    return len(node_ids) == 3 and all(
+        value.startswith(prefix) for value, prefix in zip(node_ids, stable_types)
     )
 
 

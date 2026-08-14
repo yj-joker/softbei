@@ -5,6 +5,7 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -12,13 +13,28 @@ import httpx
 from config.settings import get_settings
 from services.clarification.graph_candidates import build_graph_candidates
 from services.retrieval.device_identity import QueryContract
-from services.retrieval.graph_evidence import GraphEvidenceBatch, normalize_graph_response
+from services.retrieval.graph_evidence import (
+    GraphAuthorizationContext,
+    GraphEvidenceBatch,
+    normalize_graph_response,
+)
 from services.retrieval.graph_quality import GraphQualityTier, evaluate_graph_path_quality
 
 logger = logging.getLogger(__name__)
 
 
 RequestJson = Callable[..., Any]
+
+
+@dataclass(frozen=True)
+class GraphCandidateFetchResult:
+    """One request's graph-candidate outcome with no shared mutable state."""
+
+    request_id: str
+    candidates: tuple[Any, ...]
+    retrieval_status: Mapping[str, Any]
+    error: str = ""
+    error_code: str = ""
 
 
 def filter_candidates_by_resolved_scope(
@@ -102,15 +118,8 @@ class JavaGraphCandidateProvider:
         self.high_quality_threshold = float(settings.graph_quality_high_threshold)
         self.medium_quality_threshold = float(settings.graph_quality_medium_threshold)
         self._request_json = request_json
-        self.last_error: str = ""
-        self.last_error_code: str = ""
-        self.retrieval_status: dict[str, Any] = {
-            "status": "empty",
-            "reason": "not_queried",
-            "diagnostics": {},
-        }
 
-    async def fetch_candidates(
+    async def fetch_result(
         self,
         contract: QueryContract,
         *,
@@ -126,33 +135,31 @@ class JavaGraphCandidateProvider:
         allowed_graph_node_ids: tuple[str, ...] = (),
         limit: int = 10,
         min_score: float = 0.70,
-    ) -> tuple:
+    ) -> GraphCandidateFetchResult:
         """Fetch graph paths relevant to a structured query contract."""
-        self.last_error = ""
-        self.last_error_code = ""
+        request_id = str(contract.raw_query or "")
         intent = contract.intent or (
             "fault_diagnosis" if contract.task_action == "find_cause" else ""
         )
+        structured_fault = bool(contract.component and contract.fault)
         # A diagnostic question can be phrased as a parameter lookup.  The
         # intent is authoritative; do not discard its graph route.
         if contract.task_action == "parameter_lookup" and intent != "fault_diagnosis":
-            self.retrieval_status = {
+            return GraphCandidateFetchResult(request_id, (), {
                 "status": "not_applicable",
                 "reason": "parameter_lookup",
                 "diagnostics": {"record_count": 0, "candidate_count": 0},
-            }
-            return ()
+            })
         if intent not in {
             "fault_diagnosis",
             "maintenance_guidance",
             "procedure_planning",
-        }:
-            self.retrieval_status = {
+        } and not structured_fault:
+            return GraphCandidateFetchResult(request_id, (), {
                 "status": "not_applicable",
                 "reason": "non_diagnostic_request",
                 "diagnostics": {"record_count": 0, "candidate_count": 0},
-            }
-            return ()
+            })
         source_chunks = tuple(dict.fromkeys(
             str(value).strip()
             for value in (*allowed_source_chunk_uids, *allowed_evidence_refs)
@@ -173,19 +180,20 @@ class JavaGraphCandidateProvider:
         }
         if image_urls:
             payload["imageUrls"] = list(image_urls)
-        response = await self._request("POST", "/weixiu/path/candidates", json=payload)
-        if self.last_error_code:
+        response, error, error_code = await self._request(
+            "POST", "/weixiu/path/candidates", json=payload
+        )
+        if error_code:
             reason = (
                 "candidate_timeout"
-                if self.last_error_code == "request_timeout"
+                if error_code == "request_timeout"
                 else "candidate_request_failed"
             )
-            self.retrieval_status = {
+            return GraphCandidateFetchResult(request_id, (), {
                 "status": "unavailable",
                 "reason": reason,
                 "diagnostics": {"record_count": 0, "candidate_count": 0},
-            }
-            return ()
+            }, error, error_code)
         data = response.get("data") if isinstance(response, Mapping) else None
         status_payload = data if isinstance(data, Mapping) else response
         response_status = self._retrieval_status(status_payload)
@@ -217,7 +225,7 @@ class JavaGraphCandidateProvider:
         status = response_status or ("found" if candidates else "empty")
         if records and not candidates:
             status = "filtered_out"
-        self.retrieval_status = {
+        retrieval_status = {
             "status": status,
             "reason": java_reason or ("" if status in {"found", "degraded"} else "no_matching_candidates"),
             "diagnostics": {
@@ -234,9 +242,30 @@ class JavaGraphCandidateProvider:
                 "low_quality_count": sum(
                     item.tier is GraphQualityTier.LOW for item in quality_decisions
                 ),
+                "record_quality": [
+                    {
+                        "path_id": str(record.get("pathId") or record.get("path_id") or ""),
+                        "tier": decision.tier.value,
+                        "semantic_score": decision.semantic_score,
+                        "reasons": list(decision.reasons),
+                    }
+                    for record, decision in zip(records, quality_decisions)
+                ],
             },
         }
-        return candidates
+        return GraphCandidateFetchResult(
+            request_id,
+            tuple(candidates),
+            retrieval_status,
+        )
+
+    async def fetch_candidates(
+        self,
+        contract: QueryContract,
+        **kwargs: Any,
+    ) -> tuple[Any, ...]:
+        """Compatibility wrapper for callers that only need candidates."""
+        return (await self.fetch_result(contract, **kwargs)).candidates
 
     @staticmethod
     def _text_list(values: Any) -> list[str]:
@@ -249,8 +278,11 @@ class JavaGraphCandidateProvider:
         return {
             "rawQuery": contract.raw_query,
             "intent": contract.intent,
-            "deviceIdentity": contract.raw_device_span or contract.device_name,
+            "deviceIdentity": contract.effective_device_identity,
             "component": contract.component,
+            "rawComponentSpan": contract.raw_component_span,
+            "fault": contract.fault,
+            "rawFaultSpan": contract.raw_fault_span,
             "partSpec": contract.part_spec,
             "symptoms": list(contract.symptoms),
             "operatingConditions": list(contract.operating_conditions),
@@ -270,7 +302,7 @@ class JavaGraphCandidateProvider:
     ) -> list[dict[str, Any]]:
         if not str(component_description or "").strip():
             return []
-        payload = await self._request(
+        payload, _error, _error_code = await self._request(
             "GET",
             "/weixiu/path/reverse-device",
             params={
@@ -322,7 +354,9 @@ class JavaGraphCandidateProvider:
             if normalized:
                 body[key] = normalized
 
-        payload = await self._request("POST", "/weixiu/path/search", json=body)
+        payload, _error, _error_code = await self._request(
+            "POST", "/weixiu/path/search", json=body
+        )
         data = payload.get("data") if isinstance(payload, Mapping) else None
         if isinstance(data, Mapping):
             data = data.get("records") or data.get("paths") or ()
@@ -341,10 +375,9 @@ class JavaGraphCandidateProvider:
         allowed_component_ids: list[str] | tuple[str, ...] = (),
         allowed_fault_ids: list[str] | tuple[str, ...] = (),
         allowed_path_ids: list[str] | tuple[str, ...] = (),
+        authorization_context: GraphAuthorizationContext | None = None,
     ) -> GraphEvidenceBatch:
         """Retrieve and normalize path evidence under a server-owned scope."""
-        self.last_error = ""
-        self.last_error_code = ""
         body: dict[str, Any] = {
             "page": 0,
             "size": max(1, int(limit)),
@@ -372,11 +405,13 @@ class JavaGraphCandidateProvider:
         if image_urls:
             body["imageUrls"] = list(image_urls)
 
-        payload = await self._request("POST", "/weixiu/path/search", json=body)
-        if self.last_error_code:
+        payload, error, error_code = await self._request(
+            "POST", "/weixiu/path/search", json=body
+        )
+        if error_code:
             reason = (
                 "graph_path_timeout"
-                if self.last_error_code == "request_timeout"
+                if error_code == "request_timeout"
                 else "graph_path_request_failed"
             )
             return normalize_graph_response({
@@ -409,9 +444,15 @@ class JavaGraphCandidateProvider:
             scope=scope,
             high_threshold=self.high_quality_threshold,
             medium_threshold=self.medium_quality_threshold,
+            authorization_context=authorization_context,
         )
 
-    async def _request(self, method: str, path: str, **kwargs: Any) -> Mapping[str, Any]:
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> tuple[Mapping[str, Any], str, str]:
         url = f"{self.base_url}{path}"
         headers = dict(kwargs.pop("headers", {}) or {})
         if self.internal_token:
@@ -422,21 +463,20 @@ class JavaGraphCandidateProvider:
                 result = self._request_json(method, url, **kwargs)
                 if inspect.isawaitable(result):
                     result = await result
-                return result if isinstance(result, Mapping) else {}
+                return (result if isinstance(result, Mapping) else {}), "", ""
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
                 response = await client.request(method, url, **kwargs)
                 response.raise_for_status()
                 result = response.json()
-                return result if isinstance(result, Mapping) else {}
+                return (result if isinstance(result, Mapping) else {}), "", ""
         except Exception as exc:
-            self.last_error = str(exc)
-            self.last_error_code = (
+            error_code = (
                 "request_timeout"
                 if isinstance(exc, (TimeoutError, httpx.TimeoutException))
                 else "request_failed"
             )
             logger.info("[graph-routing] candidate query unavailable: %s", exc)
-            return {}
+            return {}, str(exc), error_code
 
     @staticmethod
     def _retrieval_status(payload: Any) -> str:
@@ -462,14 +502,13 @@ class JavaGraphCandidateProvider:
         return " ".join(dict.fromkeys(str(value).strip() for value in values if str(value).strip()))
 
 
-_provider: JavaGraphCandidateProvider | None = None
-
-
 def get_graph_candidate_provider() -> JavaGraphCandidateProvider:
-    global _provider
-    if _provider is None:
-        _provider = JavaGraphCandidateProvider()
-    return _provider
+    """Create a provider per request so mutable diagnostics cannot leak across tasks."""
+    return JavaGraphCandidateProvider()
 
 
-__all__ = ["JavaGraphCandidateProvider", "get_graph_candidate_provider"]
+__all__ = [
+    "GraphCandidateFetchResult",
+    "JavaGraphCandidateProvider",
+    "get_graph_candidate_provider",
+]

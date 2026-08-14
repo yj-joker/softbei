@@ -49,12 +49,14 @@ class RoutePlan:
     answer_source: str
     allow_ai_fallback: bool
     reason: str
+    authorized_device_identity: str = ""
     clarification_options: tuple[dict[str, Any], ...] = ()
     clarification_kind: str = ""
     clarification_question: str = ""
     selected_section_id: str = ""
     graph_scope: dict[str, Any] = field(default_factory=dict)
     selected_graph_candidate_id: str = ""
+    graph_policy: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "RoutePlan":
@@ -74,6 +76,7 @@ class RoutePlan:
             answer_source=str(payload.get("answer_source") or ""),
             allow_ai_fallback=bool(payload.get("allow_ai_fallback")),
             reason=str(payload.get("reason") or ""),
+            authorized_device_identity=str(payload.get("authorized_device_identity") or ""),
             clarification_options=tuple(
                 dict(item) for item in payload.get("clarification_options") or ()
                 if isinstance(item, dict)
@@ -85,6 +88,9 @@ class RoutePlan:
             if isinstance(payload.get("graph_scope"), dict)
             else {},
             selected_graph_candidate_id=str(payload.get("selected_graph_candidate_id") or ""),
+            graph_policy=dict(payload.get("graph_policy") or {})
+            if isinstance(payload.get("graph_policy"), dict)
+            else {},
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -95,4 +101,5 @@ class RoutePlan:
         data["allowed_tools"] = list(self.allowed_tools)
         data["clarification_options"] = [dict(item) for item in self.clarification_options]
         data["graph_scope"] = dict(self.graph_scope)
+        data["graph_policy"] = dict(self.graph_policy)
         return data

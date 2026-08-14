@@ -92,3 +92,40 @@ def test_symptom_driven_repair_guidance_enables_diagnostic_graph():
     assert decision.pre_retrieval_enabled is True
     assert decision.may_enter_evidence is True
     assert decision.reason == "diagnostic_graph_enabled"
+
+
+def test_confirmed_fault_procedure_planning_enables_graph():
+    decision = decide_graph_use(
+        "graph_full",
+        {
+            "intent": "procedure_planning",
+            "task_action": "formal_procedure",
+            "component": "transmission",
+            "symptoms": ["bearing wear"],
+            "requested_fields": ["repair steps"],
+        },
+    )
+
+    assert decision.candidate_enabled is True
+    assert decision.pre_retrieval_enabled is True
+    assert decision.may_enter_evidence is True
+    assert decision.reason == "diagnostic_graph_enabled"
+
+
+def test_structured_component_and_fault_enable_graph_without_action_enumeration():
+    decision = decide_graph_use(
+        "graph_full",
+        {
+            "intent": "knowledge_query",
+            "task_action": "document_explain",
+            "component": "油泵座垫",
+            "raw_component_span": "油泵座垫",
+            "fault": "变形",
+            "raw_fault_span": "变形",
+        },
+    )
+
+    assert decision.candidate_enabled is True
+    assert decision.pre_retrieval_enabled is True
+    assert decision.may_enter_evidence is True
+    assert decision.reason == "structured_fault_graph_enabled"

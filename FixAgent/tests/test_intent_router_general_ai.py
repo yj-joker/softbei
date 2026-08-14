@@ -160,6 +160,35 @@ class _RepairBiasedCauseLLM:
         }
 
 
+class _UnavailableLLM:
+    async def chat(self, messages, **kwargs):
+        raise RuntimeError("intent model unavailable")
+
+
+class _EmptyRelationshipContractLLM:
+    async def chat(self, messages, **kwargs):
+        return {
+            "content": json.dumps(
+                {
+                    "target_layer": "document_content",
+                    "target_object": "",
+                    "user_goal": "",
+                    "intent": "knowledge_query",
+                    "task_action": "general_answer",
+                    "confidence": 0.99,
+                    "raw_device_span": "",
+                    "device_name": "",
+                    "component": "",
+                    "raw_component_span": "",
+                    "fault": "",
+                    "raw_fault_span": "",
+                    "symptoms": [],
+                },
+                ensure_ascii=False,
+            )
+        }
+
+
 def test_general_knowledge_overrides_llm_maintenance_bias() -> None:
     decision = asyncio.run(
         IntentRouter(_MaintenanceBiasedLLM()).classify("给我讲讲高等数学中级数的概念")
@@ -258,3 +287,54 @@ def test_ungrounded_device_span_from_model_is_discarded() -> None:
     assert decision.raw_device_span == ""
     assert decision.device_category == ""
     assert decision.carrier_or_application == ""
+
+
+def test_relationship_lookup_recovers_quoted_fault_when_intent_model_is_unavailable() -> None:
+    decision = asyncio.run(
+        IntentRouter(_UnavailableLLM()).classify(
+            "已确认故障为“拨叉损坏”，请沿故障关系定位所属部件，并结合手册说明应采取的处理措施。"
+        )
+    )
+
+    assert decision.intent == "fault_diagnosis"
+    assert decision.target_layer == "document_content"
+    assert decision.task_action == "find_cause"
+    assert decision.fault == "拨叉损坏"
+    assert decision.raw_fault_span == "拨叉损坏"
+    assert decision.symptoms == ["拨叉损坏"]
+    assert decision.component == "拨叉"
+    assert decision.raw_component_span == "拨叉"
+    assert decision.raw_device_span == ""
+    assert decision.device_name == ""
+
+
+def test_relationship_lookup_repairs_high_confidence_but_empty_llm_contract() -> None:
+    decision = asyncio.run(
+        IntentRouter(_EmptyRelationshipContractLLM()).classify(
+            '维修判断中发现"火花塞损坏"时，它对应设备的哪个部件？'
+        )
+    )
+
+    assert decision.intent == "fault_diagnosis"
+    assert decision.target_layer == "document_content"
+    assert decision.task_action == "find_cause"
+    assert decision.fault == "火花塞损坏"
+    assert decision.raw_fault_span == "火花塞损坏"
+    assert decision.symptoms == ["火花塞损坏"]
+    assert decision.component == "火花塞"
+    assert decision.raw_component_span == "火花塞"
+    assert decision.raw_device_span == ""
+    assert decision.device_name == ""
+
+
+def test_relationship_lookup_splits_component_from_unsmooth_state() -> None:
+    decision = asyncio.run(
+        IntentRouter(_UnavailableLLM()).classify(
+            "已确认故障为“离合器动作不顺畅”，请沿故障关系定位所属部件。"
+        )
+    )
+
+    assert decision.fault == "离合器动作不顺畅"
+    assert decision.raw_fault_span == "离合器动作不顺畅"
+    assert decision.component == "离合器"
+    assert decision.raw_component_span == "离合器"

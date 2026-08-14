@@ -58,13 +58,36 @@ def decide_graph_use(
         and isinstance(symptoms, (list, tuple, set, frozenset))
         and any(str(item or "").strip() for item in symptoms)
     )
-    applicable = diagnostic_intent or action in _DIAGNOSTIC_ACTIONS or symptom_driven_repair
+    confirmed_fault_procedure = bool(
+        intent == "procedure_planning"
+        and action == "formal_procedure"
+        and str(payload.get("component") or "").strip()
+        and isinstance(symptoms, (list, tuple, set, frozenset))
+        and any(str(item or "").strip() for item in symptoms)
+    )
+    structured_fault = bool(
+        str(payload.get("component") or payload.get("raw_component_span") or "").strip()
+        and str(payload.get("fault") or payload.get("raw_fault_span") or "").strip()
+    )
+    applicable = bool(
+        diagnostic_intent
+        or action in _DIAGNOSTIC_ACTIONS
+        or symptom_driven_repair
+        or confirmed_fault_procedure
+        or structured_fault
+    )
     if not applicable:
         return GraphUseDecision(False, False, False, False, False, (), "non_diagnostic_request")
     if variant == "graph_shadow":
         return GraphUseDecision(True, True, False, False, False, _GRAPH_CLAIMS, "shadow_audit_only")
     if variant in _FULL_ALIASES:
-        return GraphUseDecision(True, True, True, True, True, _GRAPH_CLAIMS, "diagnostic_graph_enabled")
+        reason = "structured_fault_graph_enabled" if structured_fault and not (
+            diagnostic_intent
+            or action in _DIAGNOSTIC_ACTIONS
+            or symptom_driven_repair
+            or confirmed_fault_procedure
+        ) else "diagnostic_graph_enabled"
+        return GraphUseDecision(True, True, True, True, True, _GRAPH_CLAIMS, reason)
     return GraphUseDecision(False, False, False, False, False, (), "unknown_variant")
 
 

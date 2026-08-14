@@ -10,6 +10,10 @@ from api import main as api_main
 from config import settings as settings_module
 from guardrails.review_agent import _GraphCheck
 from tools.base_tool import ToolResult
+from tools.knowledge_retrieval_tool import (
+    KnowledgeRetrievalTool,
+    merge_additive_manual_results,
+)
 import asyncio
 
 
@@ -33,6 +37,135 @@ def _agent_with_named_tools() -> FixAgent:
         _tool("delete_memory"),
     ]
     return agent
+
+
+def _manual_record(evidence_id: str, *, content: str = "", **metadata) -> dict:
+    return {
+        "id": evidence_id,
+        "content": content or evidence_id,
+        "metadata": {
+            "evidence_id": evidence_id,
+            "qualification": "qualified",
+            "document_id": "manual-1",
+            **metadata,
+        },
+    }
+
+
+def test_additive_manual_merge_preserves_baseline_and_appends_unique_seed() -> None:
+    baseline = [_manual_record("base-1"), _manual_record("shared")]
+    seed = [_manual_record("shared"), _manual_record("seed-1")]
+
+    merged = merge_additive_manual_results(baseline, seed)
+
+    assert [item["id"] for item in merged] == ["base-1", "shared", "seed-1"]
+    assert {item["id"] for item in baseline}.issubset({item["id"] for item in merged})
+
+
+def test_additive_manual_merge_keeps_the_more_complete_duplicate_source() -> None:
+    baseline = [_manual_record("shared", content="short")]
+    seed = [_manual_record(
+        "shared",
+        content="complete source text",
+        document_version="v3",
+        chunk_uid="chunk-7",
+        parent_section_id="section-2",
+        page=12,
+    )]
+
+    merged = merge_additive_manual_results(baseline, seed)
+
+    assert len(merged) == 1
+    assert merged[0]["content"] == "complete source text"
+    assert merged[0]["metadata"]["chunk_uid"] == "chunk-7"
+
+
+def test_graph_seed_failure_returns_byte_equivalent_baseline_result() -> None:
+    baseline = [_manual_record("base-1"), _manual_record("base-2")]
+
+    class _Tool(KnowledgeRetrievalTool):
+        async def _execute(self, **kwargs):
+            if kwargs.get("allowed_source_chunk_uids"):
+                raise RuntimeError("graph seed timeout")
+            return baseline
+
+    result = asyncio.run(_Tool().run(
+        query="fault",
+        document_id="manual-1",
+        _graph_seed_scope={
+            "server_authoritative": True,
+            "document_id": "manual-1",
+            "allowed_source_chunk_uids": ["chunk-graph"],
+        },
+    ))
+
+    assert result.success is True
+    assert result.data == baseline
+
+
+def test_graph_seed_success_adds_evidence_without_removing_baseline() -> None:
+    baseline = [_manual_record("base-1")]
+    seed = [_manual_record("seed-1")]
+
+    class _Tool(KnowledgeRetrievalTool):
+        async def _execute(self, **kwargs):
+            return seed if kwargs.get("allowed_source_chunk_uids") else baseline
+
+    result = asyncio.run(_Tool().run(
+        query="fault",
+        document_id="manual-1",
+        _graph_seed_scope={
+            "server_authoritative": True,
+            "document_id": "manual-1",
+            "allowed_source_chunk_uids": ["chunk-graph"],
+        },
+    ))
+
+    assert result.success is True
+    assert [item["id"] for item in result.data] == ["base-1", "seed-1"]
+
+
+def test_graph_seed_emits_one_merged_retrieval_stage_trace() -> None:
+    events = []
+
+    class _Tool(KnowledgeRetrievalTool):
+        async def _execute(self, **kwargs):
+            is_seed = bool(kwargs.get("allowed_source_chunk_uids"))
+            prefix = "seed" if is_seed else "base"
+            await kwargs["_event_sink"]({
+                "event": "retrieval_stage",
+                "data": {
+                    "candidate_ids": [f"sec:{prefix}-candidate"],
+                    "filtered_ids": [f"sec:{prefix}-filtered"],
+                    "reranked_ids": [f"sec:{prefix}-reranked"],
+                    "selected_ids": [f"sec:{prefix}-selected"],
+                    "expanded_ids": [f"sec:{prefix}-expanded"],
+                    "visible_ids": [f"sec:{prefix}-visible"],
+                },
+            })
+            return [_manual_record(f"{prefix}-visible", parent_section_id=f"sec:{prefix}-visible")]
+
+    async def sink(payload):
+        events.append(payload)
+
+    result = asyncio.run(_Tool().run(
+        query="fault",
+        document_id="manual-1",
+        _event_sink=sink,
+        _graph_seed_scope={
+            "server_authoritative": True,
+            "document_id": "manual-1",
+            "allowed_source_chunk_uids": ["chunk-graph"],
+        },
+    ))
+
+    stage_events = [event for event in events if event.get("event") == "retrieval_stage"]
+    assert result.success is True
+    assert len(stage_events) == 1
+    assert stage_events[0]["data"]["visible_ids"] == [
+        "sec:base-visible",
+        "sec:seed-visible",
+    ]
 
 
 def test_normalize_rag_variant_defaults_to_production_and_accepts_experiment_modes() -> None:
@@ -275,7 +408,22 @@ def test_build_run_context_preserves_server_graph_pre_retrieval() -> None:
     assert context.graph_pre_retrieval["evidence"][0]["path_id"].startswith("kgpath:")
 
 
-def test_pre_retrieved_graph_is_prompted_and_duplicate_path_tool_is_hidden() -> None:
+def test_build_run_context_preserves_query_contract_for_internal_retrieval() -> None:
+    agent = _agent_with_named_tools()
+    input_data = AgentInput(
+        user_message="火花塞损坏如何处理",
+        session_id="query-contract-test",
+        context={"query_contract": {"component": "火花塞", "fault": "火花塞损坏"}},
+    )
+
+    context = agent.build_run_context(input_data)
+    kwargs = agent._customize_tool_kwargs_for_run("knowledge_retrieval", {"query": "处理"}, context)
+
+    assert context.query_contract["component"] == "火花塞"
+    assert kwargs["_query_contract"] == context.query_contract
+
+
+def test_pre_retrieved_graph_is_reserved_for_additive_assembly_and_path_tool_is_hidden() -> None:
     agent = _agent_with_named_tools()
     context = AgentRunContext(
         experiment_tool_profile="rag_kg",
@@ -285,8 +433,9 @@ def test_pre_retrieved_graph_is_prompted_and_duplicate_path_tool_is_hidden() -> 
     prompt = agent.get_system_prompt_for_run(context)
     tool_names = [tool.name for tool in agent.get_tools_for_run(context)]
 
-    assert "服务器预检索图谱证据" in prompt
-    assert "kgpath:device-1:component-1:fault-1" in prompt
+    assert "图谱增量装配" in prompt
+    assert "只生成普通 RAG 手册基础答案" in prompt
+    assert "kgpath:device-1:component-1:fault-1" not in prompt
     assert tool_names == ["knowledge_retrieval"]
     assert "不要再次调用图谱工具" in prompt
     assert "java_graph_diagnosis_path" not in prompt

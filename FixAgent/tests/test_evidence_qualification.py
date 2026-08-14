@@ -8,6 +8,7 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from services.retrieval.qualification import _detect_conflicts, qualify_candidates
+from services.retrieval.evidence import EvidenceLedger
 
 
 def _candidate(*, device_type="truck", document_id="truck-manual", content="大卡车 轮胎 更换", **metadata):
@@ -88,6 +89,58 @@ def test_server_locked_manual_section_can_qualify_overloaded_diagnostic_query() 
 
     assert bundle["overall_status"] == "qualified"
     assert bundle["qualified_evidence"][0]["metadata"]["qualification"] == "qualified"
+
+
+def test_query_grounded_variant_can_confirm_topic_for_chinese_maintenance_sentence() -> None:
+    candidate = _candidate(
+        device_type="摩托车发动机",
+        document_id="manual-1",
+        content="检查火花塞螺纹以及中心电极处，若有损坏或变形，则应更换火花塞。",
+        section_title="1.2 检查火花塞",
+        query_variants=[{
+            "text": "火花塞 火花塞损坏",
+            "source": "component_fault",
+            "target_id": "",
+        }],
+        local_rerank_features={"query_coverage": 0.0, "title_coverage": 0.0},
+    )
+
+    bundle = qualify_candidates(
+        "摩托车发动机的火花塞出现火花塞损坏时应如何处理",
+        [candidate],
+        device_type="摩托车发动机",
+        document_id="manual-1",
+        requires_strict_evidence=True,
+    )
+
+    assert bundle["overall_status"] == "qualified"
+    assert bundle["qualified_evidence"][0]["metadata"]["topic_match"] == "matched"
+
+
+def test_query_variant_outside_original_query_cannot_promote_candidate() -> None:
+    candidate = _candidate(
+        device_type="摩托车发动机",
+        document_id="manual-1",
+        content="检查火花塞，若有损坏或变形，则应更换火花塞。",
+        section_title="1.2 检查火花塞",
+        query_variants=[{
+            "text": "离合器打滑 更换离合器",
+            "source": "component_fault",
+            "target_id": "",
+        }],
+        local_rerank_features={"query_coverage": 0.0, "title_coverage": 0.0},
+    )
+
+    bundle = qualify_candidates(
+        "摩托车发动机无法起动时应如何处理",
+        [candidate],
+        device_type="摩托车发动机",
+        document_id="manual-1",
+        requires_strict_evidence=True,
+    )
+
+    assert bundle["overall_status"] != "qualified"
+    assert bundle["qualified_evidence"] == []
 
 
 def _torque_evidence(evidence_id: str, *, seq: str, quantity: str, torque: str) -> dict:
@@ -199,3 +252,57 @@ def test_multiple_values_from_one_evidence_record_are_not_cross_source_conflict(
     ])
 
     assert conflicts == []
+
+
+def _normalized_medium_graph_trace(*, qualification_basis: str) -> dict:
+    qualification = "qualified" if qualification_basis == "structural_exact" else "routing_only"
+    authorized = ["component_ownership", "fault_relation"] if qualification == "qualified" else []
+    return {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "java_graph_diagnosis_path",
+                "result_data": {
+                    "status": "found",
+                    "evidence": [{
+                        "evidence_id": "graph:kgpath:engine:transmission:fork:none",
+                        "source_type": "graph",
+                        "qualification": qualification,
+                        "qualification_basis": qualification_basis,
+                        "quality_tier": "medium",
+                        "provenance_status": "complete",
+                        "relationship_types": ["OWNS", "CAUSES"],
+                        "authorized_claim_types": authorized,
+                        "claim_types": ["component_ownership", "fault_relation"],
+                        "device": {"id": "engine", "name": "摩托车发动机"},
+                        "component": {"id": "transmission", "name": "传动装置"},
+                        "fault": {"id": "fork", "name": "拨叉损坏"},
+                        "solution": {},
+                        "source": {
+                            "document_id": "manual-engine",
+                            "document_version": "v1",
+                            "section_id": "sec-transmission",
+                            "source_chunk_uids": ["chunk-fork"],
+                        },
+                    }],
+                },
+            }],
+        }],
+    }
+
+
+def test_ledger_accepts_server_authorized_structural_exact_graph_evidence() -> None:
+    ledger = EvidenceLedger.from_react_trace(
+        _normalized_medium_graph_trace(qualification_basis="structural_exact")
+    )
+
+    assert [entry["evidence_id"] for entry in ledger.entries] == [
+        "graph:kgpath:engine:transmission:fork:none"
+    ]
+
+
+def test_ledger_rejects_unqualified_medium_graph_evidence() -> None:
+    ledger = EvidenceLedger.from_react_trace(
+        _normalized_medium_graph_trace(qualification_basis="routing_only")
+    )
+
+    assert ledger.entries == []

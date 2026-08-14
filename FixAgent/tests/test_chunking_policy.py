@@ -105,7 +105,7 @@ def test_continued_table_preserves_structured_row_source_pages_across_three_page
     assert all("table_full" not in chunk["metadata"] for chunk in rows)
 
 
-def test_image_chunks_bind_only_steps_from_the_same_source_page() -> None:
+def test_images_without_coordinates_do_not_receive_page_level_step_bindings() -> None:
     chunks = build_section_index_chunks(
         {
             "section_title": "5.4 安装气缸与活塞",
@@ -133,17 +133,17 @@ def test_image_chunks_bind_only_steps_from_the_same_source_page() -> None:
         if chunk["chunk_label"] == "image"
     }
 
-    assert images[19]["metadata"]["related_step_chunk_ids"] == [steps_by_page[19]]
-    assert images[20]["metadata"]["related_step_chunk_ids"] == [steps_by_page[20]]
-    assert images[19]["metadata"]["binding_confidence"] == 1.0
-    assert images[20]["metadata"]["binding_confidence"] == 1.0
+    assert images[19]["metadata"]["related_step_chunk_ids"] == []
+    assert images[20]["metadata"]["related_step_chunk_ids"] == []
+    assert images[19]["metadata"]["binding_confidence"] == 0.0
+    assert images[20]["metadata"]["binding_confidence"] == 0.0
     assert "活塞与气缸必须使用相同组别" not in images[19]["metadata"]["visual_context_text"]
     assert "安装全新的箱体缸体垫片" not in images[20]["metadata"]["visual_context_text"]
-    assert images[19]["metadata"]["related_text_chunk_ids"] == [steps_by_page[19]]
-    assert images[20]["metadata"]["related_text_chunk_ids"] == [steps_by_page[20]]
+    assert images[19]["metadata"]["related_text_chunk_ids"] == []
+    assert images[20]["metadata"]["related_text_chunk_ids"] == []
 
 
-def test_image_chunks_carry_same_page_procedure_scope_ids() -> None:
+def test_images_without_coordinates_do_not_inherit_page_procedure_scopes() -> None:
     chunks = build_section_index_chunks(
         {
             "section_title": "6.4 右曲轴箱盖与离合器",
@@ -181,5 +181,137 @@ def test_image_chunks_carry_same_page_procedure_scope_ids() -> None:
         if chunk["chunk_label"] == "image"
     }
 
-    assert images[26]["metadata"]["procedure_scope_ids"] == [scopes_by_page[26]]
-    assert images[27]["metadata"]["procedure_scope_ids"] == [scopes_by_page[27]]
+    assert images[26]["metadata"]["procedure_scope_ids"] == []
+    assert images[27]["metadata"]["procedure_scope_ids"] == []
+
+
+def test_same_page_images_bind_to_their_nearest_positioned_step_only() -> None:
+    chunks = build_section_index_chunks(
+        {
+            "section_title": "5.3 Cylinder and piston inspection",
+            "text_chunks": [
+                {
+                    "text": "1. Inspect the cylinder wall for scoring.",
+                    "page": 18,
+                    "chunk_label": "step",
+                    "bbox": [40, 120, 330, 150],
+                },
+                {
+                    "text": "2. Inspect the piston skirt for wear.",
+                    "page": 18,
+                    "chunk_label": "step",
+                    "bbox": [40, 420, 330, 450],
+                },
+            ],
+            "tables": [],
+            "images": [
+                {
+                    "image_name": "cylinder-wall.png",
+                    "page": 18,
+                    "caption": "Cylinder wall inspection figure",
+                    "bbox": [40, 180, 330, 330],
+                    "caption_bbox": [40, 340, 330, 365],
+                    "caption_confidence": 0.9,
+                },
+                {
+                    "image_name": "piston-skirt.png",
+                    "page": 18,
+                    "caption": "Piston skirt inspection figure",
+                    "bbox": [40, 480, 330, 630],
+                    "caption_bbox": [40, 640, 330, 665],
+                    "caption_confidence": 0.9,
+                },
+            ],
+        },
+        section_index=5,
+    )
+
+    steps = [chunk for chunk in chunks if chunk["chunk_label"] == "step"]
+    images = [chunk for chunk in chunks if chunk["chunk_label"] == "image"]
+
+    assert images[0]["metadata"]["related_step_chunk_ids"] == [steps[0]["id"]]
+    assert images[1]["metadata"]["related_step_chunk_ids"] == [steps[1]["id"]]
+    assert images[0]["metadata"]["related_text_chunk_ids"] == [steps[0]["id"]]
+    assert images[1]["metadata"]["related_text_chunk_ids"] == [steps[1]["id"]]
+    assert images[0]["metadata"]["binding_role"] == "positioned_step"
+    assert images[1]["metadata"]["binding_role"] == "positioned_step"
+    assert images[0]["metadata"]["bbox"] == [40.0, 180.0, 330.0, 330.0]
+    assert images[0]["metadata"]["caption_confidence"] == 0.9
+
+
+def test_positioned_general_text_does_not_inherit_all_same_page_steps() -> None:
+    chunks = build_section_index_chunks(
+        {
+            "section_title": "Inspection notes",
+            "text_chunks": [
+                {
+                    "text": "1. Remove the cylinder head.",
+                    "page": 18,
+                    "chunk_label": "step",
+                    "bbox": [40, 80, 330, 110],
+                    "toc_path": "Manual > Remove cylinder head",
+                },
+                {
+                    "text": "Cylinder wall wear reference diagram.",
+                    "page": 18,
+                    "chunk_label": "general",
+                    "bbox": [40, 300, 330, 330],
+                },
+            ],
+            "tables": [],
+            "images": [
+                {
+                    "image_name": "wear-reference.png",
+                    "page": 18,
+                    "caption": "Cylinder wall wear reference",
+                    "bbox": [40, 350, 330, 520],
+                }
+            ],
+        },
+        section_index=5,
+    )
+
+    general = next(chunk for chunk in chunks if chunk["chunk_label"] == "general")
+    image = next(chunk for chunk in chunks if chunk["chunk_label"] == "image")
+
+    assert image["metadata"]["related_text_chunk_ids"] == [general["id"]]
+    assert image["metadata"]["related_step_chunk_ids"] == []
+    assert image["metadata"]["procedure_scope_ids"] == []
+    assert image["metadata"]["binding_role"] == "positioned_text"
+
+
+def test_positioned_image_prefers_text_in_the_same_column() -> None:
+    chunks = build_section_index_chunks(
+        {
+            "section_title": "双栏检查步骤",
+            "text_chunks": [
+                {
+                    "text": "1. 检查左栏部件。",
+                    "page": 18,
+                    "chunk_label": "step",
+                    "bbox": [0, 100, 200, 150],
+                },
+                {
+                    "text": "2. 检查右栏气缸内壁。",
+                    "page": 18,
+                    "chunk_label": "step",
+                    "bbox": [300, 100, 500, 150],
+                },
+            ],
+            "tables": [],
+            "images": [
+                {
+                    "image_name": "right-column.png",
+                    "page": 18,
+                    "caption": "气缸内壁检查图",
+                    "bbox": [300, 160, 500, 300],
+                }
+            ],
+        },
+        section_index=5,
+    )
+
+    steps = [chunk for chunk in chunks if chunk["chunk_label"] == "step"]
+    image = next(chunk for chunk in chunks if chunk["chunk_label"] == "image")
+
+    assert image["metadata"]["related_step_chunk_ids"] == [steps[1]["id"]]

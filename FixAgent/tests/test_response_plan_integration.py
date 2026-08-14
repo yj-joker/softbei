@@ -10,11 +10,55 @@ from agents.fix_agent import FixAgent, build_fix_agent_system_prompt
 from api import main
 from services.retrieval.aspects import QuestionAspect
 from services.retrieval.qualification import qualify_candidates
+from services.retrieval.response_plan import ResponseAuditResult, ResponsePlan
 
 
 class _BombLLM:
     async def chat(self, **kwargs):
         raise AssertionError("knowledge unsupported fallback must not call an LLM")
+
+
+def test_forced_response_output_persists_audited_graph_usage() -> None:
+    graph_id = "graph:kgpath:engine:spark-plug:fault:none"
+    plan = ResponsePlan(
+        plan_id="response-plan-additive",
+        coverage_status="complete",
+        source_mode="normal",
+        allowed_evidence=(),
+        missing_aspects=(),
+        conflicts=(),
+        ledger_digest="digest",
+    )
+    audited = ResponseAuditResult(
+        answer="基础答案。\n\n故障关系：摩托车发动机 → 火花塞 → 火花塞损坏。",
+        passed=True,
+        violations=(),
+        used_fallback=False,
+        claim_evidence_bindings=({
+            "claim_id": "fault-cause",
+            "claim_type": "fault_relation",
+            "evidence_ids": [graph_id],
+            "source_types": ["graph"],
+            "emitted": True,
+        },),
+        graph_evidence_used_ids=(graph_id,),
+    )
+    agent = object.__new__(FixAgent)
+
+    output = agent._response_plan_output(
+        plan,
+        audited.answer,
+        trace=[],
+        run_context=AgentRunContext(),
+        start=0.0,
+        audit_passed=True,
+        audit_violations=(),
+        used_fallback=False,
+        audit_metadata=audited.to_metadata(),
+    )
+
+    assert output.metadata["graph_evidence_used_ids"] == [graph_id]
+    assert output.metadata["claim_evidence_bindings"][0]["evidence_ids"] == [graph_id]
 
 
 def _knowledge_context() -> dict:
@@ -315,6 +359,93 @@ def test_react_finalizer_persists_final_graph_claim_bindings() -> None:
         graph_id in binding["evidence_ids"]
         for binding in finalized.metadata["claim_evidence_bindings"]
     )
+
+
+def test_final_api_audit_composes_structural_exact_graph_with_direct_manual_answer() -> None:
+    graph_id = "graph:kgpath:engine:transmission:fork:none"
+    graph_entry = {
+        "evidence_id": graph_id,
+        "source_type": "graph",
+        "qualification": "qualified",
+        "qualification_basis": "structural_exact",
+        "quality_tier": "medium",
+        "provenance_status": "complete",
+        "path_id": "kgpath:engine:transmission:fork",
+        "relationship_types": ["OWNS", "CAUSES"],
+        "authorized_claim_types": ["component_ownership", "fault_relation"],
+        "claim_types": ["component_ownership", "fault_relation"],
+        "supports_aspect_ids": ["component", "fault-cause"],
+        "device": {"id": "engine", "name": "摩托车发动机"},
+        "component": {"id": "transmission", "name": "传动装置"},
+        "fault": {"id": "fork", "name": "拨叉损坏"},
+        "solution": {},
+        "source": {
+            "document_id": "manual-engine",
+            "document_version": "v1",
+            "section_id": "sec-transmission",
+            "source_chunk_uids": ["chunk-fork"],
+            "pages": [36],
+        },
+        "text": "摩托车发动机 -> OWNS -> 传动装置 -> CAUSES -> 拨叉损坏",
+    }
+    manual_item = {
+        "id": "chunk-fork",
+        "content": "检查拨叉，如有弯曲、损坏或裂纹，则更换拨叉。",
+        "metadata": {
+            "qualification": "qualified",
+            "document_id": "manual-engine",
+            "document_version": "v1",
+            "chunk_id": "chunk-fork",
+            "chunk_uid": "chunk-fork",
+            "parent_section_id": "sec-transmission",
+            "page": 36,
+        },
+    }
+    trace = [{
+        "iteration": 0,
+        "action": "server_pre_retrieval",
+        "tool_calls": [{
+            "name": "java_graph_diagnosis_path",
+            "result_data": {"status": "found", "evidence": [graph_entry]},
+        }],
+    }, {
+        "iteration": 1,
+        "action": "tool_call",
+        "tool_calls": [{
+            "name": "knowledge_retrieval",
+            "result_data": {
+                "results": [manual_item],
+                "aspect_support": [{
+                    "aspect_id": "fault-treatment",
+                    "aspect_text": "拨叉损坏的处理和所属部件",
+                    "supported": True,
+                    "evidence_ids": ["chunk-fork"],
+                }],
+                "missing_aspect_ids": [],
+            },
+        }],
+    }]
+    output = AgentOutput(
+        agent_name="fix_agent",
+        message="检查拨叉，如有弯曲、损坏或裂纹，则更换拨叉。",
+        tools_used=["knowledge_retrieval", "java_graph_diagnosis_path"],
+        metadata={
+            "react_trace": trace,
+            "graph_evidence_ids": [graph_id],
+            "_deterministic_answer_mode": "evidence_rendered",
+        },
+    )
+
+    finalized = main._finalize_knowledge_output(
+        "拨叉损坏时如何处理？请说明故障所属部件。",
+        output,
+    )
+
+    assert "检查拨叉，如有弯曲、损坏或裂纹，则更换拨叉。" in finalized.message
+    assert "摩托车发动机 → 传动装置 → 拨叉损坏" in finalized.message
+    assert finalized.metadata["graph_evidence_bound_ids"] == [graph_id]
+    assert finalized.metadata["graph_evidence_used_ids"] == [graph_id]
+    assert finalized.metadata["graph_additions"] == ["component_ownership", "fault_relation"]
 
 
 def test_react_finalizer_fuses_graph_when_manual_bundle_is_unsupported() -> None:

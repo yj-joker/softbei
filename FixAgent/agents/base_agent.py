@@ -332,8 +332,10 @@ class AgentRunContext(BaseModel):
     images: List[str] = Field(default_factory=list)
     enhanced_query: Optional[str] = None
     intent_decision: Dict[str, Any] = Field(default_factory=dict)
+    query_contract: Dict[str, Any] = Field(default_factory=dict)
     allowed_tools: Optional[List[str]] = None
     retrieval_scope: Dict[str, Any] = Field(default_factory=dict)
+    graph_seed_retrieval_scope: Dict[str, Any] = Field(default_factory=dict)
     graph_scope: Dict[str, Any] = Field(default_factory=dict)
     graph_pre_retrieval: Dict[str, Any] = Field(default_factory=dict)
     experiment_tool_profile: Optional[str] = None
@@ -450,8 +452,10 @@ class BaseAgent(ABC):
             images=list(input_data.images or []),
             enhanced_query=str(context["enhanced_retrieval_query"]) if context.get("enhanced_retrieval_query") else None,
             intent_decision=dict(intent_decision),
+            query_contract=dict(context.get("query_contract") or {}),
             allowed_tools=[str(name) for name in allowed_tools] if isinstance(allowed_tools, list) else None,
             retrieval_scope=dict(context.get("retrieval_scope") or {}),
+            graph_seed_retrieval_scope=dict(context.get("graph_seed_retrieval_scope") or {}),
             graph_scope=dict(context.get("graph_scope") or {}),
             graph_pre_retrieval=dict(context.get("graph_pre_retrieval") or {}),
             experiment_tool_profile=_trusted_experiment_tool_profile(

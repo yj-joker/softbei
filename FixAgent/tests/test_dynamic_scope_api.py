@@ -91,6 +91,142 @@ def test_graph_selected_document_authorizes_only_matching_device_name_conflict()
     assert rejected.status == "out_of_scope"
 
 
+def test_graph_scope_is_not_synthesized_from_an_unselected_candidate() -> None:
+    candidate = SimpleNamespace(
+        dimensions={
+            "path_id": "kgpath:device-1:component-1:fault-1",
+            "device_id": "device-1",
+            "component_id": "component-1",
+            "fault_id": "fault-1",
+        },
+        document_id="manual-1",
+        document_version="v1",
+        section_id="section-1",
+        evidence_refs=("chunk-1", "page:12"),
+        source_chunk_uids=("chunk-1",),
+        pages=(12,),
+        node_ids=("device-1", "component-1", "fault-1"),
+        quality_tier="high",
+    )
+
+    assert main._effective_server_graph_scope({}, (candidate,)) == {}
+
+
+def test_existing_route_scope_is_never_broadened_by_candidate_fallback() -> None:
+    route_scope = {
+        "allowed_path_ids": ["path-selected"],
+        "allowed_component_ids": ["component-selected"],
+    }
+    candidate = SimpleNamespace(
+        dimensions={
+            "path_id": "path-other",
+            "component_id": "component-other",
+        },
+        quality_tier="high",
+    )
+
+    assert main._effective_server_graph_scope(route_scope, (candidate,)) == route_scope
+
+
+def test_candidate_scope_fallback_rejects_ambiguous_paths_inside_one_document() -> None:
+    candidates = [
+        SimpleNamespace(
+            dimensions={"path_id": "path-a", "component_id": "component-a"},
+            document_id="manual-1",
+            document_version="v1",
+            source_chunk_uids=("chunk-a",),
+            pages=(12,),
+            quality_tier="high",
+        ),
+        SimpleNamespace(
+            dimensions={"path_id": "path-b", "component_id": "component-b"},
+            document_id="manual-1",
+            document_version="v1",
+            source_chunk_uids=("chunk-b",),
+            pages=(13,),
+            quality_tier="medium",
+        ),
+    ]
+
+    assert main._effective_server_graph_scope({}, candidates) == {}
+
+
+def test_candidate_scope_fallback_rejects_cross_document_candidates() -> None:
+    candidates = [
+        SimpleNamespace(
+            dimensions={"path_id": "path-a"},
+            document_id="manual-1",
+            document_version="v1",
+            quality_tier="high",
+        ),
+        SimpleNamespace(
+            dimensions={"path_id": "path-b"},
+            document_id="manual-2",
+            document_version="v1",
+            quality_tier="high",
+        ),
+    ]
+
+    assert main._effective_server_graph_scope({}, candidates) == {}
+
+
+def test_candidate_scope_fallback_rejects_mixed_document_versions() -> None:
+    candidates = [
+        SimpleNamespace(
+            dimensions={"path_id": "path-a"},
+            document_id="manual-1",
+            document_version="v1",
+            quality_tier="high",
+        ),
+        SimpleNamespace(
+            dimensions={"path_id": "path-b"},
+            document_id="manual-1",
+            document_version="v2",
+            quality_tier="high",
+        ),
+    ]
+
+    assert main._effective_server_graph_scope({}, candidates) == {}
+
+
+def test_explicit_document_scope_is_not_replaced_by_candidate_scope() -> None:
+    route_scope = {"document_id": "manual-1", "document_version": "v1"}
+    candidate = SimpleNamespace(
+        dimensions={"path_id": "path-other"},
+        document_id="manual-2",
+        document_version="v1",
+        quality_tier="high",
+    )
+
+    assert main._effective_server_graph_scope(route_scope, (candidate,)) == route_scope
+
+
+def test_effective_graph_scope_is_separate_from_baseline_manual_scope() -> None:
+    graph_scope = {
+        "document_id": "manual-1",
+        "document_version": "v1",
+        "allowed_section_ids": ["section-1"],
+        "allowed_source_chunk_uids": ["chunk-1"],
+        "pages": [12],
+    }
+
+    scopes = main._build_effective_manual_scopes(
+        selected_document_id="manual-1",
+        selected_section_id="section-1",
+        resolved_scope=None,
+        effective_graph_scope=graph_scope,
+    )
+
+    assert scopes.baseline["document_id"] == "manual-1"
+    assert scopes.baseline["parent_section_id"] == "section-1"
+    assert scopes.baseline["allowed_section_ids"] == ["section-1"]
+    assert "allowed_source_chunk_uids" not in scopes.baseline
+    assert "pages" not in scopes.baseline
+    assert scopes.graph_seed["document_version"] == "v1"
+    assert scopes.graph_seed["allowed_source_chunk_uids"] == ["chunk-1"]
+    assert scopes.graph_seed["pages"] == [12]
+
+
 def _catalog() -> DeviceCatalog:
     return DeviceCatalog.from_manifests(
         [
@@ -291,6 +427,99 @@ def test_paired_evaluation_contract_skips_reclassification(monkeypatch) -> None:
     assert prepared.context["evaluation_route_contract_applied"] is True
     assert prepared.context["intent_decision"]["task_action"] == "find_cause"
     assert prepared.context["query_contract"]["component"] == "助力油泵"
+
+
+def test_live_request_normalizes_identity_before_graph_candidate_query(monkeypatch) -> None:
+    captured: list[QueryContract] = []
+
+    class _GraphProvider:
+        async def fetch_result(self, contract, **kwargs):
+            captured.append(contract)
+            return SimpleNamespace(
+                candidates=(),
+                retrieval_status={
+                    "status": "empty",
+                    "reason": "no_matching_candidates",
+                    "diagnostics": {"record_count": 0, "candidate_count": 0},
+                },
+            )
+
+    monkeypatch.setattr(main, "_current_rag_variant", lambda: "graph_full")
+    monkeypatch.setattr(main, "get_graph_candidate_provider", lambda: _GraphProvider())
+
+    prepared = _prepare(monkeypatch, "摩托车发动机气缸活塞装配部件清单")
+
+    assert len(captured) == 1
+    assert captured[0].raw_device_span == "摩托车发动机气缸活塞"
+    assert captured[0].effective_device_identity == "摩托车发动机"
+    assert captured[0].identity_resolution == "catalog_exact"
+    assert prepared.context["identity_normalization"] == {
+        "status": "matched",
+        "reason": "catalog_identity_verified",
+        "raw_device_span": "摩托车发动机气缸活塞",
+        "canonical_device_name": "摩托车发动机",
+        "catalog_verified": True,
+        "matched_document_id": MANUAL_ID,
+    }
+
+
+def test_frozen_request_normalizes_identity_before_graph_candidate_query(monkeypatch) -> None:
+    captured: list[QueryContract] = []
+
+    class _MustNotClassify:
+        async def classify(self, message, **kwargs):
+            raise AssertionError("frozen paired contract must skip intent classification")
+
+    class _GraphProvider:
+        async def fetch_result(self, contract, **kwargs):
+            captured.append(contract)
+            return SimpleNamespace(
+                candidates=(),
+                retrieval_status={
+                    "status": "empty",
+                    "reason": "no_matching_candidates",
+                    "diagnostics": {"record_count": 0, "candidate_count": 0},
+                },
+            )
+
+    message = "摩托车发动机的火花塞出现火花塞损坏"
+    monkeypatch.setattr(main, "_current_rag_variant", lambda: "graph_full")
+    monkeypatch.setattr(main, "get_graph_candidate_provider", lambda: _GraphProvider())
+    prepared = _prepare(
+        monkeypatch,
+        message,
+        intent_router=_MustNotClassify(),
+        context={
+            "_evaluation_route_contract": {
+                "intent_decision": {
+                    "intent": "fault_diagnosis",
+                    "task_action": "find_cause",
+                    "confidence": 0.99,
+                    "source": "paired_evaluation",
+                    "component": "火花塞",
+                    "fault": "火花塞损坏",
+                },
+                "query_contract": {
+                    "raw_query": message,
+                    "intent": "fault_diagnosis",
+                    "task_action": "find_cause",
+                    "raw_device_span": "摩托车发动机的火花塞",
+                    "device_name": "摩托车发动机的火花塞",
+                    "carrier_or_application": "摩托车发动机",
+                    "component": "火花塞",
+                    "raw_component_span": "火花塞",
+                    "fault": "火花塞损坏",
+                    "raw_fault_span": "火花塞损坏",
+                },
+            }
+        },
+    )
+
+    assert len(captured) == 1
+    assert captured[0].effective_device_identity == "摩托车发动机"
+    assert captured[0].raw_device_span == "摩托车发动机的火花塞"
+    assert prepared.context["identity_normalization"]["catalog_verified"] is True
+    assert prepared.context["query_contract"]["fault"] == "火花塞损坏"
 
 
 def test_structured_evidence_candidates_are_not_reopened_by_weaker_title_matches(monkeypatch) -> None:

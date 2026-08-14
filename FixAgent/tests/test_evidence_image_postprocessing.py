@@ -11,15 +11,15 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from api.main import (
-    _align_evidence_images_to_text_evidence_pages,
     _collect_direct_evidence_page_images,
-    _filter_evidence_images_by_action_context,
     _filter_evidence_images_to_target_section,
     _image_specific_anchor_terms,
+    _merge_evidence_images,
     _narrow_evidence_images_to_query_target_pages,
     _select_evidence_images_for_response,
     _text_evidence_pages,
     _apply_final_image_contract,
+    _extract_evidence_images,
 )
 import api.main as api_main
 from schemas.response import EvidenceImage
@@ -33,6 +33,243 @@ def _img(page: int, title: str = "目标章节") -> EvidenceImage:
         section_title=title,
         document_id="manual-doc",
     )
+
+
+def test_duplicate_raw_and_summary_images_union_all_binding_edges() -> None:
+    raw = EvidenceImage(
+        image_url="/camshaft.png",
+        source_chunk_id="image-camshaft",
+        role="positioned_step",
+        binding_confidence=0.95,
+        step_ids=["step-align"],
+        binding_schema_version=2,
+        bindings=[{
+            "target_id": "step-align",
+            "target_type": "step",
+            "relation": "layout_anchor",
+            "confidence": 0.95,
+        }],
+    )
+    summary = raw.model_copy(update={
+        "image_summary": "凸轮轴安装顺序和标记图",
+        "step_ids": ["step-order"],
+        "bindings": [{
+            "target_id": "step-order",
+            "target_type": "step",
+            "relation": "procedure_layout_member",
+            "confidence": 0.85,
+        }],
+    })
+
+    merged = api_main._merge_duplicate_evidence_image(raw, summary)
+
+    assert merged.step_ids == ["step-align", "step-order"]
+    assert [binding.target_id for binding in merged.bindings] == [
+        "step-align",
+        "step-order",
+    ]
+    assert merged.image_summary == "凸轮轴安装顺序和标记图"
+
+
+def _with_final_claims(metadata: dict, source_ids: list[str] | None = None) -> dict:
+    pages = [
+        int(value)
+        for value in metadata.get("_deterministic_answer_evidence_pages") or []
+        if str(value).isdigit()
+    ]
+    if not pages:
+        pages = [
+            int(value)
+            for value in metadata.get("allowed_evidence_pages") or []
+            if str(value).isdigit()
+        ]
+    trace_items = [
+        item
+        for step in metadata.get("react_trace") or []
+        if isinstance(step, dict)
+        for call in step.get("tool_calls") or []
+        if isinstance(call, dict)
+        for item in call.get("result_data") or []
+        if isinstance(item, dict)
+    ]
+    if not pages:
+        pages = list(dict.fromkeys(
+            int(page)
+            for item in trace_items
+            for page in [
+                (item.get("metadata") or {}).get("page")
+                or (item.get("metadata") or {}).get("page_number")
+            ]
+            if str(page).isdigit()
+        ))
+    document_ids = [
+        str(value)
+        for value in metadata.get("_deterministic_answer_document_ids") or []
+        if str(value).strip()
+    ]
+    if not document_ids:
+        document_ids = list(dict.fromkeys(
+            str((item.get("metadata") or {}).get("document_id") or "").strip()
+            for item in trace_items
+            if str((item.get("metadata") or {}).get("document_id") or "").strip()
+        )) or ["manual-doc"]
+    ids = source_ids or [f"final-text-{page}" for page in pages]
+    section_ids = [
+        str(value)
+        for value in metadata.get("_deterministic_answer_section_ids") or []
+        if str(value).strip()
+    ]
+    records = []
+    for index, source_id in enumerate(ids):
+        page = pages[min(index, len(pages) - 1)] if pages else None
+        records.append({
+            "id": source_id,
+            "content": f"final evidence for {source_id}",
+            "metadata": {
+                "document_id": document_ids[0],
+                "page": page,
+                "chunk_type": "text",
+                "chunk_label": "step",
+                "answer_role": "procedure_step",
+                "parent_section_id": section_ids[0] if section_ids else "",
+                "section_title": str(metadata.get("_deterministic_answer_section_title") or ""),
+            },
+        })
+    trace = list(metadata.get("react_trace") or [])
+    if records:
+        trace.append({"tool_calls": [{"name": "knowledge_retrieval", "result_data": records}]})
+    metadata["react_trace"] = trace
+    metadata["authorized_claim_evidence_bindings"] = [{
+        "claim_id": "test-final-claim",
+        "evidence_ids": [
+            f"manual:{document_ids[0]}:{source_id}"
+            for source_id in ids
+        ],
+    }]
+    metadata.setdefault("response_audit", {"passed": True})
+    return metadata
+
+
+def test_extract_evidence_images_merges_summary_into_source_image_entity() -> None:
+    metadata = {
+        "react_trace": [{
+            "tool_calls": [{
+                "name": "knowledge_retrieval",
+                "result_data": [
+                    {
+                        "id": "doc:image-summary:1",
+                        "content": "气缸内壁存在纵向拉伤。",
+                        "metadata": {
+                            "chunk_type": "image_summary",
+                            "source_image_id": "doc:image:1",
+                            "image_url": "http://example.test/cylinder.png",
+                            "image_title": "气缸内壁检查图",
+                            "image_summary": "气缸内壁存在纵向拉伤。",
+                            "page": 18,
+                        },
+                    },
+                    {
+                        "id": "doc:image:1",
+                        "content": "",
+                        "metadata": {
+                            "chunk_type": "image",
+                            "image_url": "http://example.test/cylinder.png",
+                            "page": 18,
+                        },
+                    },
+                ],
+            }],
+        }],
+    }
+
+    images = _extract_evidence_images(metadata)
+
+    assert len(images) == 1
+    assert images[0].source_chunk_id == "doc:image:1"
+    assert images[0].image_title == "气缸内壁检查图"
+    assert images[0].image_summary == "气缸内壁存在纵向拉伤。"
+
+
+def test_merge_evidence_images_enriches_direct_image_with_trace_summary() -> None:
+    direct = EvidenceImage(
+        image_url="http://example.test/piston.png",
+        page=18,
+        document_id="manual-doc",
+        source_chunk_id="image:piston",
+        role="positioned_step",
+        binding_confidence=0.95,
+        step_ids=["step-check"],
+    )
+    traced = direct.model_copy(update={
+        "image_title": "活塞及其裙部结构示意图",
+        "image_summary": "红色箭头标出活塞裙部。",
+    })
+
+    merged = _merge_evidence_images([traced], [direct])
+
+    assert len(merged) == 1
+    assert merged[0].image_title == "活塞及其裙部结构示意图"
+    assert merged[0].image_summary == "红色箭头标出活塞裙部。"
+
+
+def test_merge_evidence_images_does_not_synthesize_strong_binding() -> None:
+    role_only = EvidenceImage(
+        image_url="http://example.test/starter.png",
+        source_chunk_id="image-role",
+        role="same_page_step",
+        binding_confidence=1.0,
+    )
+    ids_only = EvidenceImage(
+        image_url="http://example.test/starter.png",
+        source_chunk_id="image-ids",
+        step_ids=["step-install-starter"],
+    )
+
+    merged = _merge_evidence_images([role_only], [ids_only])
+
+    assert len(merged) == 1
+    assert not (merged[0].role == "same_page_step" and merged[0].step_ids)
+
+
+def test_merge_evidence_images_keeps_complete_legacy_binding_bundle() -> None:
+    weak = EvidenceImage(
+        image_url="http://example.test/starter.png",
+        source_chunk_id="image-weak",
+        role="",
+        binding_confidence=0.1,
+    )
+    complete = EvidenceImage(
+        image_url="http://example.test/starter.png",
+        source_chunk_id="image-complete",
+        role="same_page_step",
+        binding_confidence=1.0,
+        step_ids=["step-install-starter"],
+    )
+
+    merged = _merge_evidence_images([weak], [complete])
+
+    assert len(merged) == 1
+    assert merged[0].source_chunk_id == "image-complete"
+    assert merged[0].role == "same_page_step"
+    assert merged[0].step_ids == ["step-install-starter"]
+
+
+def test_merge_evidence_images_keeps_caption_confidence_paired() -> None:
+    caption = EvidenceImage(
+        image_url="http://example.test/starter.png",
+        caption="安装起动电机",
+        caption_confidence=0.4,
+    )
+    confidence_only = EvidenceImage(
+        image_url="http://example.test/starter.png",
+        caption="",
+        caption_confidence=1.0,
+    )
+
+    merged = _merge_evidence_images([caption], [confidence_only])
+
+    assert merged[0].caption == "安装起动电机"
+    assert merged[0].caption_confidence == 0.4
 
 
 def test_final_image_contract_removes_manual_images_when_policy_forbids_them() -> None:
@@ -55,58 +292,6 @@ def test_final_image_contract_removes_dangling_figure_reference_without_image() 
 
     assert message == "，检查曲轴油封。"
     assert images == []
-
-
-def test_evidence_images_follow_text_evidence_pages_and_are_sorted() -> None:
-    metadata = {
-        "react_trace": [
-            {
-                "tool_calls": [
-                    {
-                        "name": "knowledge_retrieval",
-                        "result_data": [
-                            {
-                                "content": "5.4 安装气缸与活塞 安装全新的箱体缸体垫片",
-                                "metadata": {
-                                    "chunk_type": "step_raw",
-                                    "document_id": "manual-doc",
-                                    "parent_section_id": "sec-cylinder-install",
-                                    "section_match_ids": ["sec-cylinder-install"],
-                                    "page": 19,
-                                },
-                            },
-                            {
-                                "content": "活塞与气缸均分为 A、B、C、D 四组",
-                                "metadata": {
-                                    "chunk_type": "text",
-                                    "document_id": "manual-doc",
-                                    "parent_section_id": "sec-cylinder-install",
-                                    "section_match_ids": ["sec-cylinder-install"],
-                                    "page": 20,
-                                },
-                            },
-                            {
-                                "content": "安装活塞销；安装活塞销挡圈",
-                                "metadata": {
-                                    "chunk_type": "step_raw",
-                                    "document_id": "manual-doc",
-                                    "parent_section_id": "sec-cylinder-install",
-                                    "section_match_ids": ["sec-cylinder-install"],
-                                    "page": 21,
-                                },
-                            },
-                        ],
-                    }
-                ]
-            }
-        ]
-    }
-
-    images = [_img(20), _img(19), _img(18), _img(21)]
-
-    aligned = _align_evidence_images_to_text_evidence_pages(images, metadata)
-
-    assert [image.page for image in aligned] == [19, 20, 21]
 
 
 def test_direct_section_images_follow_answer_procedure_scope(monkeypatch) -> None:
@@ -174,41 +359,71 @@ def test_direct_section_images_follow_answer_procedure_scope(monkeypatch) -> Non
     assert [(image.page, image.source_chunk_id) for image in images] == [(27, "image-clutch")]
 
 
-def test_evidence_images_are_not_filtered_when_text_pages_are_absent() -> None:
-    images = [_img(17), _img(16)]
+def test_direct_section_images_load_stable_summary_record(monkeypatch) -> None:
+    class FakeVectorService:
+        def get_section_records(self, document_id, section_id, limit=20, chunk_type=None):
+            assert document_id == "manual-doc"
+            assert section_id == "sec-check"
+            assert chunk_type == "image"
+            return [{
+                "id": "prefix:21:img:0001",
+                "metadata": {
+                    "chunk_type": "image",
+                    "document_id": document_id,
+                    "parent_section_id": section_id,
+                    "page": 18,
+                    "image_url": "http://example.test/piston.png",
+                    "binding_role": "positioned_step",
+                    "binding_confidence": 0.95,
+                },
+            }]
 
-    aligned = _align_evidence_images_to_text_evidence_pages(images, {"react_trace": []})
+        def get_vector_record(self, doc_id):
+            assert doc_id == "prefix:21:ims:0001"
+            return {
+                "id": doc_id,
+                "text": "红色箭头标出活塞裙部。",
+                "metadata": {
+                    "chunk_type": "image_summary",
+                    "source_image_id": "prefix:21:img:0001",
+                    "image_title": "活塞及其裙部结构示意图",
+                    "image_summary": "红色箭头标出活塞裙部。",
+                },
+            }
 
-    assert [image.page for image in aligned] == [16, 17]
+    from services.knowledge import vector_service as vector_service_module
 
-
-def test_evidence_image_alignment_keeps_all_deterministic_answer_pages() -> None:
+    monkeypatch.setattr(vector_service_module, "get_vector_service", lambda: FakeVectorService())
     metadata = {
-        "original_user_message": "安装右盖时曲轴油封和离合器拉杆要注意什么？",
-        "_deterministic_answer_evidence_pages": [26, 27],
+        "original_user_message": "如何检查活塞裙部？请返回对应图片。",
+        "route_plan": {
+            "action": "grounded_retrieval",
+            "entity_role": "document_component",
+            "selected_document_id": "manual-doc",
+        },
         "react_trace": [{
             "tool_calls": [{
                 "name": "knowledge_retrieval",
-                "result_data": [
-                    {
-                        "content": "安装右盖：检查曲轴油封并安装离合器拉杆。",
-                        "metadata": {"chunk_type": "step_raw", "page": 26},
+                "result_data": [{
+                    "content": "检查活塞裙部。",
+                    "metadata": {
+                        "qualification": "qualified",
+                        "retrieval_plan_intent": "procedure",
+                        "document_id": "manual-doc",
+                        "parent_section_id": "sec-check",
+                        "section_match_ids": ["sec-check"],
+                        "chunk_type": "step_raw",
                     },
-                    {
-                        "content": "A孔周围3mm内不得有密封胶；随后章节为拆卸离合器。",
-                        "metadata": {"chunk_type": "text", "page": 27},
-                    },
-                ],
+                }],
             }],
         }],
     }
 
-    aligned = _align_evidence_images_to_text_evidence_pages(
-        [_img(26, "6.4 右曲轴箱盖与离合器"), _img(27, "6.4 右曲轴箱盖与离合器")],
-        metadata,
-    )
+    images = asyncio.run(api_main._collect_direct_section_images(metadata))
 
-    assert [image.page for image in aligned] == [26, 27]
+    assert len(images) == 1
+    assert images[0].image_title == "活塞及其裙部结构示意图"
+    assert images[0].image_summary == "红色箭头标出活塞裙部。"
 
 
 def test_text_evidence_pages_prefers_deterministic_answer_pages() -> None:
@@ -237,65 +452,11 @@ def test_text_evidence_pages_prefers_deterministic_answer_pages() -> None:
         ],
     }
 
+    metadata = _with_final_claims(metadata)
     assert _text_evidence_pages(metadata) == [9]
 
 
-def test_evidence_image_alignment_keeps_adjacent_query_matched_continuation_image() -> None:
-    images = [
-        _img(21, "5.6 安装活塞环"),
-        EvidenceImage(
-            image_url="http://example.test/p22-ring.png",
-            caption="5.6 安装活塞环 第22页插图",
-            page=22,
-            section_title="5.6 安装活塞环",
-            document_id="manual-doc",
-            source_chunk_id="ring-p22",
-        ),
-        EvidenceImage(
-            image_url="http://example.test/p22-cover.png",
-            caption="6.1 右曲轴箱盖装配部件清单 第22页插图",
-            page=22,
-            section_title="6.1 右曲轴箱盖装配部件清单",
-            document_id="manual-doc",
-            source_chunk_id="cover-p22",
-        ),
-    ]
-    metadata = {
-        "original_user_message": "如何安装活塞环？",
-        "_deterministic_answer_evidence_pages": [21],
-    }
-
-    aligned = _align_evidence_images_to_text_evidence_pages(images, metadata)
-
-    assert [(image.page, image.source_chunk_id) for image in aligned] == [
-        (21, ""),
-        (22, "ring-p22"),
-    ]
-
-
-def test_evidence_image_alignment_does_not_keep_adjacent_page_for_inventory_query() -> None:
-    images = [
-        _img(23, "6.2 离合器、机油泵装配零件清单"),
-        EvidenceImage(
-            image_url="http://example.test/p24.png",
-            caption="6.2 离合器、机油泵装配零件清单 第24页插图",
-            page=24,
-            section_title="6.2 离合器、机油泵装配零件清单",
-            document_id="manual-doc",
-            source_chunk_id="inventory-p24",
-        ),
-    ]
-    metadata = {
-        "original_user_message": "离合器、机油泵装配零件清单中摩擦片分组件和离合器从动片数量是多少？",
-        "_deterministic_answer_evidence_pages": [23],
-    }
-
-    aligned = _align_evidence_images_to_text_evidence_pages(images, metadata)
-
-    assert [(image.page, image.source_chunk_id) for image in aligned] == [(23, "")]
-
-
-def test_collect_direct_evidence_page_images_uses_same_page_cross_section() -> None:
+def test_collect_direct_evidence_page_images_collects_but_gate_rejects_same_page_cross_section() -> None:
     class FakeVectorService:
         def get_page_records(self, document_id, page, chunk_type=None, limit=20):
             assert document_id == "manual-doc"
@@ -341,13 +502,14 @@ def test_collect_direct_evidence_page_images_uses_same_page_cross_section() -> N
         ],
     }
 
+    metadata = _with_final_claims(metadata)
     images = _collect_direct_evidence_page_images(metadata, vector_service=FakeVectorService())
 
-    assert [image.page for image in images] == [3]
-    assert images[0].source_chunk_id == "image-from-neighbor-section"
+    assert [image.source_chunk_id for image in images] == ["image-from-neighbor-section"]
+    assert _select_evidence_images_for_response(images, metadata) == []
 
 
-def test_collect_direct_evidence_page_images_keeps_images_from_deterministic_pages_even_when_caption_is_substep() -> None:
+def test_collect_direct_evidence_page_images_collects_but_gate_rejects_ocr_only_candidate() -> None:
     class FakeVectorService:
         def get_page_records(self, document_id, page, chunk_type=None, limit=20):
             assert document_id == "manual-doc"
@@ -373,13 +535,159 @@ def test_collect_direct_evidence_page_images_keeps_images_from_deterministic_pag
         "_deterministic_answer_document_ids": ["manual-doc"],
     }
 
+    metadata = _with_final_claims(metadata)
     images = _collect_direct_evidence_page_images(metadata, vector_service=FakeVectorService())
 
-    assert [image.page for image in images] == [21]
-    assert images[0].source_chunk_id == "image-substep-page"
+    assert [image.source_chunk_id for image in images] == ["image-substep-page"]
+    assert _select_evidence_images_for_response(images, metadata) == []
 
 
-def test_collect_direct_evidence_page_images_renders_page_when_indexed_image_is_neighbor_section(
+def test_collect_direct_evidence_page_images_preserves_image_binding_metadata() -> None:
+    class FakeVectorService:
+        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
+            return [
+                {
+                    "id": "image-cylinder-wall",
+                    "content": "气缸内壁检查图",
+                    "metadata": {
+                        "chunk_type": "image",
+                        "document_id": document_id,
+                        "page": page,
+                        "section_title": "5.3 检查气缸与活塞",
+                        "image_url": "http://example.test/cylinder-wall.png",
+                            "caption": "气缸内壁检查图",
+                            "caption_confidence": 0.9,
+                            "related_step_chunk_ids": ["step-check-cylinder-wall"],
+                        "procedure_scope_ids": ["scope-check-cylinder"],
+                            "binding_role": "positioned_step",
+                            "binding_confidence": 0.95,
+                    },
+                }
+            ]
+
+    metadata = {
+        "original_user_message": "如何检查气缸内壁？请返回对应图片。",
+        "_deterministic_answer_evidence_pages": [18],
+        "_deterministic_answer_document_ids": ["manual-doc"],
+        "_deterministic_answer_section_title": "5.3 检查气缸与活塞",
+    }
+
+    metadata = _with_final_claims(metadata, ["step-check-cylinder-wall"])
+    images = _collect_direct_evidence_page_images(
+        metadata,
+        vector_service=FakeVectorService(),
+    )
+
+    assert len(images) == 1
+    assert images[0].step_ids == ["step-check-cylinder-wall"]
+    assert images[0].step_id == "step-check-cylinder-wall"
+    assert images[0].role == "positioned_step"
+    assert images[0].binding_confidence == 0.95
+
+
+def test_collect_direct_evidence_page_images_keeps_empty_semantics_with_step_binding() -> None:
+    class FakeVectorService:
+        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
+            return [{
+                "id": "image-starter-install",
+                "content": "",
+                "metadata": {
+                    "chunk_type": "image",
+                    "document_id": document_id,
+                    "page": page,
+                    "section_id": "section-install-starter",
+                    "section_title": "2.3 安装起动电机",
+                    "image_url": "http://example.test/starter.png",
+                    "caption": "",
+                    "image_title": "",
+                    "image_summary": "",
+                    "related_step_chunk_ids": ["step-install-starter"],
+                    "related_text_chunk_ids": ["text-install-starter"],
+                    "procedure_scope_ids": ["scope-install-starter"],
+                    "binding_role": "same_page_step",
+                    "binding_confidence": 1.0,
+                },
+            }]
+
+    metadata = {
+        "original_user_message": "如何安装起动电机",
+        "_deterministic_answer_evidence_pages": [5],
+        "_deterministic_answer_document_ids": ["manual-doc"],
+        "_deterministic_answer_section_ids": ["section-install-starter"],
+        "_deterministic_answer_section_title": "2.3 安装起动电机",
+    }
+
+    metadata = _with_final_claims(metadata, ["step-install-starter"])
+    images = _collect_direct_evidence_page_images(
+        metadata,
+        vector_service=FakeVectorService(),
+    )
+
+    assert len(images) == 1
+    assert images[0].source_chunk_id == "image-starter-install"
+    assert images[0].context_role != "page_render"
+    assert images[0].step_ids == ["step-install-starter"]
+    assert images[0].text_ids == ["text-install-starter"]
+    assert images[0].procedure_scope_ids == ["scope-install-starter"]
+    assert images[0].role == "same_page_step"
+
+
+def test_page_image_query_match_does_not_use_shared_page_ocr_as_image_identity() -> None:
+    record = {
+        "id": "image-piston-skirt",
+        "content": "活塞裙部检查图",
+        "metadata": {
+            "section_title": "5.3 检查气缸与活塞",
+            "caption": "活塞裙部检查图",
+            "visual_context_text": "检查气缸内壁是否有磨损、拉伤。检查活塞裙部。",
+        },
+    }
+
+    assert api_main._page_image_matches_query("气缸内壁图片", record) is False
+
+
+def test_section_rebinding_rejects_shared_page_ocr_without_image_level_binding() -> None:
+    record = {
+        "id": "image-neighbor-section",
+        "content": "气缸内壁检查图",
+        "metadata": {
+            "document_id": "manual-doc",
+            "section_title": "4.8 气门",
+            "caption": "气缸内壁检查图",
+            "visual_context_text": "5.1 气缸活塞装配部件清单。检查气缸内壁。",
+        },
+    }
+
+    assert api_main._page_image_supports_safe_section_rebinding(
+        "如何检查气缸内壁？",
+        record,
+        "5.1 气缸活塞装配部件清单",
+        ["manual-doc"],
+        "manual-doc",
+    ) is False
+
+
+def test_target_section_filter_fails_closed_when_no_image_matches() -> None:
+    images = [
+        EvidenceImage(
+            image_url="http://example.test/valve.png",
+            page=17,
+            section_title="4.8 气门",
+            document_id="manual-doc",
+            source_chunk_id="image-valve",
+        )
+    ]
+    metadata = {
+        "_deterministic_answer_section_title": "5.1 气缸活塞装配部件清单",
+    }
+
+    metadata = _with_final_claims(metadata)
+    filtered = _filter_evidence_images_to_target_section(images, metadata)
+
+    assert filtered == []
+
+
+def test_collect_direct_evidence_page_images_does_not_render_page_for_neighbor_section(
     monkeypatch,
 ) -> None:
     class FakeVectorService:
@@ -425,10 +733,10 @@ def test_collect_direct_evidence_page_images_renders_page_when_indexed_image_is_
         vector_service=FakeVectorService(),
     )
 
-    assert [image.source_chunk_id for image in images] == ["rendered-page:manual-doc:21"]
+    assert images == []
 
 
-def test_collect_direct_evidence_page_images_rebinds_misbound_image_from_page_local_visual_context() -> None:
+def test_collect_direct_evidence_page_images_rejects_cross_section_page_ocr_rebinding() -> None:
     class FakeVectorService:
         def get_page_records(self, document_id, page, chunk_type=None, limit=20):
             assert document_id == "manual-doc"
@@ -461,12 +769,10 @@ def test_collect_direct_evidence_page_images_rebinds_misbound_image_from_page_lo
         vector_service=FakeVectorService(),
     )
 
-    assert [image.source_chunk_id for image in images] == [
-        "image-misbound-to-adjacent-section"
-    ]
+    assert images == []
 
 
-def test_collect_direct_evidence_page_images_renders_page_when_indexed_images_do_not_match_query(monkeypatch) -> None:
+def test_collect_direct_evidence_page_images_does_not_render_page_when_indexed_images_do_not_match_query(monkeypatch) -> None:
     class FakeVectorService:
         def get_page_records(self, document_id, page, chunk_type=None, limit=20):
             assert document_id == "manual-doc"
@@ -504,222 +810,19 @@ def test_collect_direct_evidence_page_images_renders_page_when_indexed_images_do
         "_deterministic_answer_document_ids": ["manual-doc"],
     }
 
+    metadata = _with_final_claims(metadata)
     images = _collect_direct_evidence_page_images(metadata, vector_service=FakeVectorService())
 
     assert [(image.page, image.source_chunk_id) for image in images] == [
-        (21, "rendered-page:manual-doc:21")
+        (21, "unrelated-indexed-image")
     ]
+    assert _select_evidence_images_for_response(images, metadata) == []
 
 
-def test_action_context_filter_keeps_neutral_image_when_page_is_text_evidence() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            contexts = {
-                19: "5.4 安装气缸与活塞 安装全新的箱体缸体垫片",
-                20: "5.4 安装气缸与活塞 活塞与气缸组别 组装时必须使用相同组别",
-                21: "活塞环开口位置与角度 安装活塞销 安装活塞销挡圈 拆卸活塞环",
-            }
-            return [
-                {
-                    "id": f"img-{page}",
-                    "content": f"第{page}页插图",
-                    "metadata": {
-                        "chunk_type": "image",
-                        "document_id": "manual-doc",
-                        "page": page,
-                        "image_url": f"http://example.test/p{page}.png",
-                        "visual_context_text": contexts[page],
-                    },
-                }
-            ]
-
-    metadata = {
-        "original_user_message": "如何安装气缸与活塞？",
-        "_deterministic_answer_evidence_pages": [19, 20, 21],
-    }
-    images = [_img(19), _img(20), _img(21)]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [19, 20, 21]
-
-
-def test_action_context_filter_keeps_negative_scored_image_when_page_is_text_evidence() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            contexts = {
-                26: "安装右盖 检查曲轴油封 安装离合器拉杆",
-                27: (
-                    "A孔周围3mm内不得有平面密封胶。"
-                    "B段密封胶需要均匀抹薄、抹平。"
-                    "D段范围内直接涂抹平面密封硅胶。"
-                    "拆卸离合器。"
-                ),
-            }
-            return [
-                {
-                    "id": f"img-{page}",
-                    "content": f"第{page}页插图",
-                    "metadata": {
-                        "chunk_type": "image",
-                        "document_id": "manual-doc",
-                        "page": page,
-                        "image_url": f"http://example.test/p{page}.png",
-                        "visual_context_text": contexts[page],
-                    },
-                }
-            ]
-
-    metadata = {
-        "original_user_message": "安装右盖时曲轴油封和离合器拉杆要注意什么？",
-        "_deterministic_answer_evidence_pages": [26, 27],
-    }
-    images = [_img(26), _img(27)]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [26, 27]
-
-
-def test_action_context_filter_prefers_install_page_over_adjacent_disassembly_page() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            records = {
-                16: [
-                    {
-                        "id": "img-disassembly",
-                        "content": "4.8 气门 第16页插图",
-                        "metadata": {
-                            "chunk_type": "image",
-                            "document_id": "manual-doc",
-                            "page": 16,
-                            "image_url": "http://example.test/p16.png",
-                            "visual_context_text": "拆卸气门 取下滑动挺柱 使用气门拆装器压缩气门弹簧",
-                        },
-                    }
-                ],
-                17: [
-                    {
-                        "id": "img-install",
-                        "content": "4.8 气门 第17页插图",
-                        "metadata": {
-                            "chunk_type": "image",
-                            "document_id": "manual-doc",
-                            "page": 17,
-                            "image_url": "http://example.test/p17.png",
-                            "visual_context_text": "安装气门 装上气门锁夹 安装气门间隙调整垫片和滑动挺柱",
-                        },
-                    }
-                ],
-            }
-            return records.get(page, [])
-
-    metadata = {"original_user_message": "如何安装气门？"}
-    images = [_img(16), _img(17)]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [17]
-
-
-def test_action_context_filter_drops_negative_evidence_page_when_strong_action_image_exists() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            contexts = {
-                16: (
-                    "4.8 气门 拆卸气门 取下滑动挺柱 使用气门拆装器压缩气门弹簧 "
-                    "依次拆下气门锁夹 气门弹簧上圈 气门外弹簧 气门内弹簧 "
-                    "安装气门 依次安装气门 气门弹簧座 气门杆径油封"
-                ),
-                17: "4.8 气门 安装气门 装上气门锁夹 安装气门间隙调整垫片和滑动挺柱",
-            }
-            return [
-                {
-                    "id": f"img-{page}",
-                    "content": contexts[page],
-                    "metadata": {
-                        "chunk_type": "image",
-                        "document_id": "manual-doc",
-                        "page": page,
-                        "image_url": f"http://example.test/p{page}.png",
-                        "visual_context_text": contexts[page],
-                    },
-                }
-            ]
-
-    metadata = {
-        "original_user_message": "如何安装气门？",
-        "_deterministic_answer_evidence_pages": [16, 17],
-    }
-    images = [
-        _img(16, "4.8 气门"),
-        _img(17, "4.8 气门"),
-    ]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [17]
-
-
-def test_action_context_filter_keeps_later_evidence_page_even_when_next_install_section_bleeds_in() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            contexts = {
-                11: "4.3 凸轮轴 拆卸凸轮轴 拆下气缸头盖 对角拧松座盖螺栓 取下凸轮轴座盖",
-                12: (
-                    "4.3 凸轮轴 先取下进气凸轮轴 再取下排气凸轮轴 "
-                    "检查凸轮轴 安装凸轮轴 安装顺序 安装座盖 安装涨紧器"
-                ),
-            }
-            return [
-                {
-                    "id": f"img-{page}",
-                    "content": contexts[page],
-                    "metadata": {
-                        "chunk_type": "image",
-                        "document_id": "manual-doc",
-                        "page": page,
-                        "image_url": f"http://example.test/p{page}.png",
-                        "visual_context_text": contexts[page],
-                    },
-                }
-            ]
-
-    metadata = {
-        "original_user_message": "拆卸凸轮轴时先取下进气还是排气凸轮轴？",
-        "_deterministic_answer_evidence_pages": [11, 12],
-    }
-    images = [
-        _img(11, "4.3 凸轮轴"),
-        _img(12, "4.3 凸轮轴"),
-    ]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [11, 12]
-
-
-def test_collect_direct_evidence_page_images_renders_pdf_page_when_no_indexed_image(tmp_path, monkeypatch) -> None:
+def test_collect_direct_evidence_page_images_does_not_render_pdf_page_without_explicit_request(
+    tmp_path,
+    monkeypatch,
+) -> None:
     fitz = pytest.importorskip("fitz", reason="PyMuPDF is optional on LoongArch")
     pdf_path = tmp_path / "manual.pdf"
     doc = fitz.open()
@@ -766,158 +869,8 @@ def test_collect_direct_evidence_page_images_renders_pdf_page_when_no_indexed_im
 
     images = _collect_direct_evidence_page_images(metadata, vector_service=FakeVectorService())
 
-    assert [image.page for image in images] == [1]
-    assert images[0].image_url.startswith("/files/rendered_pages/")
-    assert images[0].source_chunk_id == "rendered-page:manual-doc:1"
-
-
-def test_action_context_filter_drops_unrelated_inventory_image_on_text_evidence_page() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            contexts = {
-                35: "8.2 传动主副轴装配部件清单 序号 料件名称 数量 渐开线花键垫圈",
-                36: "8.3 拆卸传动装置 松开箱体所有螺栓 依次取下换挡轴 拨叉轴 传动主轴 传动副轴",
-            }
-            return [
-                {
-                    "id": f"img-{page}",
-                    "content": contexts[page],
-                    "metadata": {
-                        "chunk_type": "image",
-                        "document_id": "manual-doc",
-                        "page": page,
-                        "image_url": f"http://example.test/p{page}.png",
-                        "visual_context_text": contexts[page],
-                    },
-                }
-            ]
-
-    metadata = {
-        "original_user_message": "如何拆卸传动装置？",
-        "_deterministic_answer_evidence_pages": [35, 36],
-    }
-    images = [
-        _img(35, "8.2 传动主副轴装配部件清单"),
-        _img(36, "8.3 拆卸传动装置"),
-    ]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [36]
-
-
-def test_action_context_filter_falls_back_to_text_evidence_pages_not_all_images_when_context_is_mixed() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            contexts = {
-                16: (
-                    "4.8 气门 拆卸气门 取下滑动挺柱 使用气门拆装器压缩气门弹簧 "
-                    "安装气门 装上 装入 放入 合上 拧紧 套入 旋入 "
-                    "气缸活塞装配部件清单 序号 零件名称 数量"
-                ),
-                17: "安装气门 装上气门锁夹 安装气门间隙调整垫片和滑动挺柱",
-            }
-            return [
-                {
-                    "id": f"img-{page}",
-                    "content": contexts[page],
-                    "metadata": {
-                        "chunk_type": "image",
-                        "document_id": "manual-doc",
-                        "page": page,
-                        "image_url": f"http://example.test/p{page}.png",
-                        "visual_context_text": contexts[page],
-                    },
-                }
-            ]
-
-    metadata = {
-        "original_user_message": "如何拆卸气门？",
-        "_deterministic_answer_evidence_pages": [16],
-    }
-    images = [
-        _img(16, "4.8 气门"),
-        EvidenceImage(
-            image_url="http://example.test/p17.png",
-            caption="第17页插图",
-            page=17,
-            section_title="4.8 气门",
-            document_id="manual-doc",
-            source_chunk_id="img-17",
-            context_role="direct_lookup",
-        ),
-    ]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [16]
-
-
-def test_action_context_filter_keeps_evidence_page_with_procedure_context_even_when_inventory_text_bleeds_in() -> None:
-    class FakeVectorService:
-        def get_page_records(self, document_id, page, chunk_type=None, limit=20):
-            contexts = {
-                21: (
-                    "5.6 安装活塞环 活塞环开口位置与角度 任意两环开口之间应错开120° "
-                    "安装活塞销 安装活塞销挡圈 拆卸 取下 松开 断开 拉出 取出 "
-                    "序号 零件名称 数量"
-                ),
-                22: "5.6 安装活塞环 装入活塞一环环槽内 R标记面朝活塞顶部",
-            }
-            return [
-                {
-                    "id": f"img-{page}",
-                    "content": contexts[page],
-                    "metadata": {
-                        "chunk_type": "image",
-                        "document_id": "manual-doc",
-                        "page": page,
-                        "image_url": f"http://example.test/p{page}.png",
-                        "visual_context_text": contexts[page],
-                    },
-                }
-            ]
-
-    metadata = {
-        "original_user_message": "如何安装活塞环？",
-        "_deterministic_answer_evidence_pages": [21],
-    }
-    images = [
-        EvidenceImage(
-            image_url="http://example.test/p21.png",
-            caption="第21页插图",
-            page=21,
-            section_title="5.6 安装活塞环",
-            document_id="manual-doc",
-            source_chunk_id="img-21",
-            context_role="page_lookup",
-        ),
-        EvidenceImage(
-            image_url="http://example.test/p22.png",
-            caption="第22页插图",
-            page=22,
-            section_title="5.6 安装活塞环",
-            document_id="manual-doc",
-            source_chunk_id="img-22",
-            context_role="direct_lookup",
-        ),
-    ]
-
-    filtered = _filter_evidence_images_by_action_context(
-        images,
-        metadata,
-        vector_service=FakeVectorService(),
-    )
-
-    assert [image.page for image in filtered] == [21, 22]
+    assert images == []
+    assert not (tmp_path / "public" / "rendered_pages").exists()
 
 
 def test_query_target_page_narrowing_drops_neighbor_substeps_from_expanded_text_evidence() -> None:
@@ -1210,6 +1163,7 @@ def test_target_section_filter_drops_same_page_neighbor_section_image_for_invent
         "_deterministic_answer_section_title": "5.1 气缸活塞装配部件清单",
     }
 
+    metadata = _with_final_claims(metadata)
     filtered = _filter_evidence_images_to_target_section(images, metadata)
 
     assert [(image.section_title, image.source_chunk_id) for image in filtered] == [
@@ -1217,8 +1171,8 @@ def test_target_section_filter_drops_same_page_neighbor_section_image_for_invent
     ]
 
 
-def test_section_overview_uses_visual_context_to_choose_cross_page_inventory_image(monkeypatch) -> None:
-    """A stale text-evidence page must not hide the image that covers all requested parts."""
+def test_section_overview_does_not_use_page_ocr_to_choose_inventory_image(monkeypatch) -> None:
+    """Quantity answers do not authorize an image through shared page OCR."""
 
     class FakeVectorService:
         def get_page_records(self, document_id, page, chunk_type=None, limit=20):
@@ -1305,7 +1259,7 @@ def test_section_overview_uses_visual_context_to_choose_cross_page_inventory_ima
 
     selected = _select_evidence_images_for_response(images, metadata)
 
-    assert [image.page for image in selected] == [24]
+    assert selected == []
 
 
 def test_image_context_prefers_page_local_visual_text_over_cross_page_record_content() -> None:
@@ -1357,8 +1311,8 @@ def test_image_anchor_extraction_is_not_limited_to_known_component_terms() -> No
     assert {"k口", "m区", "q槽"}.issubset(set(anchors))
 
 
-def test_complete_cross_page_inventory_keeps_rendered_missing_page() -> None:
-    """完整跨页清单缺少内嵌图时，页面截图仍属于必要证据图。"""
+def test_complete_cross_page_inventory_returns_real_section_image_not_rendered_page() -> None:
+    """完整跨页清单可返回章节真实图，但不自动授权整页截图。"""
     title = "5.1 某总成装配部件清单"
     images = [
         EvidenceImage(
@@ -1389,10 +1343,11 @@ def test_complete_cross_page_inventory_keeps_rendered_missing_page() -> None:
         "query_understanding_selection_mode": "evidence_pages",
         "response_policy": {"images_allowed": True},
     }
+    metadata = _with_final_claims(metadata)
 
     selected = _select_evidence_images_for_response(images, metadata)
 
-    assert [image.page for image in selected] == [17, 18]
+    assert [image.source_chunk_id for image in selected] == ["image-p17"]
 
 
 def test_direct_section_images_read_qualified_results_from_evidence_envelope(monkeypatch) -> None:

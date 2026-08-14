@@ -6,6 +6,7 @@ import hashlib
 import re
 from typing import Any, Dict, Iterable, List
 
+from services.knowledge.image_binding import build_layout_image_bindings
 from services.retrieval.procedure_scope import procedure_scope_from_toc_path
 
 
@@ -63,6 +64,18 @@ OIL_SPEC_RE = re.compile(r"(?:\b\d{1,2}W-\d{2}\b|\bAPI\s*[A-Z]{2}\b)", re.IGNORE
 
 def _as_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _as_bbox(value: Any) -> List[float]:
+    if not isinstance(value, (list, tuple)) or len(value) != 4:
+        return []
+    try:
+        bbox = [float(item) for item in value]
+    except (TypeError, ValueError):
+        return []
+    if bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
+        return []
+    return bbox
 
 
 def _compact_text(value: Any, limit: int = CONTEXT_FIELD_LIMIT) -> str:
@@ -600,9 +613,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
     """Build retrieval-ready child chunks for one parsed manual section."""
     chunks: List[Dict[str, Any]] = []
     step_chunk_ids: List[str] = []
-    step_chunk_ids_by_page: Dict[Any, List[str]] = {}
     text_chunk_ids: List[str] = []
-    text_chunk_ids_by_page: Dict[Any, List[str]] = {}
     text_context_snippets: List[str] = []
     text_context_snippets_by_page: Dict[Any, List[str]] = {}
     # 稳定的 section 身份：优先使用标题 hash，保证跨版本 provenance 可追踪
@@ -618,6 +629,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             context = {
                 "context_before": raw.get("context_before", ""),
                 "context_after": raw.get("context_after", ""),
+                "bbox": _as_bbox(raw.get("bbox")),
             }
         else:
             text = _as_text(raw)
@@ -671,9 +683,7 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 if chunk:
                     emitted_primary.append(chunk)
                     step_chunk_ids.append(chunk["id"])
-                    step_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_chunk_ids.append(chunk["id"])
-                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
                     text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
         elif _looks_like_troubleshooting(text):
@@ -695,7 +705,6 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             if chunk:
                 emitted_primary.append(chunk)
                 text_chunk_ids.append(chunk["id"])
-                text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                 text_context_snippets.append(chunk["metadata"]["raw_text"])
                 text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
         elif _looks_like_parameter(text, label):
@@ -726,7 +735,6 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 if chunk:
                     emitted_primary.append(chunk)
                     text_chunk_ids.append(chunk["id"])
-                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
                     text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
         else:
@@ -752,7 +760,6 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 if chunk:
                     emitted_primary.append(chunk)
                     text_chunk_ids.append(chunk["id"])
-                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
                     text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
 
@@ -783,7 +790,6 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 )
                 if chunk:
                     text_chunk_ids.append(chunk["id"])
-                    text_chunk_ids_by_page.setdefault(page, []).append(chunk["id"])
                     text_context_snippets.append(chunk["metadata"]["raw_text"])
                     text_context_snippets_by_page.setdefault(page, []).append(chunk["metadata"]["raw_text"])
 
@@ -839,6 +845,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 "rows": structured_rows,
             },
         }
+        table_bbox = _as_bbox(table.get("bbox"))
+        if table_bbox:
+            table_meta["bbox"] = table_bbox
         table_full_chunk = None
         if table_text:
             table_full_chunk = _emit_chunk(
@@ -928,14 +937,9 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 stable_suffix=f"{table_index:04d}:row:{row_index:04d}",
             )
 
-    procedure_scope_ids_by_page: Dict[Any, List[str]] = {}
-    for text_chunk in chunks:
-        scope_id = str((text_chunk.get("metadata") or {}).get("procedure_scope_id") or "")
-        text_page = text_chunk.get("page")
-        if scope_id and scope_id not in procedure_scope_ids_by_page.setdefault(text_page, []):
-            procedure_scope_ids_by_page[text_page].append(scope_id)
-
-    for image_index, image in enumerate(section.get("images") or []):
+    section_images = list(section.get("images") or [])
+    image_binding_bundles = build_layout_image_bindings(chunks, section_images)
+    for image_index, image in enumerate(section_images):
         caption = _as_text(image.get("caption"))
         image_name = _as_text(image.get("image_name")) or f"img_{image_index}"
         page = image.get("page")
@@ -947,8 +951,8 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
             ]
         )
         text = caption or f"{_as_text(section.get('section_title'))} page {page or '?'} image"
-        same_page_step_ids = list(step_chunk_ids_by_page.get(page) or [])
-        related_step_ids = same_page_step_ids or step_chunk_ids[:5]
+        image_bbox = _as_bbox(image.get("bbox"))
+        binding_bundle = image_binding_bundles[image_index]
         _emit_chunk(
             chunks,
             text=text,
@@ -968,13 +972,15 @@ def build_section_index_chunks(section: Dict[str, Any], section_index: int = 0) 
                 "image_index": image_index,
                 "image_name": image_name,
                 "caption": caption,
+                "bbox": image_bbox,
+                "caption_bbox": _as_bbox(image.get("caption_bbox")),
+                "caption_confidence": image.get("caption_confidence"),
+                "image_width": image.get("width"),
+                "image_height": image.get("height"),
+                "image_format": _as_text(image.get("format")),
                 "visual_context_text": visual_context_text,
                 "answer_role": "visual_reference",
-                "related_step_chunk_ids": related_step_ids,
-                "related_text_chunk_ids": (text_chunk_ids_by_page.get(page) or text_chunk_ids[:5]),
-                "procedure_scope_ids": procedure_scope_ids_by_page.get(page) or [],
-                "binding_role": "same_page_step" if same_page_step_ids else "section_fallback",
-                "binding_confidence": 1.0 if same_page_step_ids else (0.35 if related_step_ids else 0.0),
+                **binding_bundle,
             },
         )
 

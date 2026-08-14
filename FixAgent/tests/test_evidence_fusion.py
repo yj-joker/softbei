@@ -269,3 +269,64 @@ def test_graph_path_binds_same_section_manual_treatment_after_query_expansion() 
     treatment = next(row for row in fused["aspect_support"] if row["aspect_id"] == "manual-treatment")
     assert treatment["supported"] is True
     assert treatment["evidence_ids"] == [manual["evidence_id"]]
+
+
+def test_structured_repair_contract_binds_same_path_manual_evidence_without_query_markers() -> None:
+    graph = {
+        **_graph_entry(),
+        "source": {
+            "document_id": "manual-1",
+            "document_version": "v1",
+            "section_id": "sec-1",
+            "source_chunk_uids": ["chunk-1"],
+            "pages": [12],
+        },
+    }
+    manual = {
+        **_manual_entry(),
+        "text": "检查张紧轮轴承，确认损坏后更换张紧轮轴承。",
+        "source": {
+            "document_id": "manual-1",
+            "document_version": "v1",
+            "parent_section_id": "sec-1",
+            "chunk_uid": "chunk-1",
+            "page": 12,
+        },
+    }
+
+    fused = fuse_evidence_support(
+        "请完成当前维修任务",
+        _bundle("fault-cause", "张紧轮轴承损坏", manual_supported=True),
+        EvidenceLedger([graph, manual]),
+        query_contract={
+            "task_action": "repair_guidance",
+            "component": "张紧轮轴承",
+            "fault": "损坏",
+            "requested_fields": ["处理建议"],
+        },
+    )
+
+    treatment = next(row for row in fused["aspect_support"] if row["aspect_id"] == "manual-treatment")
+    assert treatment["supported"] is True
+    assert treatment["user_obligation"] is True
+    assert treatment["evidence_ids"] == [manual["evidence_id"]]
+
+
+def test_unqualified_graph_entry_cannot_remove_qualified_manual_support() -> None:
+    manual = _manual_entry()
+    low_graph = {**_graph_entry(), "qualification": "routing_only", "quality_tier": "medium"}
+    bundle = _bundle("inspection", "张紧轮检查方法", manual_supported=True)
+
+    without_graph = fuse_evidence_support(
+        "如何检查张紧轮",
+        bundle,
+        EvidenceLedger([manual]),
+    )
+    with_low_graph = fuse_evidence_support(
+        "如何检查张紧轮",
+        bundle,
+        EvidenceLedger([manual, low_graph]),
+    )
+
+    assert with_low_graph["aspect_support"] == without_graph["aspect_support"]
+    assert with_low_graph["supported_aspect_ids"] == without_graph["supported_aspect_ids"]

@@ -17,6 +17,10 @@ from services.pending_clarification import build_evidence_conflict_clarification
 
 
 _MANUAL_LEADS = ("根据手册", "依据手册", "按照手册", "根据资料", "依据资料")
+_INTERNAL_AGGREGATE_CLAIM_IDS = frozenset({
+    "direct-manual-answer",
+    "knowledge-answer",
+})
 _UNSUPPORTED_GUESS_MARKERS = (
     "常见原因包括",
     "可能是",
@@ -75,6 +79,9 @@ class ResponsePlan:
     ledger_digest: str
     authorized_claim_evidence_bindings: tuple[dict[str, Any], ...] = ()
     graph_evidence_bound_ids: tuple[str, ...] = ()
+    base_manual_claims: tuple[str, ...] = ()
+    graph_additions: tuple[str, ...] = ()
+    baseline_evidence_refs: tuple[str, ...] = ()
     pending_clarification: dict[str, Any] | None = None
 
     def deterministic_fallback(self) -> str:
@@ -177,6 +184,9 @@ class ResponsePlan:
                 for binding in self.authorized_claim_evidence_bindings
             ],
             "graph_evidence_bound_ids": list(self.graph_evidence_bound_ids),
+            "base_manual_claims": list(self.base_manual_claims),
+            "graph_additions": list(self.graph_additions),
+            "baseline_evidence_refs": list(self.baseline_evidence_refs),
             "claim_evidence_bindings": [],
             "graph_evidence_used_ids": [],
         }
@@ -373,6 +383,47 @@ def build_response_plan(
         for evidence_id in binding["evidence_ids"]
         if allowed_by_id[evidence_id].get("source_type") == "graph"
     ))
+    graph_capability_claim_ids = {
+        str(row.get("aspect_id") or "")
+        for row in support_rows
+        if str(row.get("aspect_origin") or "") == "graph_capability"
+    }
+    base_manual_claims = tuple(dict.fromkeys(
+        str(binding.get("claim_id") or "")
+        for binding in authorized_claim_evidence_bindings
+        if str(binding.get("claim_id") or "").strip()
+        and str(binding.get("claim_id") or "") not in _INTERNAL_AGGREGATE_CLAIM_IDS
+        and str(binding.get("claim_id") or "") not in graph_capability_claim_ids
+        and any(
+            allowed_by_id[evidence_id].get("source_type") == "manual"
+            for evidence_id in binding.get("evidence_ids") or []
+            if evidence_id in allowed_by_id
+        )
+    ))
+    baseline_evidence_refs = tuple(dict.fromkeys(
+        evidence_id
+        for binding in authorized_claim_evidence_bindings
+        for evidence_id in binding.get("evidence_ids") or []
+        if evidence_id in allowed_by_id
+        and allowed_by_id[evidence_id].get("source_type") == "manual"
+    ))
+    additive_claim_types = (
+        "device_identity",
+        "component_ownership",
+        "fault_relation",
+    )
+    graph_additions = tuple(
+        claim_type
+        for claim_type in additive_claim_types
+        if any(
+            claim_type in set(
+                allowed_by_id[evidence_id].get("authorized_claim_types")
+                or allowed_by_id[evidence_id].get("claim_types")
+                or []
+            )
+            for evidence_id in graph_evidence_bound_ids
+        )
+    )
     identity = {
         "coverage_status": coverage_status,
         "source_mode": source_mode,
@@ -381,6 +432,9 @@ def build_response_plan(
         "ledger_digest": ledger.digest,
         "authorized_claim_evidence_bindings": authorized_claim_evidence_bindings,
         "graph_evidence_bound_ids": graph_evidence_bound_ids,
+        "base_manual_claims": base_manual_claims,
+        "graph_additions": graph_additions,
+        "baseline_evidence_refs": baseline_evidence_refs,
     }
     canonical = json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     plan_id = f"response-plan-{hashlib.sha256(canonical.encode('utf-8')).hexdigest()[:16]}"
@@ -401,6 +455,9 @@ def build_response_plan(
         ledger_digest=ledger.digest,
         authorized_claim_evidence_bindings=authorized_claim_evidence_bindings,
         graph_evidence_bound_ids=graph_evidence_bound_ids,
+        base_manual_claims=base_manual_claims,
+        graph_additions=graph_additions,
+        baseline_evidence_refs=baseline_evidence_refs,
         pending_clarification=pending_clarification,
     )
 
@@ -479,7 +536,7 @@ def _manual_solution_matches_graph_source(
     graph_sections = _source_values(graph_source, "section_id")
     graph_chunks = _source_values(graph_source, "source_chunk_uids")
     graph_pages = _source_values(graph_source, "pages")
-    if not all((graph_document, graph_version, graph_sections, graph_chunks, graph_pages)):
+    if not graph_document:
         return False
 
     manual_sections = _source_values(manual_source, "section_id", "parent_section_id")
@@ -493,13 +550,25 @@ def _manual_solution_matches_graph_source(
         "table_id",
     )
     manual_pages = _source_values(manual_source, "pages", "page")
-    if (
-        str(manual_source.get("document_id") or "").strip() != graph_document
-        or str(manual_source.get("document_version") or "").strip() != graph_version
-        or not graph_sections.intersection(manual_sections)
-        or not graph_chunks.intersection(manual_chunks)
-        or not _page_range_matches(graph_pages, manual_pages)
+    manual_document = str(manual_source.get("document_id") or "").strip()
+    manual_version = str(manual_source.get("document_version") or "").strip()
+    if manual_document != graph_document:
+        return False
+    if graph_version and manual_version and graph_version != manual_version:
+        return False
+
+    locator_match = False
+    for graph_values, manual_values, matcher in (
+        (graph_sections, manual_sections, lambda left, right: bool(left.intersection(right))),
+        (graph_chunks, manual_chunks, lambda left, right: bool(left.intersection(right))),
+        (graph_pages, manual_pages, _page_range_matches),
     ):
+        if not graph_values or not manual_values:
+            continue
+        if not matcher(graph_values, manual_values):
+            return False
+        locator_match = True
+    if not locator_match:
         return False
 
     graph_device = str((graph_entry.get("device") or {}).get("name") or "").strip()
@@ -604,8 +673,12 @@ def _graph_diagnostic_fallback(
     if solution_text:
         lines.append(f"处理建议：手册对应故障行记录“{solution_text}”。")
         canonical_treatment = _canonical_manual_treatment(graph_entry, solution_text)
-        if canonical_treatment and _normalized(canonical_treatment) not in _normalized(solution_text):
-            lines.append(f"处理结论：{canonical_treatment}。")
+        if canonical_treatment:
+            if _normalized(canonical_treatment) not in _normalized(solution_text):
+                lines.append(f"处理结论：{canonical_treatment}。")
+            target = canonical_treatment.removeprefix("更换").strip()
+            if target:
+                lines.append(f"处理动作：{target}更换。")
     else:
         lines.append("处理建议：当前合格证据未给出进一步处理方法。")
     if source_label:
@@ -693,7 +766,14 @@ def _graph_claim_type(
 ) -> str:
     aspect_id = str(binding.get("claim_id") or "").strip().lower().replace("_", "-")
     explicit = _GRAPH_CLAIM_TYPES_BY_ASPECT.get(aspect_id)
-    available = {str(value) for value in entry.get("claim_types") or []}
+    available = {
+        str(value)
+        for value in (
+            entry.get("authorized_claim_types")
+            or entry.get("claim_types")
+            or []
+        )
+    }
     if explicit in available:
         return explicit
     for candidate in (
@@ -705,6 +785,92 @@ def _graph_claim_type(
         if candidate in available:
             return candidate
     return ""
+
+
+def _authorized_additive_claim_types(entry: Mapping[str, Any]) -> set[str]:
+    available = {
+        str(value)
+        for value in (
+            entry.get("authorized_claim_types")
+            or entry.get("claim_types")
+            or []
+        )
+    }
+    return available.intersection({
+        "device_identity",
+        "component_ownership",
+        "fault_relation",
+    })
+
+
+def _render_additive_graph_block(plan: ResponsePlan) -> str:
+    if not plan.baseline_evidence_refs or not plan.graph_additions:
+        return ""
+    bound_ids = set(plan.graph_evidence_bound_ids)
+    requested = set(plan.graph_additions)
+    relations: list[str] = []
+    for entry in plan.allowed_evidence:
+        evidence_id = str(entry.get("evidence_id") or "")
+        if entry.get("source_type") != "graph" or evidence_id not in bound_ids:
+            continue
+        claim_types = _authorized_additive_claim_types(entry).intersection(requested)
+        device = str((entry.get("device") or {}).get("name") or "").strip()
+        component = str((entry.get("component") or {}).get("name") or "").strip()
+        fault = str((entry.get("fault") or {}).get("name") or "").strip()
+        if {"component_ownership", "fault_relation"}.issubset(claim_types) and all(
+            (device, component, fault)
+        ):
+            relation = f"{device} → {component} → {fault}"
+        elif "fault_relation" in claim_types and component and fault:
+            relation = f"{component} → {fault}"
+        elif "component_ownership" in claim_types and device and component:
+            relation = f"{device} → {component}"
+        elif "device_identity" in claim_types and device:
+            relation = device
+        else:
+            continue
+        if relation not in relations:
+            relations.append(relation)
+    if not relations:
+        return ""
+    rendered = "；".join(f"“{relation}”" for relation in relations)
+    return (
+        f"故障关系：知识图谱确认{rendered}的归属链。\n"
+        "处理依据：保留普通 RAG 基于手册生成的完整处理说明。"
+    )
+
+
+def _audit_additive_monotonicity(
+    plan: ResponsePlan,
+    baseline_answer: str,
+    candidate_answer: str,
+) -> tuple[str, ...]:
+    violations: list[str] = []
+    if baseline_answer and not candidate_answer.startswith(baseline_answer):
+        violations.append("baseline_answer_not_preserved")
+
+    allowed_manual_ids = {
+        str(entry.get("evidence_id") or "")
+        for entry in plan.allowed_evidence
+        if entry.get("source_type") == "manual"
+        and entry.get("qualification") == "qualified"
+    }
+    for evidence_id in plan.baseline_evidence_refs:
+        if evidence_id not in allowed_manual_ids:
+            violations.append(f"baseline_evidence_ref_missing:{evidence_id}")
+
+    bindings_by_claim = {
+        str(binding.get("claim_id") or ""): binding
+        for binding in plan.authorized_claim_evidence_bindings
+    }
+    for claim_id in plan.base_manual_claims:
+        binding = bindings_by_claim.get(claim_id)
+        if binding and not _manual_claim_is_emitted(
+            candidate_answer,
+            str(binding.get("claim_text") or ""),
+        ):
+            violations.append(f"baseline_claim_missing:{claim_id}")
+    return tuple(dict.fromkeys(violations))
 
 
 def _graph_claim_is_emitted(
@@ -879,8 +1045,75 @@ def finalize_response(
         for conflict in plan.conflicts:
             if not all(str(value) in answer for value in conflict.get("values") or []):
                 violations.append("conflict_value_omitted")
+    if not evidence_rendered and plan.coverage_status in {"complete", "partial"}:
+        allowed_by_id = {
+            str(entry.get("evidence_id") or ""): entry
+            for entry in plan.allowed_evidence
+            if str(entry.get("evidence_id") or "").strip()
+        }
+        for binding in plan.authorized_claim_evidence_bindings:
+            claim_id = str(binding.get("claim_id") or "").strip()
+            if claim_id in _INTERNAL_AGGREGATE_CLAIM_IDS:
+                continue
+            bound_entries = [
+                allowed_by_id.get(str(evidence_id))
+                for evidence_id in binding.get("evidence_ids") or []
+            ]
+            if not any(
+                entry and entry.get("source_type") == "manual"
+                for entry in bound_entries
+            ):
+                continue
+            if not _manual_claim_is_emitted(
+                answer,
+                str(binding.get("claim_text") or ""),
+            ):
+                violations.append(f"omitted_supported_claim:{claim_id}")
 
     deduped = tuple(dict.fromkeys(violations))
+    if plan.baseline_evidence_refs and plan.graph_additions:
+        if deduped:
+            fallback = plan.deterministic_fallback()
+            return _response_audit_result(plan, fallback, False, deduped, True)
+        baseline_answer = answer
+
+        graph_block = _render_additive_graph_block(plan)
+        candidate_answer = baseline_answer
+        if graph_block and graph_block not in baseline_answer:
+            candidate_answer = f"{baseline_answer}\n\n{graph_block}" if baseline_answer else graph_block
+        monotonicity_violations = _audit_additive_monotonicity(
+            plan,
+            baseline_answer,
+            candidate_answer,
+        )
+        if monotonicity_violations:
+            return ResponseAuditResult(
+                answer=baseline_answer,
+                passed=False,
+                violations=tuple(dict.fromkeys((*deduped, *monotonicity_violations))),
+                used_fallback=True,
+                claim_evidence_bindings=(),
+                graph_evidence_used_ids=(),
+            )
+        if plan.graph_additions and not graph_block:
+            return ResponseAuditResult(
+                answer=baseline_answer,
+                passed=False,
+                violations=tuple(dict.fromkeys((*deduped, "graph_addition_not_rendered"))),
+                used_fallback=True,
+                claim_evidence_bindings=(),
+                graph_evidence_used_ids=(),
+            )
+        if graph_block:
+            return _response_audit_result(
+                plan,
+                candidate_answer,
+                True,
+                (),
+                False,
+            )
+        return _response_audit_result(plan, baseline_answer, True, (), False)
+
     if deduped:
         fallback = plan.deterministic_fallback()
         return _response_audit_result(plan, fallback, False, deduped, True)
@@ -892,6 +1125,27 @@ def finalize_response(
             if fallback_bindings:
                 return _response_audit_result(plan, fallback, True, (), True)
     return _response_audit_result(plan, answer, True, (), False)
+
+
+def _manual_claim_is_emitted(answer: str, claim_text: str) -> bool:
+    normalized_answer = "".join(char for char in _normalized(answer) if char.isalnum())
+    normalized_claim = "".join(char for char in _normalized(claim_text) if char.isalnum())
+    if not normalized_claim or len(normalized_claim) < 2:
+        return True
+    if normalized_claim in normalized_answer:
+        return True
+    claim_pairs = {
+        normalized_claim[index:index + 2]
+        for index in range(len(normalized_claim) - 1)
+    }
+    if not claim_pairs:
+        return True
+    emitted_pairs = {
+        normalized_answer[index:index + 2]
+        for index in range(max(0, len(normalized_answer) - 1))
+    }
+    required_matches = max(1, (len(claim_pairs) + 2) // 3)
+    return len(claim_pairs.intersection(emitted_pairs)) >= required_matches
 
 
 def _detect_source_mode(query: str) -> str:

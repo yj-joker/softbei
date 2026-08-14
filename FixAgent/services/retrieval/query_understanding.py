@@ -156,6 +156,20 @@ def has_negative_image_request(query: str) -> bool:
     return any(hint in normalized or hint in compact for hint in _NEGATIVE_IMAGE_HINTS)
 
 
+def is_deictic_image_followup(query: str) -> bool:
+    """Return True when a visual request depends entirely on prior context."""
+    if has_negative_image_request(query):
+        return False
+    compact = re.sub(r"[\s，。；;！？!?、]", "", str(query or ""))
+    return bool(
+        re.fullmatch(
+            r"(?:有)?(?:这|那|上面|刚才|对应|相关|步骤中|步骤里)?"
+            r"(?:的)?(?:图片|图|图示|示意图)(?:呢|吗|在哪里|有吗)?",
+            compact,
+        )
+    )
+
+
 def _strip_target_noise(query: str) -> str:
     target = _normalize_spaces(query)
     for phrase in (*_TARGET_NOISE_PHRASES, *_NEGATIVE_IMAGE_HINTS, "只告诉我", "只回答", "只列出"):
@@ -180,6 +194,9 @@ def understand_query(query: str) -> QueryUnderstanding:
         )
 
     compact_query = re.sub(r"\s+", "", normalized)
+    has_corresponding_image_phrase = bool(
+        re.search(r"对应(?:的)?(?:图片|图示|插图|示意图|配图|图)", compact_query)
+    )
     has_contract_image_phrase = (
         any(hint in compact_query for hint in _SINGLE_TARGET_CONTRACT_HINTS)
         or bool(re.search(r"(?:对应|相关|这一步|那一步)(?:的)?图", compact_query))
@@ -200,7 +217,7 @@ def understand_query(query: str) -> QueryUnderstanding:
         )
 
     target = _strip_target_noise(normalized)
-    if has_single_signal:
+    if has_single_signal or has_corresponding_image_phrase:
         image_mode = "single_best"
         confidence = 0.9 if target else 0.6
     elif has_multi_signal:
@@ -210,7 +227,11 @@ def understand_query(query: str) -> QueryUnderstanding:
         image_mode = "same_section"
         confidence = 0.65 if target else 0.45
 
-    if has_single_signal or any(hint in compact_query for hint in _SINGLE_TARGET_CONTRACT_HINTS):
+    if (
+        has_single_signal
+        or has_corresponding_image_phrase
+        or any(hint in compact_query for hint in _SINGLE_TARGET_CONTRACT_HINTS)
+    ):
         selection_mode = "single_target"
     elif any(hint in compact_query for hint in _EVIDENCE_PAGE_CONTRACT_HINTS):
         selection_mode = "evidence_pages"

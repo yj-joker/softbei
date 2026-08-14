@@ -1453,6 +1453,35 @@ def test_shared_finalizer_runs_post_retrieval_fallback_after_evidence_audit(monk
     assert calls == [(request.message, "出口候选回答")]
 
 
+def test_shared_finalizer_preserves_audited_output_when_ai_fallback_is_unavailable(
+    monkeypatch,
+) -> None:
+    request = ChatRequest(session_id="fallback-unavailable", message="engine fault")
+    input_data = AgentInput(user_message=request.message, session_id=request.session_id)
+    candidate = AgentOutput(agent_name="fix_agent", message="candidate")
+    audited = AgentOutput(
+        agent_name="fix_agent",
+        message="verified retrieval result",
+        metadata={"coverage_status": "unsupported"},
+    )
+
+    monkeypatch.setattr(main, "_finalize_knowledge_output", lambda *args, **kwargs: audited)
+
+    async def _unavailable(*args, **kwargs):
+        raise RuntimeError("upstream model unavailable")
+
+    monkeypatch.setattr(main, "_try_post_retrieval_ai_fallback", _unavailable)
+
+    output = asyncio.run(
+        main._finalize_knowledge_output_with_fallback(request, input_data, candidate)
+    )
+
+    assert output is audited
+    assert output.message == "verified retrieval result"
+    assert output.metadata["post_retrieval_fallback_status"] == "unavailable"
+    assert output.metadata["post_retrieval_fallback_error_type"] == "RuntimeError"
+
+
 def test_complete_exact_title_table_answer_does_not_append_stale_partial_notice() -> None:
     original_bundle = {
         "coverage_status": "partial",
@@ -1671,9 +1700,6 @@ def test_non_stream_policy_direct_skips_all_manual_overrides(monkeypatch) -> Non
     monkeypatch.setattr(main, "_collect_direct_section_table_items", _unexpected_async)
     monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", _unexpected_sync)
     monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", _unexpected_sync)
-    monkeypatch.setattr(main, "_collect_direct_section_images", _unexpected_async)
-    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", _unexpected_sync)
-
     response = asyncio.run(main.chat(request))
 
     assert response.message == direct_output.message
@@ -1912,6 +1938,314 @@ def test_non_stream_table_override_does_not_read_uninitialized_manual_answer(mon
 
 async def _awaitable(value):
     return value
+
+
+_IMAGE_PIPELINE_FAILURE_STAGES = (
+    "extract_trace_images",
+    "section_image_lookup",
+    "merge_section_images",
+    "page_image_lookup",
+    "merge_page_images",
+    "image_evidence_gate",
+    "final_image_contract",
+)
+
+
+def _install_image_pipeline_failure(monkeypatch, failed_stage: str) -> None:
+    async def empty_section_images(*args, **kwargs):
+        return []
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("image stage unavailable")
+
+    monkeypatch.setattr(main, "_extract_evidence_images", lambda metadata: [])
+    monkeypatch.setattr(main, "_collect_direct_section_images", empty_section_images)
+    monkeypatch.setattr(main, "_merge_evidence_images", lambda existing, direct: list(existing) + list(direct))
+    monkeypatch.setattr(main, "_collect_direct_evidence_page_images", lambda metadata: [])
+    monkeypatch.setattr(main, "_select_evidence_images_for_response", lambda images, metadata: [])
+    monkeypatch.setattr(main, "_apply_final_image_contract", lambda message, images, metadata: (message, images))
+
+    if failed_stage == "extract_trace_images":
+        monkeypatch.setattr(main, "_extract_evidence_images", fail)
+    elif failed_stage == "section_image_lookup":
+        async def fail_section(*args, **kwargs):
+            fail()
+        monkeypatch.setattr(main, "_collect_direct_section_images", fail_section)
+    elif failed_stage == "merge_section_images":
+        monkeypatch.setattr(main, "_merge_evidence_images", fail)
+    elif failed_stage == "page_image_lookup":
+        monkeypatch.setattr(main, "_collect_direct_evidence_page_images", fail)
+    elif failed_stage == "merge_page_images":
+        calls = 0
+
+        def fail_second_merge(existing, direct):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                fail()
+            return list(existing) + list(direct)
+
+        monkeypatch.setattr(main, "_merge_evidence_images", fail_second_merge)
+    elif failed_stage == "image_evidence_gate":
+        monkeypatch.setattr(main, "_select_evidence_images_for_response", fail)
+    elif failed_stage == "final_image_contract":
+        monkeypatch.setattr(main, "_apply_final_image_contract", fail)
+
+
+def _image_failure_input(request: ChatRequest) -> AgentInput:
+    return AgentInput(
+        user_message=request.message,
+        session_id=request.session_id,
+        context={"scope_decision": {"status": "in_scope"}},
+    )
+
+
+def _image_failure_output(message: str) -> AgentOutput:
+    return AgentOutput(
+        agent_name="fix_agent",
+        message=message,
+        tools_used=["knowledge_retrieval"],
+        metadata={
+            "execution_mode": "react",
+            "react_trace": [],
+            "response_audit": {"passed": True},
+            "scope_decision": {"status": "in_scope"},
+        },
+        latency_ms=2,
+    )
+
+
+@pytest.mark.parametrize("failed_stage", _IMAGE_PIPELINE_FAILURE_STAGES)
+def test_non_stream_image_pipeline_failure_keeps_answer(monkeypatch, failed_stage: str) -> None:
+    request = ChatRequest(session_id=f"non-stream-image-{failed_stage}", message="如何安装起动电机")
+    input_data = _image_failure_input(request)
+
+    class Agent:
+        async def run_with_react(self, _input):
+            return _image_failure_output("按步骤安装起动电机，如图所示。")
+
+    class Review:
+        async def review(self, output, level="full"):
+            return output
+
+    async def identity_finalizer(request_value, input_value, output, **kwargs):
+        return output
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _async_none)
+    monkeypatch.setattr(main, "_try_route_plan_direct", _async_none)
+    monkeypatch.setattr(main, "_try_response_policy_direct", _async_none)
+    monkeypatch.setattr(main, "_try_scope_guard", lambda *args: None)
+    monkeypatch.setattr(main, "_try_domain_rule_direct", _async_none)
+    monkeypatch.setattr(main, "_should_use_rag_fast_path", lambda request: False)
+    monkeypatch.setattr(main, "get_fix_agent", lambda: Agent())
+    monkeypatch.setattr(main, "get_review_agent", lambda: Review())
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "build_follow_up", lambda *args: None)
+    monkeypatch.setattr(main, "_finalize_knowledge_output_with_fallback", identity_finalizer)
+    _install_image_pipeline_failure(monkeypatch, failed_stage)
+
+    response = asyncio.run(main.chat(request))
+
+    assert "按步骤安装起动电机" in response.message
+    assert "如图所示" not in response.message
+    assert response.evidence_images == []
+    assert response.metadata["image_selection_status"] == "failed"
+    assert response.metadata["image_selection_failed_stage"] == failed_stage
+
+
+@pytest.mark.parametrize("failed_stage", _IMAGE_PIPELINE_FAILURE_STAGES)
+def test_stream_image_pipeline_failure_keeps_answer_without_error_event(monkeypatch, failed_stage: str) -> None:
+    request = ChatRequest(session_id=f"stream-image-{failed_stage}", message="如何安装起动电机")
+    input_data = _image_failure_input(request)
+
+    class Agent:
+        async def run_with_react_stream(self, _input):
+            for char in "按步骤安装起动电机，如图所示。":
+                yield {"event": "token", "data": {"content": char}}
+            yield {
+                "event": "done",
+                "data": {
+                    "tools_used": ["knowledge_retrieval"],
+                    "latency_ms": 2,
+                    "react_trace": [],
+                    "metadata": _image_failure_output("").metadata,
+                },
+            }
+
+        async def grounded_fallback_if_unretrieved(self, input_value, used_tools):
+            return None
+
+    class Review:
+        async def review(self, output, level="full"):
+            return output
+
+        def get_inline_markers(self, message, verification):
+            return []
+
+    async def identity_finalizer(request_value, input_value, output, **kwargs):
+        return output
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda request: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _async_none)
+    monkeypatch.setattr(main, "_try_route_plan_direct", _async_none)
+    monkeypatch.setattr(main, "_try_response_policy_direct", _async_none)
+    monkeypatch.setattr(main, "_try_scope_guard", lambda *args: None)
+    monkeypatch.setattr(main, "_try_domain_rule_direct", _async_none)
+    monkeypatch.setattr(main, "get_fix_agent", lambda: Agent())
+    monkeypatch.setattr(main, "get_review_agent", lambda: Review())
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "build_follow_up", lambda *args: None)
+    monkeypatch.setattr(main, "_finalize_knowledge_output_with_fallback", identity_finalizer)
+    _install_image_pipeline_failure(monkeypatch, failed_stage)
+
+    async def consume() -> list[dict]:
+        response = await main.chat_stream(request)
+        chunks = [
+            chunk.decode() if isinstance(chunk, bytes) else chunk
+            async for chunk in response.body_iterator
+        ]
+        return [
+            json.loads(line.removeprefix("data: "))
+            for line in "".join(chunks).splitlines()
+            if line.startswith("data: ")
+        ]
+
+    events = asyncio.run(consume())
+    done = [event for event in events if event.get("event") == "done"]
+    visible = "".join(
+        event["data"]["content"]
+        for event in events
+        if event.get("event") == "token"
+    )
+
+    assert len(done) == 1
+    assert not any(event.get("event") == "error" for event in events)
+    assert "按步骤安装起动电机" in visible
+    assert "如图所示" not in visible
+    assert done[0]["data"]["evidenceImages"] == []
+    assert done[0]["data"]["metadata"]["image_selection_status"] == "failed"
+    assert done[0]["data"]["metadata"]["image_selection_failed_stage"] == failed_stage
+
+
+@pytest.mark.parametrize(
+    ("message", "selected_ids"),
+    [
+        ("如何安装起动电机", ["image-step-2", "image-step-1"]),
+        ("起动电机的额定电压是多少", []),
+        ("如何安装起动电机，不要图片", []),
+    ],
+)
+def test_stream_and_non_stream_emit_identical_image_contract(
+    monkeypatch,
+    message: str,
+    selected_ids: list[str],
+) -> None:
+    request = ChatRequest(session_id=f"image-contract-{len(selected_ids)}", message=message)
+    input_data = _image_failure_input(request)
+
+    def output() -> AgentOutput:
+        return _image_failure_output("按手册证据回答。")
+
+    class Agent:
+        async def run_with_react(self, _input):
+            return output()
+
+        async def run_with_react_stream(self, _input):
+            for char in "按手册证据回答。":
+                yield {"event": "token", "data": {"content": char}}
+            result = output()
+            yield {
+                "event": "done",
+                "data": {
+                    "tools_used": result.tools_used,
+                    "latency_ms": result.latency_ms,
+                    "react_trace": result.metadata.get("react_trace", []),
+                    "metadata": result.metadata,
+                },
+            }
+
+        async def grounded_fallback_if_unretrieved(self, input_value, used_tools):
+            return None
+
+    class Review:
+        async def review(self, agent_output, level="full"):
+            return agent_output
+
+        def get_inline_markers(self, answer, verification):
+            return []
+
+    async def identity_finalizer(request_value, input_value, agent_output, **kwargs):
+        return agent_output
+
+    async def fixed_image_builder(answer, metadata, *, input_context, session_id):
+        images = [
+            main.EvidenceImage(
+                image_url=f"/{source_id}.png",
+                document_id="manual-1",
+                source_chunk_id=source_id,
+            )
+            for source_id in selected_ids
+        ]
+        metadata["image_selection_status"] = "ok"
+        metadata["image_selection_contract"] = {
+            "mode": "evidence_pages" if images else "none",
+            "decision_reason": "image_evidence_gate",
+            "candidate_count": len(images),
+            "authorized_count": len(images),
+            "selected_count": len(images),
+            "reject_reason_counts": {},
+            "selected_image_bindings": [
+                {"source_chunk_id": image.source_chunk_id, "reason": "answer_evidence_binding"}
+                for image in images
+            ],
+        }
+        return answer, images
+
+    monkeypatch.setattr(main, "_prepare_chat_agent_input", lambda value: _awaitable(input_data))
+    monkeypatch.setattr(main, "_try_causal_follow_up_resolution", _async_none)
+    monkeypatch.setattr(main, "_try_route_plan_direct", _async_none)
+    monkeypatch.setattr(main, "_try_response_policy_direct", _async_none)
+    monkeypatch.setattr(main, "_try_scope_guard", lambda *args: None)
+    monkeypatch.setattr(main, "_try_domain_rule_direct", _async_none)
+    monkeypatch.setattr(main, "_should_use_rag_fast_path", lambda value: False)
+    monkeypatch.setattr(main, "get_fix_agent", lambda: Agent())
+    monkeypatch.setattr(main, "get_review_agent", lambda: Review())
+    monkeypatch.setattr(main, "_collect_direct_section_table_items", _async_empty)
+    monkeypatch.setattr(main, "_format_inventory_table_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "_format_manual_evidence_answer_from_metadata", lambda *args: None)
+    monkeypatch.setattr(main, "build_follow_up", lambda *args: None)
+    monkeypatch.setattr(main, "_finalize_knowledge_output_with_fallback", identity_finalizer)
+    monkeypatch.setattr(main, "_safe_build_response_images", fixed_image_builder)
+
+    non_stream = asyncio.run(main.chat(request))
+
+    async def consume_stream() -> list[dict]:
+        response = await main.chat_stream(request)
+        chunks = [
+            chunk.decode() if isinstance(chunk, bytes) else chunk
+            async for chunk in response.body_iterator
+        ]
+        return [
+            json.loads(line.removeprefix("data: "))
+            for line in "".join(chunks).splitlines()
+            if line.startswith("data: ")
+        ]
+
+    events = asyncio.run(consume_stream())
+    done = next(event for event in events if event.get("event") == "done")
+    non_stream_ids = [image.source_chunk_id for image in non_stream.evidence_images]
+    stream_ids = [image["sourceChunkId"] for image in done["data"]["evidenceImages"]]
+
+    assert non_stream_ids == selected_ids
+    assert stream_ids == selected_ids
+    assert stream_ids == non_stream_ids
+    assert non_stream.metadata["image_selection_contract"]["selected_count"] == len(non_stream_ids)
+    assert done["data"]["metadata"]["image_selection_summary"]["selected_count"] == len(stream_ids)
 
 
 def test_stream_endpoint_audits_override_and_emits_metadata(monkeypatch) -> None:

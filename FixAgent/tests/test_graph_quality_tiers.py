@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from services.clarification.graph_candidates import build_graph_candidates
 from services.retrieval.evidence import EvidenceLedger
-from services.retrieval.graph_evidence import normalize_graph_response
+from services.retrieval.graph_evidence import GraphAuthorizationContext, normalize_graph_response
 from services.retrieval.graph_quality import GraphQualityTier, evaluate_graph_path_quality
 
 
@@ -36,6 +36,22 @@ def test_quality_tiers_are_computed_from_generic_signals() -> None:
     assert evaluate_graph_path_quality(_record(score=0.42)).tier is GraphQualityTier.LOW
 
 
+def test_high_overall_score_cannot_hide_low_component_or_fault_alignment() -> None:
+    component_mismatch = {
+        **_record(score=0.93),
+        "componentScore": 0.41,
+        "faultScore": 0.92,
+    }
+    fault_mismatch = {
+        **_record(score=0.93),
+        "componentScore": 0.91,
+        "faultScore": 0.38,
+    }
+
+    assert evaluate_graph_path_quality(component_mismatch).tier is GraphQualityTier.LOW
+    assert evaluate_graph_path_quality(fault_mismatch).tier is GraphQualityTier.LOW
+
+
 def test_candidate_boundary_keeps_high_and_medium_but_discards_low() -> None:
     high, medium = build_graph_candidates([
         _record(score=0.91),
@@ -61,6 +77,73 @@ def test_evidence_boundary_only_qualifies_high_and_discards_low() -> None:
     assert low.status == "filtered_out"
     assert low.evidence == ()
     assert low.diagnostics["discarded_count"] == 1
+
+
+def _authorization(**overrides) -> GraphAuthorizationContext:
+    values = {
+        "canonical_device_identity": "sample-device",
+        "document_ids": ("doc-7",),
+        "document_versions": ("v7",),
+        "source_chunk_uids": ("chunk-7",),
+    }
+    values.update(overrides)
+    return GraphAuthorizationContext(**values)
+
+
+def test_exact_authorized_medium_relation_is_qualified_without_solution_claim() -> None:
+    record = {
+        **_record(score=0.78),
+        "componentScore": 0.76,
+        "faultScore": 0.79,
+        "relationshipTypes": ["OWNS", "CAUSES"],
+    }
+
+    batch = normalize_graph_response(
+        {"status": "found", "records": [record]},
+        scope={
+            "allowed_path_ids": [record["pathId"]],
+            "allowed_device_ids": [record["deviceId"]],
+            "allowed_component_ids": [record["componentId"]],
+            "allowed_fault_ids": [record["faultId"]],
+        },
+        authorization_context=_authorization(),
+    )
+
+    evidence = batch.evidence[0]
+    assert evidence.qualification == "qualified"
+    assert evidence.qualification_basis == "structural_exact"
+    assert evidence.claim_types == ("component_ownership", "fault_relation")
+    assert evidence.authorized_claim_types == evidence.claim_types
+    assert "verified_solution" not in evidence.claim_types
+
+
+def test_candidate_ids_cannot_authorize_the_same_medium_candidate() -> None:
+    record = _record(score=0.78)
+
+    batch = normalize_graph_response(
+        {"status": "found", "records": [record]},
+        scope={
+            "allowed_path_ids": [record["pathId"]],
+            "allowed_device_ids": [record["deviceId"]],
+            "allowed_component_ids": [record["componentId"]],
+            "allowed_fault_ids": [record["faultId"]],
+        },
+    )
+
+    assert batch.evidence[0].qualification == "routing_only"
+    assert batch.evidence[0].qualification_basis == "routing_only"
+
+
+def test_independent_document_version_conflict_blocks_structural_qualification() -> None:
+    record = _record(score=0.78)
+
+    batch = normalize_graph_response(
+        {"status": "found", "records": [record]},
+        authorization_context=_authorization(document_versions=("v8",)),
+    )
+
+    assert batch.evidence == ()
+    assert "authorization_document_version_mismatch" in batch.diagnostics["discard_reasons"]
 
 
 def test_medium_path_only_cross_validates_qualified_rag_chunk() -> None:

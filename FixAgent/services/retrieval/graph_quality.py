@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import Enum
+import hashlib
 from typing import Any, Mapping
 
 
@@ -75,21 +76,35 @@ def evaluate_graph_path_quality(
 
 
 def graph_semantic_score(record: Mapping[str, Any]) -> float:
-    """Return the strongest real semantic score; never use dimension counts."""
-    values = (
+    """Return a joint semantic score when component and fault scores exist."""
+    overall_values = (
         record.get("semanticScore"),
         record.get("semantic_score"),
         record.get("graphScore"),
         record.get("graph_score"),
         record.get("retrievalScore"),
         record.get("retrieval_score"),
-        record.get("componentScore"),
-        record.get("component_score"),
-        record.get("faultScore"),
-        record.get("fault_score"),
     )
-    scores = [_score(value) for value in values if value is not None]
-    return max(scores, default=0.0)
+    overall_scores = [_score(value) for value in overall_values if value is not None]
+    component_value = record.get("componentScore")
+    if component_value is None:
+        component_value = record.get("component_score")
+    fault_value = record.get("faultScore")
+    if fault_value is None:
+        fault_value = record.get("fault_score")
+
+    if component_value is not None and fault_value is not None:
+        joint_scores = [_score(component_value), _score(fault_value)]
+        if overall_scores:
+            joint_scores.append(max(overall_scores))
+        return min(joint_scores)
+
+    dimension_scores = [
+        _score(value)
+        for value in (component_value, fault_value)
+        if value is not None
+    ]
+    return max((*overall_scores, *dimension_scores), default=0.0)
 
 
 def _apply_declared_tier_ceiling(
@@ -121,7 +136,7 @@ def _structural_reasons(
     component_id = _text(record.get("componentId") or record.get("component_id"))
     fault_id = _text(record.get("faultId") or record.get("fault_id"))
     path_id = _text(record.get("pathId") or record.get("path_id"))
-    node_ids = set(_texts(record.get("nodeIds") or record.get("node_ids")))
+    node_ids = _texts(record.get("nodeIds") or record.get("node_ids"))
     relationships = set(_texts(
         record.get("relationshipTypes") or record.get("relationship_types")
     ))
@@ -131,13 +146,11 @@ def _structural_reasons(
         reasons.append("incomplete_core_identity")
     if not path_id:
         reasons.append("missing_path_id")
-    elif (
-        path_id.startswith("kgpath:")
-        and all(core_ids)
-        and path_id != f"kgpath:{device_id}:{component_id}:{fault_id}"
+    elif path_id.startswith("kgpath:") and all(core_ids) and not _path_identity_matches(
+        path_id, node_ids, core_ids
     ):
         reasons.append("path_identity_mismatch")
-    if all(core_ids) and not set(core_ids).issubset(node_ids) and not (
+    if all(core_ids) and not _has_stable_node_identity(node_ids) and not set(core_ids).issubset(set(node_ids)) and not (
         trusted_query_structure and not node_ids
     ):
         reasons.append("incomplete_node_identity")
@@ -146,6 +159,26 @@ def _structural_reasons(
     ):
         reasons.append("missing_required_relationship")
     return reasons
+
+
+def _path_identity_matches(
+    path_id: str,
+    node_ids: tuple[str, ...],
+    core_ids: tuple[str, ...],
+) -> bool:
+    if path_id == f"kgpath:{core_ids[0]}:{core_ids[1]}:{core_ids[2]}":
+        return True
+    if not _has_stable_node_identity(node_ids):
+        return False
+    digest = hashlib.sha256("\x1f".join(node_ids).encode("utf-8")).hexdigest()
+    return path_id == f"kgpath:{digest}"
+
+
+def _has_stable_node_identity(node_ids: tuple[str, ...]) -> bool:
+    prefixes = ("kg:device:", "kg:component:", "kg:fault:")
+    return len(node_ids) == 3 and all(
+        value.startswith(prefix) for value, prefix in zip(node_ids, prefixes)
+    )
 
 
 def _provenance_reasons(record: Mapping[str, Any]) -> list[str]:
