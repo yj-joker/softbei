@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import { ChatDotRound, CopyDocument, DataAnalysis, EditPen, Loading, Right, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import { useSpeech } from '@/composables/useSpeech'
-import { normalizeClarification } from '@/utils/clarification'
+import { getClarificationPresentation, normalizeClarification } from '@/utils/clarification'
 
 const props = defineProps({
   message: { type: Object, required: true },
@@ -37,19 +37,11 @@ const isFollowUpSubmitted = computed(() =>
 const showFollowUpCard = computed(() =>
   canAnswerFollowUp.value || isFollowUpSubmitted.value,
 )
-const isEvidenceConflict = computed(() => diagnosticFollowUp.value?.kind === 'evidence_conflict')
-const isLLMClarification = computed(() => diagnosticFollowUp.value?.kind === 'llm_slot_clarification')
-const followUpTitle = computed(() => {
-  if (isEvidenceConflict.value) return '证据参数冲突'
-  if (isLLMClarification.value) return '补充现场信息'
-  return '候选根因收敛'
-})
-const followUpHint = computed(() => {
-  if (!canAnswerFollowUp.value) return '已提交，正在收敛'
-  if (isEvidenceConflict.value) return '请选择适用值或版本'
-  if (isLLMClarification.value) return '请选择最符合现场情况的一项'
-  return '请选择一个现场现象'
-})
+const followUpPresentation = computed(() =>
+  getClarificationPresentation(diagnosticFollowUp.value, canAnswerFollowUp.value),
+)
+const followUpTitle = computed(() => followUpPresentation.value.title)
+const followUpHint = computed(() => followUpPresentation.value.hint)
 
 // 诊断项（结构化）转为可读/可显示的纯文本，与正文合成同一段，确保朗读完整覆盖、各回复样式统一
 function diagnosisToText(items) {

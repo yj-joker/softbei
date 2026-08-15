@@ -21,6 +21,47 @@ export function normalizeClarification(raw) {
   }
 }
 
+const CLARIFICATION_PRESENTATIONS = Object.freeze({
+  evidence_conflict: {
+    title: '证据参数冲突',
+    hint: '请选择适用值或版本',
+  },
+  llm_slot_clarification: {
+    title: '补充现场信息',
+    hint: '请选择最符合现场情况的一项',
+  },
+  graph_observation: {
+    title: '补充现场信息',
+    hint: '请选择最符合现场情况的一项',
+  },
+  document_selection: {
+    title: '确认查询范围',
+    hint: '请选择适用的设备、文档或章节',
+  },
+  slot_disambiguation: {
+    title: '确认查询范围',
+    hint: '请选择适用的章节或装配场景',
+  },
+  diagnostic_cause: {
+    title: '候选根因收敛',
+    hint: '请选择一个现场现象',
+  },
+})
+
+/** 根据反问类型返回用户可见文案，避免查询范围反问落入诊断默认文案。 */
+export function getClarificationPresentation(raw, canAnswer = true) {
+  const clarification = normalizeClarification(raw)
+  const kind = clarification?.kind || ''
+  const presentation = CLARIFICATION_PRESENTATIONS[kind] || {
+    title: '补充查询信息',
+    hint: '请选择最符合当前问题的一项',
+  }
+  return {
+    title: presentation.title,
+    hint: canAnswer ? presentation.hint : '已提交，正在收敛',
+  }
+}
+
 
 export function buildClarificationContext(raw, optionId) {
   const clarification = normalizeClarification(raw)

@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 
 import {
   buildClarificationContext,
+  getClarificationPresentation,
   normalizeClarification,
 } from '../src/utils/clarification.js'
 
@@ -78,4 +79,28 @@ test('normalizes authoritative state candidates into clickable LLM clarification
   assert.equal(normalized.status, 'awaiting_answer')
   assert.equal(normalized.question, '当前最明显的异常表现是哪一种？')
   assert.deepEqual(normalized.options.map((item) => item.label), ['无法启动', '运行中异响'])
+})
+
+
+test('uses query-scope copy for document and section clarification', () => {
+  assert.deepEqual(
+    getClarificationPresentation({ kind: 'document_selection', status: 'awaiting_answer' }),
+    { title: '确认查询范围', hint: '请选择适用的设备、文档或章节' },
+  )
+  assert.deepEqual(
+    getClarificationPresentation({ kind: 'slot_disambiguation', status: 'awaiting_answer' }),
+    { title: '确认查询范围', hint: '请选择适用的章节或装配场景' },
+  )
+})
+
+
+test('keeps diagnostic copy for causal follow-up and submitted state', () => {
+  assert.deepEqual(
+    getClarificationPresentation({ kind: 'diagnostic_cause', status: 'awaiting_answer' }),
+    { title: '候选根因收敛', hint: '请选择一个现场现象' },
+  )
+  assert.deepEqual(
+    getClarificationPresentation({ kind: 'document_selection', status: 'submitted' }, false),
+    { title: '确认查询范围', hint: '已提交，正在收敛' },
+  )
 })

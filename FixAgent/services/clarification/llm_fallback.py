@@ -44,7 +44,15 @@ _OBSERVABLE_HINTS = (
 _CONDITION_HINTS = (
     "冷机", "热机", "冷车", "热车", "启动时", "启动瞬间", "加速时", "减速时",
     "怠速时", "负载时", "空载时", "行驶中", "停车后", "持续运行", "高转速",
-    "低转速", "上坡时", "雨天", "高温环境", "低温环境",
+    "低转速", "上坡时", "雨天", "高温环境", "低温环境", "启动", "加速",
+    "减速", "收油", "怠速", "负载", "空载", "行驶", "停车", "运行阶段",
+)
+_NON_CONDITION_TEXT = (
+    "故障原因", "损坏", "磨损", "断裂", "松动", "烧蚀", "腐蚀", "维修",
+    "更换", "拆卸", "安装",
+)
+_CONDITION_END_RE = re.compile(
+    r"(?:时|期间|过程中|过程里|阶段|状态下|情况下|之前|之后|前|后|瞬间)(?:[）)]*)$"
 )
 
 _SYSTEM_PROMPT = """你是设备检修对话中的澄清问题规划器。
@@ -54,8 +62,11 @@ _SYSTEM_PROMPT = """你是设备检修对话中的澄清问题规划器。
 参数、维修步骤或设备型号，也不能声称选项来自知识图谱。
 
 规则：
-1. 信息已经足以开展一般排查时，should_clarify=false。
-2. 需要澄清时，一次只问一个信息增益最高的维度。
+1. 输入包含 required_dimension，表示服务端已经确认信息不足，此时 should_clarify 必须为 true；
+   只有 required_dimension 缺失且信息已经足以开展一般排查时，should_clarify=false。
+2. 需要澄清时，一次只问一个信息增益最高的维度。输入中的 required_dimension 是服务端根据缺失信息确定的必选维度，
+   dimension 必须与 required_dimension 完全一致；required_dimension=operating_condition 时只能询问发生工况，
+   required_dimension=symptom 时只能询问现场异常表现。
 3. dimension 只能是 symptom、operating_condition，禁止询问部件、位置、章节或维修动作。
 4. options 必须是 2 至 4 个现场可直接观察或描述的互斥选项，不得是故障原因或维修动作。
 5. 候选信息只有原因或部件、无法形成至少两个具体可观察现象时，should_clarify=false，让系统降级。
@@ -84,6 +95,69 @@ class LLMSlotClarification:
     reason: str = ""
 
 
+def build_safe_observation_fallback(
+    query_contract: Mapping[str, Any],
+    *,
+    round_count: int = 1,
+) -> LLMSlotClarification:
+    """Build a diagnosis-free question when the LLM cannot produce one."""
+    symptoms = tuple(
+        str(value).strip()
+        for value in query_contract.get("symptoms") or ()
+        if str(value).strip()
+    )
+    operating_conditions = tuple(
+        str(value).strip()
+        for value in query_contract.get("operating_conditions") or ()
+        if str(value).strip()
+    )
+    dimension = (
+        "operating_condition"
+        if symptoms and not operating_conditions
+        else "symptom"
+    )
+    if dimension == "operating_condition":
+        question = "异常在什么工况下最明显？"
+        values = (
+            "冷机或启动时最明显",
+            "怠速或低速时最明显",
+            "加速或带负载时最明显",
+            "持续运行或热机后最明显",
+        )
+    else:
+        question = "当前最明显的异常表现是哪一种？"
+        values = (
+            "无法启动或启动困难",
+            "异响或明显振动",
+            "动力下降或运行不稳",
+            "过热、泄漏或报警",
+        )
+
+    slot = _ALLOWED_DIMENSIONS[dimension]
+    options = tuple(
+        {
+            "id": chr(ord("A") + index),
+            "label": value,
+            "value": value,
+            "constraints": {
+                "clarification_source": "llm_fallback",
+                "clarification_generation": "safe_default",
+                "clarification_dimension": dimension,
+                "clarification_value": value,
+                "clarification_round": max(1, int(round_count)),
+                slot: [value],
+            },
+        }
+        for index, value in enumerate(values)
+    )
+    return LLMSlotClarification(
+        dimension=dimension,
+        question=question,
+        options=options,
+        reason="safe_observation_fallback",
+    )
+
+
 class LLMClarificationService:
     def __init__(self, llm_service: Any) -> None:
         self.llm_service = llm_service
@@ -98,38 +172,122 @@ class LLMClarificationService:
         round_count: int = 1,
     ) -> LLMSlotClarification | None:
         public_graph_candidates = self._public_graph_candidates(graph_candidates)
+        required_dimension = self._required_dimension(
+            query_contract,
+            confirmed_constraints,
+            round_count=round_count,
+        )
         payload = {
             "user_query": str(query or "").strip(),
             "query_contract": self._public_contract(query_contract),
             "confirmed_information": self._public_constraints(confirmed_constraints),
             "clarification_round": max(1, int(round_count)),
+            "required_dimension": required_dimension,
             "knowledge_graph_status": (
                 "ambiguous_candidates" if public_graph_candidates else "no_usable_candidate"
             ),
             "knowledge_graph_candidates": public_graph_candidates,
         }
-        try:
-            response = await self.llm_service.chat(
-                messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-                temperature=0.1,
-                max_tokens=600,
-                response_format={"type": "json_object"},
+        messages = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ]
+        for attempt in range(2):
+            try:
+                response = await self.llm_service.chat(
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=600,
+                    response_format={"type": "json_object"},
+                )
+            except Exception as exc:
+                logger.info(
+                    "[clarification] LLM fallback unavailable attempt=%s: %s",
+                    attempt + 1,
+                    exc,
+                )
+                if attempt == 0:
+                    continue
+                return None
+            content = response.get("content") if isinstance(response, Mapping) else response
+            data = self._parse_json(content)
+            draft = self._validate_draft(
+                data,
+                required_dimension=required_dimension,
+                round_count=round_count,
+                generation="llm_retry" if attempt else "llm",
             )
-        except Exception as exc:
-            logger.info("[clarification] LLM fallback unavailable: %s", exc)
+            if draft is not None:
+                return draft
+            if attempt == 0:
+                messages = [
+                    *messages,
+                    {"role": "assistant", "content": str(content or "")[:4000]},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "validation_retry": True,
+                                "required_dimension": required_dimension,
+                                "instruction": (
+                                    "上一次输出未通过服务端校验。请重新输出完整 JSON；"
+                                    "should_clarify 必须为 true，dimension 必须严格等于 required_dimension，"
+                                    "并提供 2 至 4 个安全、可直接观察且属于该维度的互斥选项。"
+                                ),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ]
+        return None
+
+    def _validate_draft(
+        self,
+        data: Mapping[str, Any] | None,
+        *,
+        required_dimension: str,
+        round_count: int,
+        generation: str,
+    ) -> LLMSlotClarification | None:
+        if not isinstance(data, Mapping):
+            self._log_rejection("invalid_json", required_dimension=required_dimension)
             return None
-        content = response.get("content") if isinstance(response, Mapping) else response
-        data = self._parse_json(content)
-        if not isinstance(data, Mapping) or data.get("should_clarify") is not True:
+        if data.get("should_clarify") is not True:
+            self._log_rejection(
+                "model_declined",
+                required_dimension=required_dimension,
+                model_dimension=str(data.get("dimension") or "").strip(),
+            )
             return None
-        dimension = str(data.get("dimension") or "").strip()
+        model_dimension = str(data.get("dimension") or "").strip()
+        dimension = required_dimension or model_dimension
         if dimension not in _ALLOWED_DIMENSIONS:
+            self._log_rejection(
+                "invalid_dimension",
+                required_dimension=required_dimension,
+                model_dimension=model_dimension,
+            )
             return None
+        if model_dimension != dimension:
+            logger.info(
+                "[clarification] corrected LLM dimension model=%s required=%s",
+                model_dimension or "missing",
+                dimension,
+            )
         question = self._safe_text(data.get("question"), maximum=120)
-        if not question or self._contains_unsafe_text(question):
+        if not question:
+            self._log_rejection(
+                "missing_question",
+                required_dimension=required_dimension,
+                model_dimension=model_dimension,
+            )
+            return None
+        if self._contains_unsafe_text(question):
+            self._log_rejection(
+                "unsafe_question",
+                required_dimension=required_dimension,
+                model_dimension=model_dimension,
+            )
             return None
         raw_options = data.get("options") if isinstance(data.get("options"), list) else []
         options: list[dict[str, Any]] = []
@@ -152,6 +310,7 @@ class LLMClarificationService:
             option_id = chr(ord("A") + len(options))
             constraints: dict[str, Any] = {
                 "clarification_source": "llm_fallback",
+                "clarification_generation": generation,
                 "clarification_dimension": dimension,
                 "clarification_value": value,
                 "clarification_round": max(1, int(round_count)),
@@ -165,12 +324,69 @@ class LLMClarificationService:
                 "constraints": constraints,
             })
         if len(options) < 2:
+            self._log_rejection(
+                "insufficient_valid_options",
+                required_dimension=required_dimension,
+                model_dimension=model_dimension,
+                valid_option_count=len(options),
+            )
             return None
+        logger.info(
+            "[clarification] accepted LLM draft dimension=%s options=%s",
+            dimension,
+            len(options),
+        )
         return LLMSlotClarification(
             dimension=dimension,
             question=question,
             options=tuple(options),
             reason=self._safe_text(data.get("reason"), maximum=160),
+        )
+
+    @staticmethod
+    def _required_dimension(
+        query_contract: Mapping[str, Any],
+        confirmed_constraints: Mapping[str, Any] | None,
+        *,
+        round_count: int,
+    ) -> str:
+        confirmed = confirmed_constraints if isinstance(confirmed_constraints, Mapping) else {}
+
+        def has_values(key: str) -> bool:
+            for source in (query_contract, confirmed):
+                value = source.get(key)
+                if isinstance(value, (list, tuple, set)):
+                    if any(str(item).strip() for item in value):
+                        return True
+                elif str(value or "").strip():
+                    return True
+            return False
+
+        has_symptoms = has_values("symptoms")
+        has_conditions = has_values("operating_conditions")
+        if has_symptoms and not has_conditions:
+            return "operating_condition"
+        if not has_symptoms:
+            return "symptom"
+        # Both slots exist after the first answer; a second round may refine
+        # a generic symptom, but the global route still caps this at two rounds.
+        return "symptom" if int(round_count) > 1 else "operating_condition"
+
+    @staticmethod
+    def _log_rejection(
+        reason: str,
+        *,
+        required_dimension: str,
+        model_dimension: str = "",
+        valid_option_count: int = 0,
+    ) -> None:
+        logger.info(
+            "[clarification] rejected LLM draft reason=%s required_dimension=%s "
+            "model_dimension=%s valid_options=%s",
+            reason,
+            required_dimension,
+            model_dimension or "missing",
+            valid_option_count,
         )
 
     @staticmethod
@@ -214,8 +430,13 @@ class LLMClarificationService:
 
     @staticmethod
     def _is_observable(value: str, dimension: str) -> bool:
-        hints = _CONDITION_HINTS if dimension == "operating_condition" else _OBSERVABLE_HINTS
-        return any(hint in value for hint in hints)
+        if dimension == "operating_condition":
+            if any(term in value for term in _NON_CONDITION_TEXT):
+                return False
+            return any(hint in value for hint in _CONDITION_HINTS) or bool(
+                _CONDITION_END_RE.search(value)
+            )
+        return any(hint in value for hint in _OBSERVABLE_HINTS)
 
     @staticmethod
     def _parse_json(content: Any) -> Mapping[str, Any] | None:
@@ -239,4 +460,8 @@ class LLMClarificationService:
         return any(term in value for term in _UNSAFE_TEXT)
 
 
-__all__ = ["LLMClarificationService", "LLMSlotClarification"]
+__all__ = [
+    "LLMClarificationService",
+    "LLMSlotClarification",
+    "build_safe_observation_fallback",
+]

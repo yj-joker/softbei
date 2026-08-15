@@ -153,7 +153,10 @@ from services.clarification.state import (
     ResolvedScope,
     topic_signature_for_contract,
 )
-from services.clarification.llm_fallback import LLMClarificationService
+from services.clarification.llm_fallback import (
+    LLMClarificationService,
+    build_safe_observation_fallback,
+)
 from tools.knowledge_retrieval_tool import get_knowledge_retrieval_tool
 from tools.knowledge_inventory_tool import get_knowledge_inventory_tool
 from services.temporary_plan_service import get_temporary_plan_service
@@ -2708,6 +2711,48 @@ def _llm_clarification_round(context: Mapping[str, Any]) -> int:
         return 0
 
 
+def _is_vague_diagnostic_request(
+    plan: RoutePlan,
+    intent_decision: IntentDecision,
+) -> bool:
+    """Use structured fields to identify diagnosis requests missing key context."""
+    contract = plan.query_contract
+    raw_query = str(contract.raw_query or "").strip()
+    asks_for_operating_condition = bool(
+        re.search(
+            r"(?:什么|哪个|哪些|何种|哪种).{0,10}(?:工况|运行阶段|阶段|时候|时机|情况下)|"
+            r"(?:工况|运行阶段|阶段|时候|时机).{0,10}(?:什么|哪个|哪些|何种|哪种)",
+            raw_query,
+        )
+    )
+    if (
+        asks_for_operating_condition
+        or
+        intent_decision.intent in {"parameter_query", "procedure_planning"}
+        or intent_decision.task_action in {"parameter_lookup", "formal_procedure"}
+    ):
+        return False
+
+    has_fault_observation = bool(
+        contract.fault
+        or contract.raw_fault_span
+        or contract.symptoms
+    )
+    is_diagnostic = bool(
+        has_fault_observation
+        and (
+            intent_decision.intent in {"fault_diagnosis", "maintenance_guidance"}
+            or intent_decision.task_action in {"find_cause", "repair_guidance"}
+        )
+    )
+    if not is_diagnostic:
+        return False
+
+    has_component = bool(contract.component or contract.raw_component_span)
+    has_operating_condition = bool(contract.operating_conditions)
+    return not (has_component and has_fault_observation and has_operating_condition)
+
+
 async def _maybe_apply_llm_clarification(
     plan: RoutePlan,
     *,
@@ -2717,11 +2762,8 @@ async def _maybe_apply_llm_clarification(
 ) -> RoutePlan:
     """Ask the LLM for one safe observable discriminator after evidence ambiguity."""
     diagnostic_evidence_gap = bool(
-        (
-            intent_decision.intent == "fault_diagnosis"
-            and intent_decision.task_action == "find_cause"
-        )
-        or plan.reason == "diagnostic_ambiguity_without_observable_discriminator"
+        plan.reason == "diagnostic_ambiguity_without_observable_discriminator"
+        or _is_vague_diagnostic_request(plan, intent_decision)
     )
     graph_route_is_usable = bool(
         plan.selected_graph_candidate_id
@@ -2738,6 +2780,7 @@ async def _maybe_apply_llm_clarification(
     previous_round = _llm_clarification_round(context)
     if previous_round >= 2:
         return plan
+    round_count = previous_round + 1
     draft = await LLMClarificationService(get_llm_service()).build(
         query=plan.query_contract.raw_query,
         query_contract=plan.query_contract.to_dict(),
@@ -2745,17 +2788,25 @@ async def _maybe_apply_llm_clarification(
         if isinstance(context.get("clarification_constraints"), Mapping)
         else None,
         graph_candidates=graph_candidates,
-        round_count=previous_round + 1,
+        round_count=round_count,
     )
+    used_safe_fallback = draft is None
     if draft is None:
-        return plan
+        draft = build_safe_observation_fallback(
+            plan.query_contract.to_dict(),
+            round_count=round_count,
+        )
     return replace(
         plan,
         action=RouteAction.CLARIFY,
         allowed_tools=(),
         answer_source="llm_clarification",
         allow_ai_fallback=False,
-        reason="llm_observation_clarification_after_evidence_gap",
+        reason=(
+            "safe_observation_clarification_after_llm_gap"
+            if used_safe_fallback
+            else "llm_observation_clarification_after_evidence_gap"
+        ),
         clarification_options=draft.options,
         clarification_kind="llm_slot_clarification",
         clarification_question=draft.question,
