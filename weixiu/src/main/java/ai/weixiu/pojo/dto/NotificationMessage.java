@@ -23,6 +23,7 @@ public class NotificationMessage {
      * TASK_GENERATED       - 检修步骤生成完成
      * TASK_GENERATE_FAILED - 检修步骤生成失败
      * STEP_VERIFIED        - 步骤AI验证完成
+     * TASK_VOICE_TURN      - 语音检修轮次完成
      * KNOWLEDGE_IMPORTED   - 知识导入完成
      * KNOWLEDGE_IMPORT_FAILED - 知识导入失败
      */

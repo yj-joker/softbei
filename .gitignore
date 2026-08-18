@@ -32,6 +32,7 @@ rag_diagnostics/
 target/
 *.iml
 .mvn/wrapper/maven-wrapper.jar
+deploy/
 # 含真实密钥的本地开发配置，不入库（用 application-dev.yml.example 作模板）
 application-dev.yml
 

@@ -13,6 +13,7 @@ import ai.weixiu.mapper.MaintenanceVoiceEventMapper;
 import ai.weixiu.mapper.TaskStepRecordMapper;
 import ai.weixiu.mapper.UserMapper;
 import ai.weixiu.pojo.dto.RecallContext;
+import ai.weixiu.pojo.dto.NotificationMessage;
 import ai.weixiu.pojo.dto.TaskVoiceTurnDTO;
 import ai.weixiu.pojo.dto.VoiceTaskAgentDecision;
 import ai.weixiu.pojo.vo.TaskStepRecordVO;
@@ -22,6 +23,7 @@ import ai.weixiu.service.MaintenanceTaskService;
 import ai.weixiu.service.MaintenanceTaskVoiceService;
 import ai.weixiu.service.MemoryPreferenceService;
 import ai.weixiu.service.MemoryRecallService;
+import ai.weixiu.service.NotificationService;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -60,6 +62,7 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
     private final MemoryPreferenceService memoryPreferenceService;
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
+    private final NotificationService notificationService;
 
     @Override
     @Transactional
@@ -127,6 +130,19 @@ public class MaintenanceTaskVoiceServiceImpl implements MaintenanceTaskVoiceServ
                 ? outcome.currentStepId
                 : resolveInitialStep(refreshedSteps, currentStepId);
         nextCurrentStep = taskService.saveFocusStep(taskId, userId, nextCurrentStep, "VOICE");
+
+        // 外部采音桥接程序不运行在浏览器页面内，复用现有 STOMP 通知让任务详情页自动刷新。
+        Map<String, Object> notificationData = new LinkedHashMap<>();
+        notificationData.put("taskId", taskId);
+        notificationData.put("currentStepId", nextCurrentStep);
+        notificationData.put("action", decision.getAction());
+        notificationData.put("executionResult", outcome.executionResult);
+        notificationService.send(userId, NotificationMessage.builder()
+                .type("TASK_VOICE_TURN")
+                .title("语音检修已处理")
+                .body(replyText)
+                .data(notificationData)
+                .build());
 
         TaskVoiceTurnVO vo = new TaskVoiceTurnVO();
         vo.setReplyText(replyText);

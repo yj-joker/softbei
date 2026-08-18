@@ -18,6 +18,7 @@ SECRETS_FILE="$CONFIG_ROOT/install-secrets.env"
 RUNTIME_ARCHIVE="$PACKAGE_ROOT/assets/MaintAI-LoongArch-Runtime.tar.gz"
 APP_USER="maintai"
 APP_GROUP="maintai"
+DEPLOY_MODE="upgrade"
 source "$PACKAGE_ROOT/lib/service-token.sh"
 
 mkdir -p "$LOG_ROOT"
@@ -151,14 +152,16 @@ install_runtime_dir() {
 for argument in "$@"; do
     case "$argument" in
         --fresh|-f)
-            fresh_cleanup
+            DEPLOY_MODE="fresh"
+            ;;
+        --upgrade|-u)
+            DEPLOY_MODE="upgrade"
             ;;
         *)
-            die "未知参数：${argument}。全新清理部署请使用：sudo bash install.sh --fresh"
+            die "未知参数：${argument}。保留数据升级请使用--upgrade，全新清理部署请使用--fresh"
             ;;
     esac
 done
-
 CURRENT_STAGE="架构与安装包检查"
 log "$CURRENT_STAGE"
 if command -v sha256sum >/dev/null 2>&1 && [[ -f "$PACKAGE_ROOT/SHA256SUMS.txt" ]]; then
@@ -172,11 +175,18 @@ source /etc/os-release
 [[ -f "$PACKAGE_ROOT/app/weixiu.jar" ]] || die "缺少Java应用JAR"
 [[ -f "$PACKAGE_ROOT/app/FixAgent/api/main.py" ]] || die "缺少FixAgent源码"
 [[ -f "$PACKAGE_ROOT/frontend/index.html" ]] || die "缺少Vue构建产物"
-[[ -f "$PACKAGE_ROOT/sql/fix.sql" ]] || die "缺少MySQL初始化脚本"
+[[ -f "$PACKAGE_ROOT/sql/fix_complete.sql" ]] || die "缺少MySQL完整初始化脚本"
+[[ -f "$PACKAGE_ROOT/sql/task_evidence_upgrade.sql" ]] || die "缺少任务证据升级脚本"
+[[ -f "$PACKAGE_ROOT/sql/answer_feedback_upgrade.sql" ]] || die "缺少答案反馈升级脚本"
+[[ -f "$PACKAGE_ROOT/sql/upgrade-existing.sql" ]] || die "缺少数据库兼容升级脚本"
 [[ -f "$PACKAGE_ROOT/neo4j/neo4j-indexes.cypher" ]] || die "缺少Neo4j索引脚本"
 
 FREE_KB="$(df -Pk /opt | awk 'NR==2 {print $4}')"
 [[ "$FREE_KB" -ge 8388608 ]] || die "/opt可用空间不足8GiB"
+
+if [[ "$DEPLOY_MODE" == "fresh" ]]; then
+    fresh_cleanup
+fi
 
 CURRENT_STAGE="安装银河麒麟基础依赖"
 log "$CURRENT_STAGE"
@@ -202,8 +212,9 @@ if [[ -d /var/lib/mysql-oracle/mysql && ! -f "$SECRETS_FILE" && -z "${MYSQL_ROOT
     die "检测到旧MySQL数据但缺少原部署密钥。请清理旧数据后执行首次安装，或在config/install.env中提供原MYSQL_ROOT_PASSWORD"
 fi
 
-REDIS_HOST="${REDIS_HOST:-47.115.202.215}"
+REDIS_HOST="${REDIS_HOST:-}"
 REDIS_PORT="${REDIS_PORT:-6379}"
+REDIS_DB="${REDIS_DB:-0}"
 REDIS_PASSWORD="${REDIS_PASSWORD:-}"
 DASHSCOPE_API_KEY="${DASHSCOPE_API_KEY:-}"
 MYSQL_ROOT_PASSWORD="${MYSQL_ROOT_PASSWORD:-$(random_secret)}"
@@ -217,6 +228,15 @@ MINIO_SECRET_KEY="${MINIO_SECRET_KEY:-$(random_secret)}"
 API_TOKEN="${API_TOKEN:-}"
 INTERNAL_TOKEN="${INTERNAL_TOKEN:-}"
 resolve_service_tokens
+
+if [[ -z "$REDIS_HOST" && -t 0 ]]; then
+    read -r -p "请输入 Redis/RediSearch 地址（必须支持 FT.SEARCH，默认127.0.0.1）: " REDIS_HOST
+    REDIS_HOST="${REDIS_HOST:-127.0.0.1}"
+fi
+[[ -n "$REDIS_HOST" ]] || die "必须在config/install.env中填写REDIS_HOST；该安装包不再内置或硬编码远程Redis地址"
+[[ "$REDIS_HOST" =~ ^[A-Za-z0-9._:-]+$ ]] || die "REDIS_HOST包含非法字符"
+[[ "$REDIS_PORT" =~ ^[0-9]{1,5}$ && "$REDIS_PORT" -ge 1 && "$REDIS_PORT" -le 65535 ]] || die "REDIS_PORT必须是1-65535"
+[[ "$REDIS_DB" =~ ^[0-9]+$ && "$REDIS_DB" -ge 0 && "$REDIS_DB" -le 15 ]] || die "REDIS_DB必须是0-15"
 
 if [[ -z "$DASHSCOPE_API_KEY" && -t 0 ]]; then
     read -r -s -p "请输入阿里云百炼DASHSCOPE_API_KEY：" DASHSCOPE_API_KEY
@@ -232,6 +252,7 @@ done
 cat > "$SECRETS_FILE" <<EOF
 REDIS_HOST=${REDIS_HOST}
 REDIS_PORT=${REDIS_PORT}
+REDIS_DB=${REDIS_DB}
 REDIS_PASSWORD=${REDIS_PASSWORD}
 DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
 MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
@@ -247,6 +268,7 @@ write_service_token_secrets "$SECRETS_FILE"
 
 CURRENT_STAGE="安装LoongArch黄金运行时"
 log "$CURRENT_STAGE"
+systemctl stop maintai-java.service maintai-fixagent.service 2>/dev/null || true
 install -d -o root -g root -m 0755 /opt/fix
 RUNTIME_STAGE="$(mktemp -d /var/tmp/maintai-runtime.XXXXXX)"
 trap 'rm -rf -- "$RUNTIME_STAGE"' EXIT
@@ -344,12 +366,31 @@ SQL
 EXISTING_TABLES="$(MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot -N -B \
     -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='fix';")"
 if [[ "$EXISTING_TABLES" == "0" ]]; then
-    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot fix < "$PACKAGE_ROOT/sql/fix.sql"
-elif [[ "$EXISTING_TABLES" == "25" ]]; then
-    echo "[SKIP] fix数据库已经包含25张表，不重复执行完整建表脚本"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot < "$PACKAGE_ROOT/sql/fix_complete.sql"
 else
-    die "fix数据库处于半初始化状态：当前${EXISTING_TABLES}张表，预期0或25张。请先备份并清理后重试"
+    CURRENT_STAGE="备份并升级现有MySQL数据库"
+    log "$CURRENT_STAGE"
+    BACKUP_ROOT="/var/backups/maintai"
+    install -d -o root -g root -m 0700 "$BACKUP_ROOT"
+    BACKUP_FILE="$BACKUP_ROOT/fix-before-$(date +%Y%m%d-%H%M%S).sql.gz"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysqldump --socket="$MYSQL_SOCKET" -uroot \
+        --single-transaction --routines --triggers --set-gtid-purged=OFF fix | gzip -c > "$BACKUP_FILE"
+    chmod 0600 "$BACKUP_FILE"
+    echo "[PASS] 现有fix数据库已备份：${BACKUP_FILE}"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot < "$PACKAGE_ROOT/sql/fix_complete.sql"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot fix < "$PACKAGE_ROOT/sql/task_evidence_upgrade.sql"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot fix < "$PACKAGE_ROOT/sql/answer_feedback_upgrade.sql"
+    MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot fix < "$PACKAGE_ROOT/sql/upgrade-existing.sql"
 fi
+EXPECTED_TABLES="$(MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot -N -B fix -e "
+SELECT COUNT(*) FROM information_schema.tables
+WHERE table_schema='fix' AND table_name IN (
+'user','ai_session','ai_message','memory_fact','maintenance_manual','knowledge_document','maintenance_task',
+'task_step_record','maintenance_task_focus','task_graph_extraction_candidate','standard_procedure','procedure_step',
+'manual_read_record','manual_device','memory_recall_trace','memory_reflection','task_chat_message','quiz_session',
+'quiz_question','user_question_bank','knowledge_mastery','memory_dedup_state','memory_idempotent','expiration_review',
+'maintenance_voice_event','operation_log','domain_rule','answer_feedback');")"
+[[ "$EXPECTED_TABLES" == "28" ]] || die "数据库升级不完整：28张必要表中仅检测到${EXPECTED_TABLES}张"
 MYSQL_PWD="$MYSQL_ROOT_PASSWORD" /opt/mysql-8.4/bin/mysql --socket="$MYSQL_SOCKET" -uroot fix <<'SQL'
 INSERT INTO `user`
     (`username`, `name`, `number`, `password`, `gender`, `type`, `phone`, `email`, `hire_date`, `status`)
@@ -412,6 +453,14 @@ else
 fi
 "${RABBIT_CTL[@]}" set_permissions -p / "$RABBITMQ_USER" '.*' '.*' '.*'
 "${RABBIT_CTL[@]}" set_user_tags "$RABBITMQ_USER" management
+if [[ "$DEPLOY_MODE" == "upgrade" ]]; then
+    for queue in memory.result.queue knowledge.result.queue task.generate.result.queue \
+        task.evidence.extract.result.queue task.step.verify.result.queue \
+        quiz.generate.result.queue memory.reflection.result.queue; do
+        "${RABBIT_CTL[@]}" delete_queue "$queue" >/dev/null 2>&1 || true
+    done
+    echo "[PASS] 已清理可能与新版参数冲突的RabbitMQ临时结果队列"
+fi
 
 CURRENT_STAGE="初始化Neo4j与项目索引"
 log "$CURRENT_STAGE"
@@ -507,7 +556,7 @@ mkdir -p "$APP_STAGE/app" "$APP_STAGE/frontend" "$APP_STAGE/resources/sql" "$APP
 mkdir -p "$APP_STAGE/lib"
 cp -a "$PACKAGE_ROOT/app/." "$APP_STAGE/app/"
 cp -a "$PACKAGE_ROOT/frontend/." "$APP_STAGE/frontend/"
-cp -a "$PACKAGE_ROOT/sql/fix.sql" "$APP_STAGE/resources/sql/fix.sql"
+cp -a "$PACKAGE_ROOT/sql/." "$APP_STAGE/resources/sql/"
 cp -a "$PACKAGE_ROOT/neo4j/neo4j-indexes.cypher" "$APP_STAGE/resources/neo4j/neo4j-indexes.cypher"
 cp -a "$PACKAGE_ROOT/scripts/configure-minio.py" "$APP_STAGE/scripts/configure-minio.py"
 cp -a "$PACKAGE_ROOT/verify.sh" "$APP_STAGE/verify.sh"
@@ -533,7 +582,7 @@ LLM_TOP_P=0.9
 REDIS_HOST=${REDIS_HOST}
 REDIS_PORT=${REDIS_PORT}
 REDIS_PASSWORD=${REDIS_PASSWORD}
-REDIS_DB=0
+REDIS_DB=${REDIS_DB}
 REDIS_TTL=86400
 NEO4J_URI=bolt://127.0.0.1:7687
 NEO4J_USERNAME=neo4j
@@ -561,18 +610,26 @@ EOF
 chmod 0640 "$CONFIG_ROOT/fixagent.env"
 
 cat > "$CONFIG_ROOT/weixiu.env" <<EOF
-SPRING_PROFILES_ACTIVE=prod
+SPRING_PROFILES_ACTIVE=
+DOTENV_FILE=${CONFIG_ROOT}/weixiu.env
+MIDDLEWARE_VERIFICATION_ENABLED=true
 DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY}
 SPRING_DATASOURCE_URL=jdbc:mysql://127.0.0.1:3306/fix?useUnicode=true&characterEncoding=utf-8&useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true
 SPRING_DATASOURCE_USERNAME=${MYSQL_APP_USER}
 SPRING_DATASOURCE_PASSWORD=${MYSQL_APP_PASSWORD}
 MYSQL_USER=${MYSQL_APP_USER}
 MYSQL_PASSWORD=${MYSQL_APP_PASSWORD}
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_DATABASE=fix
 SPRING_NEO4J_URI=bolt://127.0.0.1:7687
 SPRING_NEO4J_AUTHENTICATION_USERNAME=neo4j
 SPRING_NEO4J_AUTHENTICATION_PASSWORD=${NEO4J_PASSWORD}
 BOLT_URI=bolt://127.0.0.1:7687
 NEO4J_PASSWORD=${NEO4J_PASSWORD}
+NEO4J_URI=bolt://127.0.0.1:7687
+NEO4J_USERNAME=neo4j
+NEO4J_DATABASE=neo4j
 SPRING_RABBITMQ_HOST=127.0.0.1
 SPRING_RABBITMQ_PORT=5672
 SPRING_RABBITMQ_USERNAME=${RABBITMQ_USER}
@@ -594,6 +651,8 @@ MINIO_PUBLIC_BASE_URL=/files
 MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY}
 MINIO_SECRET_KEY=${MINIO_SECRET_KEY}
 MINIO_BUCKET=weixiu-private-wendang
+MINIO_DOCUMENT_BUCKET=weixiu-private-wendang
+MINIO_SECURE=false
 EOF
 render_service_token_envs "$CONFIG_ROOT/fixagent.env" "$CONFIG_ROOT/weixiu.env"
 chmod 0640 "$CONFIG_ROOT/fixagent.env"
@@ -635,7 +694,7 @@ User=${APP_USER}
 Group=${APP_GROUP}
 WorkingDirectory=${APP_ROOT}/app
 EnvironmentFile=${CONFIG_ROOT}/weixiu.env
-ExecStart=/usr/lib/jvm/java-21/bin/java -XX:InitialRAMPercentage=20 -XX:MaxRAMPercentage=70 -Dfile.encoding=UTF-8 -jar ${APP_ROOT}/app/weixiu.jar
+ExecStart=/usr/lib/jvm/java-21/bin/java -XX:InitialRAMPercentage=20 -XX:MaxRAMPercentage=70 -Dfile.encoding=UTF-8 -Ddotenv.file=${CONFIG_ROOT}/weixiu.env -jar ${APP_ROOT}/app/weixiu.jar
 Restart=on-failure
 RestartSec=8
 TimeoutStartSec=240
@@ -681,6 +740,7 @@ chmod 0640 "$STATE_ROOT/install-complete"
 
 echo
 echo "MaintAI一键部署完成。"
+echo "部署模式：${DEPLOY_MODE}"
 echo "本机入口：http://127.0.0.1/"
 echo "管理员账号：3 / 123456"
 echo "普通用户：4 / 123456"

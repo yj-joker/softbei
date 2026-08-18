@@ -29,6 +29,7 @@ const TYPE_META = {
   TASK_GENERATED:          { ok: true },
   TASK_GENERATE_FAILED:    { ok: false },
   STEP_VERIFIED:           { ok: true },
+  TASK_VOICE_TURN:         { ok: true },
 }
 
 let started = false
